@@ -29,4 +29,4 @@ Spec-as-source, where humans edit only specs, is out of scope for now. Böckeler
 
 | Item | Approach | Size | Defects later | Rework | Notes |
 | ---- | -------- | ---- | ------------- | ------ | ----- |
-| 4a. Public eval fixtures + manifest schema (`evals/public-fixtures`) | A | M | | | Fixture hunting (finding PRs with a later fix that names them, then pinning lines at head) was most of the time. Schema and validator were quick. |
+| 4a. Public eval fixtures + manifest schema ([PR #6](https://github.com/hartz89/docent/pull/6)) | A | M | | | Fixture hunting (finding PRs with a later fix that names them, then pinning lines at head) was most of the time. Schema and validator were quick. |
