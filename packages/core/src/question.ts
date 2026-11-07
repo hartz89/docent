@@ -1,5 +1,5 @@
 import type { Anchor } from './anchor.ts';
-import type { Brand, NonEmpty, OneLine } from './basics.ts';
+import type { Brand, CommitSha, NonEmpty, OneLine } from './basics.ts';
 
 export type ThreadId = Brand<string, 'ThreadId'>;
 export const threadId = (id: string): ThreadId => id as ThreadId;
@@ -24,8 +24,10 @@ export type Answer =
     }
   | { readonly source: 'guide'; readonly text: string };
 
+/** Q4: every exchange records the head it was asked at. */
 export type Exchange = {
   readonly question: string;
+  readonly askedAt: CommitSha;
   readonly answer: { readonly state: 'waiting' } | ({ readonly state: 'answered' } & Answer);
 };
 

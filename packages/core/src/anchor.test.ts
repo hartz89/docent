@@ -1,13 +1,14 @@
 import fc from 'fast-check';
 import { describe, expect, test } from 'vitest';
 import { type Anchor, anchorAt, type FileVersion, reanchor } from './anchor.ts';
-import { base, head, lineText } from './arbitraries.ts';
+import { base, head, lineText } from './arbitraries.testing.ts';
 import { splitLines } from './basics.ts';
 
 const file = (lines: readonly string[], commit = base, path = 'a.ts'): FileVersion => ({
   commit,
   path,
-  text: lines.join('\n'),
+  // Every line ends in a line break, as in a real file, so the text round-trips to `lines`.
+  text: lines.map((line) => `${line}\n`).join(''),
 });
 
 /** The lines a current anchor points at in a file. */
@@ -45,6 +46,10 @@ describe('anchorAt', () => {
         const anchor = current(anchorAt(file(lines), start, count));
         expect(pointedAt(anchor, file(lines).text)).toEqual(anchor.lines);
         expect(anchor.lines).toHaveLength(count);
+        expect(anchor.context).toEqual({
+          before: lines.slice(Math.max(0, start - 3), start - 1),
+          after: lines.slice(start - 1 + count, start + 1 + count),
+        });
       }),
     );
   });
@@ -55,6 +60,12 @@ describe('anchorAt', () => {
     expect(anchorAt(f, 2, 2)).toBeNull();
     expect(anchorAt(f, 1, 0)).toBeNull();
     expect(anchorAt(f, 3, 1)).toBeNull();
+  });
+
+  test('A1: a final line break does not make a phantom empty last line', () => {
+    const f = { commit: base, path: 'a.ts', text: 'one\ntwo\n' };
+    expect(anchorAt(f, 3, 1)).toBeNull();
+    expect(current(anchorAt(f, 2, 1)).context).toEqual({ before: ['one'], after: [] });
   });
 });
 
@@ -68,7 +79,7 @@ describe('reanchor', () => {
           const anchor = current(anchorAt(file(lines), start, count));
           const result = reanchor(anchor, file(newLines, head));
           if (result.state === 'current') {
-            expect(pointedAt(result, newLines.join('\n'))).toEqual(anchor.lines);
+            expect(pointedAt(result, file(newLines).text)).toEqual(anchor.lines);
             expect(result.at.commit).toBe(head);
           }
         },
@@ -100,7 +111,12 @@ describe('reanchor', () => {
           anchorAt(file([...before, ...cited, ...after]), before.length + 1, cited.length),
         );
         const result = reanchor(anchor, file([...after, ...added, ...before], head));
-        expect(result).toEqual({ state: 'out_of_date', lines: anchor.lines, lastSeen: anchor.at });
+        expect(result).toEqual({
+          state: 'out_of_date',
+          lines: anchor.lines,
+          context: anchor.context,
+          lastSeen: anchor.at,
+        });
       }),
     );
   });
@@ -133,14 +149,41 @@ describe('reanchor', () => {
     );
   });
 
-  test('A4: code that stayed put stays put, even if a copy appears elsewhere', () => {
-    const anchor = current(anchorAt(file(['a', 'b', 'c']), 2, 1));
-    expect(current(reanchor(anchor, file(['a', 'b', 'c', 'b'], head))).at.startLine).toBe(2);
+  test('A4: when the code appears twice, its context picks the copy, wherever it moved', () => {
+    const copy = (tag: string, cited: string[]) => [
+      `${tag} before 1`,
+      `${tag} before 2`,
+      ...cited,
+      `${tag} after 1`,
+      `${tag} after 2`,
+    ];
+    fc.assert(
+      fc.property(
+        fc.tuple(filler, filler, filler, filler, filler, filler),
+        block,
+        fc.boolean(),
+        ([f1, f2, f3, g1, g2, g3], cited, pickFirst) => {
+          const original = [...f1, ...copy('one', cited), ...f2, ...copy('two', cited), ...f3];
+          const start = pickFirst ? f1.length + 3 : f1.length + cited.length + 4 + f2.length + 3;
+          const anchor = current(anchorAt(file(original), start, cited.length));
+          // The two copies swap places, so the old line number would point at the wrong one.
+          const moved = [...g1, ...copy('two', cited), ...g2, ...copy('one', cited), ...g3];
+          const want = pickFirst ? g1.length + cited.length + 4 + g2.length + 3 : g1.length + 3;
+          expect(current(reanchor(anchor, file(moved, head))).at.startLine).toBe(want);
+        },
+      ),
+    );
   });
 
-  test('A4: code that moved and now appears twice is out of date, not guessed at', () => {
-    const anchor = current(anchorAt(file(['a', 'b', 'c']), 2, 1));
-    expect(reanchor(anchor, file(['b', 'a', 'c', 'b'], head)).state).toBe('out_of_date');
+  test('A4: copies that even their context cannot tell apart are out of date, not guessed at', () => {
+    const lines = ['x', 'x', 'b', 'x', 'x', 'b', 'x', 'x'];
+    const anchor = current(anchorAt(file(lines), 3, 1));
+    expect(reanchor(anchor, file(lines, head)).state).toBe('out_of_date');
+  });
+
+  test('A4: a deleted file flags the anchor out of date', () => {
+    const anchor = current(anchorAt(file(['a', 'b']), 2, 1));
+    expect(reanchor(anchor, null)).toMatchObject({ state: 'out_of_date', lastSeen: anchor.at });
   });
 
   test('A6: matching is line by line, so CRLF files match and partial lines do not', () => {

@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, test } from 'vitest';
-import { head } from './arbitraries.ts';
+import { head } from './arbitraries.testing.ts';
 import { reviewId } from './review.ts';
 import { checkStopOrder, STOP_KINDS, type Stop, type StopKind, stopId, type Tour } from './tour.ts';
 
@@ -11,11 +11,17 @@ const stop = (kind: StopKind, i: number): Stop =>
         kind,
         title: '',
         body: '',
+        flags: [],
         anchors: [
-          { state: 'current', lines: ['x'], at: { commit: head, path: 'a.ts', startLine: 1 } },
+          {
+            state: 'current',
+            lines: ['x'],
+            context: { before: [], after: [] },
+            at: { commit: head, path: 'a.ts', startLine: 1 },
+          },
         ],
       }
-    : { id: stopId(`s${i}`), kind, title: '', body: '', anchors: [] };
+    : { id: stopId(`s${i}`), kind, title: '', body: '', flags: [], anchors: [] };
 
 const tourOf = (kinds: readonly StopKind[]): Tour => ({
   review: reviewId('r'),

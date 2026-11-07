@@ -1,3 +1,11 @@
+import type { Brand } from './basics.ts';
+
+/** K2: a whole, non-negative number of millionths of a US dollar. Only `microUsd()` makes one. */
+export type MicroUsd = Brand<number, 'MicroUsd'>;
+
+export const microUsd = (amount: number): MicroUsd | null =>
+  Number.isSafeInteger(amount) && amount >= 0 ? (amount as MicroUsd) : null;
+
 /** K1: every kind of model call Docent makes. A closed list, so a typo is a type error. */
 export const JOBS = [
   'tour',
@@ -22,7 +30,7 @@ export type CostRecord = {
   readonly job: Job;
   readonly model: string;
   readonly tokens: Tokens;
-  readonly costMicroUsd: number;
+  readonly costMicroUsd: MicroUsd;
   readonly latencyMs: number;
 };
 
@@ -30,7 +38,7 @@ export type JobTotal = {
   readonly job: Job;
   readonly calls: number;
   readonly tokens: Tokens;
-  readonly costMicroUsd: number;
+  readonly costMicroUsd: MicroUsd;
   readonly latencyMs: number;
 };
 
@@ -48,7 +56,7 @@ export function costByJob(records: readonly CostRecord[]): JobTotal[] {
         cacheRead: (sum?.tokens.cacheRead ?? 0) + record.tokens.cacheRead,
         cacheWrite: (sum?.tokens.cacheWrite ?? 0) + record.tokens.cacheWrite,
       },
-      costMicroUsd: (sum?.costMicroUsd ?? 0) + record.costMicroUsd,
+      costMicroUsd: ((sum?.costMicroUsd ?? 0) + record.costMicroUsd) as MicroUsd,
       latencyMs: (sum?.latencyMs ?? 0) + record.latencyMs,
     });
   }

@@ -10,7 +10,15 @@ export const stopId = (id: string): StopId => id as StopId;
 export const STOP_KINDS = ['intent', 'map', 'core_change', 'edge', 'verdict_prompt'] as const;
 export type StopKind = (typeof STOP_KINDS)[number];
 
-type StopText = { readonly id: StopId; readonly title: string; readonly body: string };
+/** T5: what a stop surfaces beyond the change itself. Flags play no part in coverage. */
+export type StopFlag = 'mismatch' | 'danger';
+
+type StopText = {
+  readonly id: StopId;
+  readonly title: string;
+  readonly body: string;
+  readonly flags: readonly StopFlag[];
+};
 
 /** T2, T3: core-change and edge stops always cite code; the others may not. */
 export type Stop =
@@ -23,12 +31,13 @@ export type Stop =
       readonly anchors: readonly Anchor[];
     });
 
-/** S1: a skipped file or hunk, with a one-line reason. */
+/** S1: a skipped file or hunk, with a one-line reason and the head it was judged at. */
 export type Skip = {
   readonly target:
     | { readonly kind: 'file'; readonly path: string }
     | { readonly kind: 'hunk'; readonly hunk: HunkId };
   readonly reason: OneLine;
+  readonly judgedAt: CommitSha;
 };
 
 /** T1 */

@@ -24,5 +24,9 @@ export function oneLine(text: string): OneLine | null {
   return trimmed === '' || /[\r\n]/.test(trimmed) ? null : (trimmed as OneLine);
 }
 
-/** Splits file text into lines on \n or \r\n. */
-export const splitLines = (text: string): string[] => text.split(/\r?\n/);
+/** Splits file text into lines on \n or \r\n. A final line break doesn't start a new line. */
+export function splitLines(text: string): string[] {
+  const lines = text.split(/\r?\n/);
+  if (lines.at(-1) === '') lines.pop();
+  return lines;
+}

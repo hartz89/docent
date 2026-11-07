@@ -1,9 +1,9 @@
 import fc from 'fast-check';
 import { describe, expect, test } from 'vitest';
 import type { Anchor } from './anchor.ts';
-import { base, diffs, elsewhere, head } from './arbitraries.ts';
+import { base, diffs, elsewhere, head } from './arbitraries.testing.ts';
 import { type NonEmpty, type OneLine, oneLine } from './basics.ts';
-import { checkCoverage } from './coverage.ts';
+import { type CoverageReport, checkCoverage } from './coverage.ts';
 import {
   type ChangedLine,
   changedLines,
@@ -13,71 +13,117 @@ import {
   makeDiff,
 } from './diff.ts';
 import { reviewId } from './review.ts';
-import { type Skip, type Stop, stopId, type Tour } from './tour.ts';
+import { type Skip, type Stop, type StopFlag, stopId, type Tour } from './tour.ts';
 
 const reason = oneLine('generated') as OneLine;
+const noContext = { before: [], after: [] };
+const complete: CoverageReport = {
+  state: 'checked',
+  unexplained: [],
+  conflicts: [],
+  unknownSkips: [],
+};
 
-/** A one-line anchor at a changed line, at the commit for its side. */
-const anchorOn = (line: ChangedLine): Anchor => ({
-  state: 'current',
-  lines: ['text'],
-  at: { commit: line.side === 'new' ? head : base, path: line.path, startLine: line.line },
-});
+/**
+ * Anchors over the given changed lines, one per run of consecutive lines on the same side of
+ * the same file. So a check that only looked at an anchor's first line would miss the rest.
+ */
+function anchorsOver(lines: readonly ChangedLine[]): Anchor[] {
+  const anchors: Anchor[] = [];
+  let run: ChangedLine[] = [];
+  const flush = () => {
+    const [first, ...rest] = run;
+    if (first === undefined) return;
+    anchors.push({
+      state: 'current',
+      lines: [`line ${first.line}`, ...rest.map((l) => `line ${l.line}`)],
+      context: noContext,
+      at: { commit: first.side === 'new' ? head : base, path: first.path, startLine: first.line },
+    });
+    run = [];
+  };
+  for (const line of lines) {
+    const last = run.at(-1);
+    const continues =
+      last !== undefined &&
+      last.path === line.path &&
+      last.side === line.side &&
+      last.line + 1 === line.line;
+    if (!continues) flush();
+    run.push(line);
+  }
+  flush();
+  return anchors;
+}
+
+const explaining = (id: string, lines: readonly ChangedLine[], flags: StopFlag[] = []) => {
+  const [first, ...rest] = anchorsOver(lines);
+  if (first === undefined) return null;
+  const stop: Stop = {
+    id: stopId(id),
+    kind: 'core_change',
+    title: '',
+    body: '',
+    flags,
+    anchors: [first, ...rest],
+  };
+  return stop;
+};
 
 /** One home in a hand-built tour, and the changed lines it should cover. */
-type Part = { home: { skip: Skip } | { stop: Stop }; lines: LineRef[] };
+type Part = { home: { skip: Skip } | { stop: Stop }; lines: ChangedLine[] };
 
-const ref = ({ path, side, line }: LineRef): LineRef => ({ path, side, line });
-const sorted = (lines: readonly LineRef[]) => lines.map((l) => JSON.stringify(ref(l))).sort();
+const sorted = (lines: readonly LineRef[]) =>
+  lines.map(({ path, side, line }) => JSON.stringify([path, side, line])).sort();
+
+const checked = (report: CoverageReport) => {
+  if (report.state !== 'checked') throw new Error('expected a checked report');
+  return report;
+};
+
+const flagSets = fc.subarray<StopFlag>(['mismatch', 'danger']);
 
 /**
  * A diff, and a tour that gives every changed line exactly one home: whole files skipped,
- * hunks skipped, and the rest spread over core-change and edge stops as one-line anchors.
+ * hunks skipped, and the rest spread over two stops, as runs of multi-line anchors.
  */
 const exactTours = diffs.chain((diff) => {
   const lines = changedLines(diff);
   const hunks = diff.files.flatMap((f) => f.hunks);
+  const n = (length: number) => ({ minLength: length, maxLength: length });
   return fc
     .record({
-      fileSkips: fc.array(fc.boolean(), {
-        minLength: diff.files.length,
-        maxLength: diff.files.length,
-      }),
-      hunkSkips: fc.array(fc.boolean(), { minLength: hunks.length, maxLength: hunks.length }),
-      stopOf: fc.array(fc.nat({ max: 2 }), { minLength: lines.length, maxLength: lines.length }),
+      fileSkips: fc.array(fc.boolean(), n(diff.files.length)),
+      hunkSkips: fc.array(fc.boolean(), n(hunks.length)),
+      stopOf: fc.array(fc.nat({ max: 1 }), n(lines.length)),
+      flags: fc.tuple(flagSets, flagSets),
     })
-    .map(({ fileSkips, hunkSkips, stopOf }) => {
+    .map(({ fileSkips, hunkSkips, stopOf, flags }) => {
       const parts: Part[] = [];
       const skippedFiles = new Set(diff.files.filter((_, i) => fileSkips[i]).map((f) => f.path));
       const skippedHunks = new Set<HunkId>();
       for (const path of skippedFiles) {
         parts.push({
-          home: { skip: { target: { kind: 'file', path }, reason } },
+          home: { skip: { target: { kind: 'file', path }, reason, judgedAt: head } },
           lines: lines.filter((l) => l.file === path),
         });
       }
       hunks.forEach((hunk, i) => {
-        const inSkippedFile = lines.some((l) => l.hunk === hunk.id && skippedFiles.has(l.file));
-        if (!hunkSkips[i] || inSkippedFile || !lines.some((l) => l.hunk === hunk.id)) return;
+        const mine = lines.filter((l) => l.hunk === hunk.id);
+        if (!hunkSkips[i] || mine.length === 0 || mine.some((l) => skippedFiles.has(l.file)))
+          return;
         skippedHunks.add(hunk.id);
         parts.push({
-          home: { skip: { target: { kind: 'hunk', hunk: hunk.id }, reason } },
-          lines: lines.filter((l) => l.hunk === hunk.id),
+          home: { skip: { target: { kind: 'hunk', hunk: hunk.id }, reason, judgedAt: head } },
+          lines: mine,
         });
       });
       const rest = lines.filter((l) => !skippedFiles.has(l.file) && !skippedHunks.has(l.hunk));
-      for (const n of [0, 1, 2]) {
-        const mine = rest.filter((l) => stopOf[lines.indexOf(l)] === n);
-        const [first, ...others] = mine.map(anchorOn);
-        if (first === undefined) continue;
-        const stop: Stop = {
-          id: stopId(`stop-${n}`),
-          kind: n === 2 ? 'edge' : 'core_change',
-          title: '',
-          body: '',
-          anchors: [first, ...others],
-        };
-        parts.push({ home: { stop }, lines: mine });
+      for (const k of [0, 1] as const) {
+        const mine = rest.filter((l) => stopOf[lines.indexOf(l)] === k);
+        const stop = explaining(`stop-${k}`, mine, flags[k]);
+        if (stop)
+          parts.push({ home: { stop: k === 1 ? { ...stop, kind: 'edge' } : stop }, lines: mine });
       }
       return { diff, parts };
     });
@@ -91,60 +137,52 @@ const tourOf = (parts: readonly Part[], extraStops: readonly Stop[] = []): Tour 
 });
 
 const pickPart = exactTours
+  .filter(({ parts }) => parts.length > 0)
   .chain(({ diff, parts }) =>
-    parts.length === 0
-      ? fc.constant(null)
-      : fc.nat({ max: parts.length - 1 }).map((i) => ({ diff, parts, i })),
-  )
-  .filter((x) => x !== null);
-
-/** Rewrites the anchors of every stop in a hand-built tour. */
-const withAnchors = (
-  parts: readonly Part[],
-  rewrite: (stop: Stop, anchors: NonEmpty<Anchor>) => NonEmpty<Anchor>,
-): Part[] =>
-  parts.map((p) => {
-    if (!('stop' in p.home)) return p;
-    const stop = p.home.stop;
-    if (stop.kind !== 'core_change' && stop.kind !== 'edge') return p;
-    return { ...p, home: { stop: { ...stop, anchors: rewrite(stop, stop.anchors) } } };
-  });
+    fc.nat({ max: parts.length - 1 }).map((i) => ({ diff, parts, part: parts[i] as Part })),
+  );
 
 describe('checkCoverage', () => {
-  test('C5: a tour that gives every changed line one home is complete', () => {
+  test('C5, T5: a tour that gives every changed line one home is complete, whatever its flags', () => {
     fc.assert(
       fc.property(exactTours, ({ diff, parts }) => {
-        expect(checkCoverage(diff, tourOf(parts))).toEqual({
-          unexplained: [],
-          doubled: [],
-          unknownSkips: [],
-        });
+        expect(checkCoverage(diff, tourOf(parts))).toEqual(complete);
       }),
     );
   });
 
   test('C5: removing any one home reports exactly its lines as unexplained', () => {
     fc.assert(
-      fc.property(pickPart, ({ diff, parts, i }) => {
-        const report = checkCoverage(diff, tourOf(parts.filter((_, j) => j !== i)));
-        expect(sorted(report.unexplained)).toEqual(sorted(parts[i]?.lines ?? []));
-        expect(report.doubled).toEqual([]);
+      fc.property(pickPart, ({ diff, parts, part }) => {
+        const report = checked(checkCoverage(diff, tourOf(parts.filter((p) => p !== part))));
+        expect(sorted(report.unexplained)).toEqual(sorted(part.lines));
+        expect(report.conflicts).toEqual([]);
       }),
     );
   });
 
-  test('C5: giving lines a second home reports exactly those lines as doubled', () => {
+  test('C4: a second stop or a second skip on the same lines is not a problem', () => {
     fc.assert(
-      fc.property(pickPart, ({ diff, parts, i }) => {
-        const part = parts[i] as Part;
+      fc.property(pickPart, ({ diff, parts, part }) => {
         const copy: Part =
           'stop' in part.home
             ? { ...part, home: { stop: { ...part.home.stop, id: stopId('copy') } } }
             : part;
-        const report = checkCoverage(diff, tourOf([...parts, copy]));
+        expect(checkCoverage(diff, tourOf([...parts, copy]))).toEqual(complete);
+      }),
+    );
+  });
+
+  test('C5: explaining skipped lines reports exactly those lines as conflicts', () => {
+    fc.assert(
+      fc.property(pickPart, ({ diff, parts, part }) => {
+        fc.pre('skip' in part.home);
+        const stop = explaining('second-opinion', part.lines);
+        if (!stop) return;
+        const report = checked(checkCoverage(diff, tourOf(parts, [stop])));
         expect(report.unexplained).toEqual([]);
-        expect(sorted(report.doubled.map((d) => d.line))).toEqual(sorted(part.lines));
-        for (const { homes } of report.doubled) expect(homes).toHaveLength(2);
+        expect(sorted(report.conflicts.map((c) => c.line))).toEqual(sorted(part.lines));
+        for (const conflict of report.conflicts) expect(conflict.stops).toEqual([stop.id]);
       }),
     );
   });
@@ -160,42 +198,57 @@ describe('checkCoverage', () => {
             kind,
             title: '',
             body: '',
-            anchors: changedLines(diff).map(anchorOn),
+            flags: [],
+            anchors: anchorsOver(changedLines(diff)),
           };
-          expect(checkCoverage(diff, tourOf(parts, [citesEverything]))).toEqual(
-            checkCoverage(diff, tourOf(parts)),
+          const withoutSome = parts.slice(1);
+          expect(checkCoverage(diff, tourOf(withoutSome, [citesEverything]))).toEqual(
+            checkCoverage(diff, tourOf(withoutSome)),
           );
         },
       ),
     );
   });
 
-  test('C3: out-of-date anchors, and anchors at other commits, give no home', () => {
+  test('C3: out-of-date anchors, anchors at other commits, and skips judged at another head count for nothing', () => {
     fc.assert(
       fc.property(exactTours, fc.boolean(), ({ diff, parts }, outOfDate) => {
         const stale = (anchor: Anchor): Anchor =>
           anchor.state !== 'current'
             ? anchor
             : outOfDate
-              ? { state: 'out_of_date', lines: anchor.lines, lastSeen: anchor.at }
+              ? { ...anchor, state: 'out_of_date', lastSeen: anchor.at }
               : { ...anchor, at: { ...anchor.at, commit: elsewhere } };
-        // Only the core-change stops go stale; edge stops and skips keep their lines.
-        const staleParts = withAnchors(parts, (stop, [first, ...rest]) =>
-          stop.kind === 'core_change' ? [stale(first), ...rest.map(stale)] : [first, ...rest],
-        );
-        const lost = parts.flatMap((p) =>
-          'stop' in p.home && p.home.stop.kind === 'core_change' ? p.lines : [],
-        );
-        expect(sorted(checkCoverage(diff, tourOf(staleParts)).unexplained)).toEqual(sorted(lost));
+        // Core-change stops and hunk skips go stale; edge stops and file skips stay current.
+        const goesStale = (p: Part) =>
+          'stop' in p.home
+            ? p.home.stop.kind === 'core_change'
+            : p.home.skip.target.kind === 'hunk';
+        const staleParts = parts.map((p): Part => {
+          if (!goesStale(p)) return p;
+          if ('skip' in p.home)
+            return { ...p, home: { skip: { ...p.home.skip, judgedAt: elsewhere } } };
+          const stop = p.home.stop;
+          if (stop.kind !== 'core_change') return p;
+          const [first, ...rest] = stop.anchors;
+          return { ...p, home: { stop: { ...stop, anchors: [stale(first), ...rest.map(stale)] } } };
+        });
+        const lost = parts.filter(goesStale).flatMap((p) => p.lines);
+        const report = checked(checkCoverage(diff, tourOf(staleParts)));
+        expect(sorted(report.unexplained)).toEqual(sorted(lost));
       }),
     );
   });
 
-  test('C4: a stop that cites a line twice is still one home', () => {
+  test('C7: a tour written for another head is reported stale, not checked', () => {
     fc.assert(
       fc.property(exactTours, ({ diff, parts }) => {
-        const twice = withAnchors(parts, (_, anchors) => [...anchors, ...anchors]);
-        expect(checkCoverage(diff, tourOf(twice)).doubled).toEqual([]);
+        const tour = { ...tourOf(parts), head: elsewhere };
+        expect(checkCoverage(diff, tour)).toEqual({
+          state: 'stale',
+          tourHead: elsewhere,
+          diffHead: head,
+        });
       }),
     );
   });
@@ -225,6 +278,7 @@ describe('checkCoverage, by example', () => {
     kind: 'core_change',
     title: '',
     body: '',
+    flags: [],
     anchors,
   });
   const tour = (stops: Stop[], skips: Skip[] = []): Tour => ({
@@ -233,61 +287,46 @@ describe('checkCoverage, by example', () => {
     stops,
     skips,
   });
+  const next: Anchor = {
+    state: 'current',
+    lines: ['next();', 'more();'],
+    context: noContext,
+    at: { commit: head, path: 'b.ts', startLine: 10 },
+  };
 
   test('C1: a multi-line anchor at head covers added lines; one at base covers removed lines', () => {
-    const report = checkCoverage(
-      diff,
-      tour([
-        core([
-          {
-            state: 'current',
-            lines: ['next();', 'more();'],
-            at: { commit: head, path: 'b.ts', startLine: 10 },
-          },
-          {
-            state: 'current',
-            lines: ['old();'],
-            at: { commit: base, path: 'a.ts', startLine: 10 },
-          },
-        ]),
-      ]),
-    );
-    expect(report).toEqual({ unexplained: [], doubled: [], unknownSkips: [] });
+    const old: Anchor = {
+      ...next,
+      lines: ['old();'],
+      at: { commit: base, path: 'a.ts', startLine: 10 },
+    };
+    expect(checkCoverage(diff, tour([core([next, old])]))).toEqual(complete);
   });
 
   test('C1, D1: removed lines of a renamed file are found under the old path, not the new one', () => {
-    const report = checkCoverage(
-      diff,
-      tour([
-        core([
-          {
-            state: 'current',
-            lines: ['next();', 'more();'],
-            at: { commit: head, path: 'b.ts', startLine: 10 },
-          },
-          {
-            state: 'current',
-            lines: ['old();'],
-            at: { commit: base, path: 'b.ts', startLine: 10 },
-          },
-        ]),
-      ]),
-    );
+    const old: Anchor = {
+      ...next,
+      lines: ['old();'],
+      at: { commit: base, path: 'b.ts', startLine: 10 },
+    };
+    const report = checked(checkCoverage(diff, tour([core([next, old])])));
     expect(report.unexplained).toEqual([{ path: 'a.ts', side: 'old', line: 10 }]);
   });
 
   test('C6: skips of things not in the diff are reported; a file with no hunks can be skipped', () => {
-    const skip = (target: Skip['target']): Skip => ({ target, reason });
-    const report = checkCoverage(
-      diff,
-      tour(
-        [],
-        [
-          skip({ kind: 'file', path: 'b.ts' }),
-          skip({ kind: 'file', path: 'moved-only.ts' }),
-          skip({ kind: 'file', path: 'nope.ts' }),
-          skip({ kind: 'hunk', hunk: 'b.ts#00000000' as HunkId }),
-        ],
+    const skip = (target: Skip['target']): Skip => ({ target, reason, judgedAt: head });
+    const report = checked(
+      checkCoverage(
+        diff,
+        tour(
+          [],
+          [
+            skip({ kind: 'file', path: 'b.ts' }),
+            skip({ kind: 'file', path: 'moved-only.ts' }),
+            skip({ kind: 'file', path: 'nope.ts' }),
+            skip({ kind: 'hunk', hunk: 'b.ts#00000000' as HunkId }),
+          ],
+        ),
       ),
     );
     expect(report.unexplained).toEqual([]);

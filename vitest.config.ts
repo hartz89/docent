@@ -6,6 +6,7 @@ export default defineConfig({
     passWithNoTests: true,
     projects: [
       { test: { name: 'core', root: 'packages/core', include: ['src/**/*.test.ts'] } },
+      { test: { name: 'evals', root: 'packages/evals', include: ['src/**/*.test.ts'] } },
       { test: { name: 'server', root: 'apps/server', include: ['src/**/*.test.ts'] } },
       { test: { name: 'scripts', root: 'scripts', include: ['*.test.ts'] } },
     ],

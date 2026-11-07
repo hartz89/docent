@@ -16,7 +16,7 @@
 
 Fixtures and their expected answers describe the code they come from. Private repos can't be committed here.
 
-- **Public core set (committed):** about 8–10 open-source PRs where a later "fixes regression from #N" pins the defect. Diffs are included.
+- **Public core set (committed):** about 8–10 open-source PRs where a later "fixes regression from #N" pins the defect. Diffs are not committed; they are fetched at run time from base and head, the same as the private set. (Updated 2026-11-07.)
 - **Private set:** manifests (repo, base and head SHAs, expected findings, lines that must not be skipped) live in a separate private repo, and diffs are fetched at run time. They run locally or nightly, never in public CI.
 - The runner and the manifest schema live here.
 
