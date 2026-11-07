@@ -8,7 +8,7 @@ Calls that are the maintainer's, batched so they don't block work. The rules are
 
 ## Done, reversible
 
-- **2026-11-07 · Tier 2 split into 2a (contracts, dependencies, process docs: agents merge after a clean fresh-context review) and 2b (security, permissions, CI, AGENTS.md: the maintainer).** Following the maintainer's direction to merge autonomously within the gates. Undo by merging 2a back into 2b in pull-requests.md.
+- **2026-11-07 · Tier 2 split into 2a (contracts and dependencies that don't touch security: agents merge after a clean fresh-context review) and 2b (security, permissions, CI, the harness and the rules themselves: the maintainer).** Following the maintainer's direction to merge autonomously within the gates. Undo by merging 2a back into 2b in pull-requests.md.
 - **2026-11-06 · License: Apache-2.0.** It includes an explicit patent grant, and its contribution terms (section 5) suit a project that wants community-built vendor adapters. The maintainer's other repos use MIT, which would also have been fine. This is easy to change until the first outside contribution lands; after that it needs contributors' consent.
 - **2026-11-06 · Eval fixtures from private repos stay out of this public repo.** They describe private code. The plan: a private fixtures repo of manifests (repo, SHAs, expected findings), fetched at run time, plus a committed public core set built from open-source PRs. See [`../docs/research/2026-11-06-eval-fixtures.md`](../docs/research/2026-11-06-eval-fixtures.md).
 
