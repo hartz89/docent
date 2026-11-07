@@ -36,6 +36,20 @@
   },
   "overrides": [
     {
+      "includes": [
+        "packages/core/src/**",
+        "!packages/core/src/**/*.test.ts",
+        "!packages/core/src/**/*.testing.ts"
+      ],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noNodejsModules": "error"
+          }
+        }
+      }
+    },
+    {
       "includes": ["packages/core/**"],
       "linter": {
         "rules": {
