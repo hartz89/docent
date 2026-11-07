@@ -300,11 +300,11 @@ function findTool(tool: 'gh' | 'git', deps: Deps): string {
 
 /**
  * Local and worktree git config still apply, and they can send traffic elsewhere (proxies, URL
- * rewrites, includes) or run programs. So only known-harmless keys may be set. The core.* keys
- * that run programs are overridden by the injected config, which takes precedence.
+ * rewrites, includes) or run programs. So only known-harmless keys may be set, minus the core.*
+ * keys that run programs. (gc.auto is set by actions/checkout in CI.)
  */
 const SAFE_LOCAL_CONFIG =
-  /^(core\.[a-z]+|remote\.origin\.(url|fetch)|branch\..+\.(remote|merge)|user\.(name|email)|extensions\.worktreeconfig)$/;
+  /^(core\.[a-z]+|gc\.[a-z]+|pull\.[a-z]+|remote\.origin\.(url|fetch)|branch\..+\.(remote|merge)|user\.(name|email)|extensions\.worktreeconfig)$/;
 const UNSAFE_CORE = /^core\.(sshcommand|askpass|gitproxy|editor|pager|alternaterefscommand)$/;
 
 function checkLocalGitConfig(git: string, cwd: string | undefined): void {

@@ -47,6 +47,17 @@ const script = [
 for (const name of ['gh', 'git']) writeFileSync(join(BIN, name), script, { mode: 0o755 });
 afterAll(() => rmSync(shared, { recursive: true, force: true }));
 
+const CLEAN_REPO = join(shared, 'repo');
+execFileSync(REAL_GIT, ['init', '-q', CLEAN_REPO]);
+execFileSync(REAL_GIT, [
+  '-C',
+  CLEAN_REPO,
+  'remote',
+  'add',
+  'origin',
+  'https://github.com/hartz89/docent.git',
+]);
+
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'as-agent-'));
@@ -112,7 +123,8 @@ function setup(
     trustTool: () => true,
     now: () => NOW,
   };
-  if (opts.cwd) deps.cwd = opts.cwd;
+  // A clean repo by default, so the tests don't depend on how this checkout is configured.
+  deps.cwd = opts.cwd ?? CLEAN_REPO;
   const ran = () => readFileSync(join(dir, 'argv'), 'utf8').trim().split('\n');
   const logs = () => err.join('').trim().split('\n');
   const printed = () => out.join('') + err.join('');
@@ -284,7 +296,14 @@ describe('as-agent', () => {
       exitCode = code;
     };
     const running = asAgent(['builder', '--', ...VIEW], deps);
-    while (!existsSync(join(dir, 'started'))) await new Promise((r) => setTimeout(r, 10));
+    let settled = false;
+    void running.then(() => {
+      settled = true;
+    });
+    while (!existsSync(join(dir, 'started')) && !settled) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(settled).toBe(false);
     process.emit('SIGTERM', 'SIGTERM');
     await running;
     expect(exitCode).toBe(143);

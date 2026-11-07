@@ -49,7 +49,7 @@ These guards keep honest mistakes from leaking the token:
 - **A from-scratch env.** Only `HOME`, `LANG`, `TERM` and `TMPDIR` pass from the caller, so no key, `GIT_TRACE` or `EDITOR` gets through.
 - **Locked-down git.**
   - Hooks, global and system config, submodule pushes and non-HTTPS transports are off.
-  - Repo and worktree git config may only set known-harmless keys: `core.*`, `remote.origin.url`/`fetch`, `branch.*`, `user.*` and `extensions.worktreeConfig`. Anything else, like a proxy, URL rewrite or include, is refused.
+  - Repo and worktree git config may only set known-harmless keys: `core.*` (minus keys that run programs), `gc.*`, `pull.*`, `remote.origin.url`/`fetch`, `branch.*`, `user.*` and `extensions.worktreeConfig`. Anything else, like a proxy, URL rewrite or include, is refused.
 - **The token stays out of sight.** Git gets it only through `GIT_CONFIG_*` env vars, never argv, a remote URL or `.git/config`. Everything the command prints passes through a scrubber.
 - **No reshaped output.** `gh --jq`/`--template` could print the token in a form the scrubber can't catch, so they're refused. So are `--web`/`--editor`.
 
