@@ -1,0 +1,12 @@
+{
+  "url": "https://github.com/honojs/hono/pull/4813",
+  "repo": "honojs/hono",
+  "number": 4813,
+  "title": "fix(cors): reflect request origin when credentials is true with wildcard",
+  "body": "## Summary\n\nFixes the CORS middleware sending `Access-Control-Allow-Origin: *` together with `Access-Control-Allow-Credentials: true`, which browsers reject per the Fetch spec.\n\n## Problem\n\nWhen configured with `origin: '*'` and `credentials: true`:\n\n```ts\ncors({ origin: '*', credentials: true })\n```\n\nThe middleware sets both:\n- `Access-Control-Allow-Origin: *`\n- `Access-Control-Allow-Credentials: true`\n\nThe [Fetch spec](https://fetch.spec.whatwg.org/#http-access-control-allow-origin) requires that `Access-Control-Allow-Origin` must not be `*` when credentials mode is `include`. Browsers reject these responses.\n\n## Fix\n\nWhen `credentials` is true and origin is `'*'`, reflect the actual request `Origin` header instead of the wildcard. Also set `Vary: Origin` since the response now varies by request.\n\nThis matches the behavior of other CORS libraries (e.g., Express cors middleware).\n\nFixes #4811",
+  "author": "app/",
+  "base": "fe689eceb7834db653a64ecae5f8d203d9c23b9a",
+  "head": "674372f59348bacdf07170778f3a999e5d4bb6b9",
+  "baseRef": "main",
+  "headRef": "fix/cors-credentials-wildcard-origin"
+}
