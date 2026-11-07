@@ -2,7 +2,7 @@
 
 **Question.** For a project built mostly by agents, does writing specs first pay for itself, compared with looser iteration? If it does, for which kinds of work?
 
-**Status:** planned. Ryan hasn't decided, and wants the evidence to decide.
+**Status:** planned. The maintainer hasn't decided, and wants the evidence to decide.
 
 ## The approaches
 
@@ -22,7 +22,7 @@ Spec-as-source, where humans edit only specs, is out of scope for now. Böckeler
    - defects found later
    - rework (follow-up PRs to the same area)
    - wall-clock time and tokens, from session history
-   - Ryan's review time, and his read on how easy the PR was to judge
+   - The maintainer's review time, and their read on how easy the PR was to judge
 4. After about 10 items, write up the result and change the radar entry in [`../north-stars.md`](../north-stars.md).
 
 ## Log

@@ -25,12 +25,12 @@ apps/web        Vite + React + TanStack Router/Query, using Hono's typed client.
 e2e/            A few Playwright flows against the real built server.
 docs/process/   How we work: verification, pull requests, decisions, harness evals.
 docs/research/  Spikes and prior art, dated.
-backlog/        What's next (index.md) and decisions waiting on Ryan (decisions.md).
+backlog/        What's next (index.md) and decisions waiting on the maintainer (decisions.md).
 ```
 
-## How Ryan works
+## How the maintainer works
 
-Ryan sets outcomes, high-level architecture, and the environment agents work in. Then he watches how the system behaves, and steps in with judgment where it could be better. He can't follow low-level details at the speed this project moves, but he cares a lot about architectural health. So the environment has to protect it.
+The maintainer sets outcomes, high-level architecture, and the environment agents work in. Then they watch how the system behaves, and steps in with judgment where it could be better. They can't follow low-level details at the speed this project moves, but they care a lot about architectural health. So the environment has to protect it.
 
 **Nothing here is under glass, this file included.** Governance exists to make agents' work more autonomous, more trustworthy and better. When evidence shows a rule isn't earning its place, or a missing rule would help, propose the change, with the evidence: metrics, eval results, a repeated mistake. Changes to governance are tier 2 like any other harness change.
 
@@ -44,7 +44,7 @@ Ryan sets outcomes, high-level architecture, and the environment agents work in.
 
 ## Rules that always apply
 
-- **Decide, don't block.** Ask forgiveness unless security, quality or long-term goals are at stake. A decision that truly needs Ryan gets a visual decision brief, never just a chat message. → [`docs/process/decisions.md`](docs/process/decisions.md)
+- **Decide, don't block.** Ask forgiveness unless security, quality or long-term goals are at stake. A decision that truly needs the maintainer gets a visual decision brief, never just a chat message. → [`docs/process/decisions.md`](docs/process/decisions.md)
 - **Verify before you report done.** Check before code; mechanical checks over prose rules; deterministic tests. → [`docs/process/verification.md`](docs/process/verification.md)
 - **PRs carry a risk tier, and a description worth reading.** → [`docs/process/pull-requests.md`](docs/process/pull-requests.md)
 - **Harness changes are tier 2 and must pass the harness evals.** "Harness" means this file, `CLAUDE.md`, `.claude/`, skills, hooks and `docs/process/`. → [`docs/process/harness-evals.md`](docs/process/harness-evals.md)
