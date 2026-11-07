@@ -1,14 +1,15 @@
 {
   "tour": [
     {
-      "sessionId": "28ee6299-1233-4989-84b8-23109990d2e3",
-      "text": "{\"stops\":[{\"kind\":\"intent\",\"title\":\"Stop sending `*` together with credentials\",\"body\":\"The PR targets `cors({ origin: '*', credentials: true })`, which currently sends `Access-Control-Allow-Origin: *` alongside `Access-Control-Allow-Credentials: true`. Browsers reject that combination for credentialed requests. The fix is to echo the request's `Origin` back instead of `*` and to add `Vary: Origin`.\",\"citations\":[{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":75,\"endLine\":92}]},{\"kind\":\"map\",\"title\":\"One origin resolver, two Vary sites, new tests\",\"body\":\"`findAllowOrigin` is built once per `cors()` call from `opts.origin` and runs on every request at line 109. The `Vary: Origin` logic lives in two places: the OPTIONS preflight branch and the post-`next()` path for normal requests. Tests add an `/api10/*` route set up with the wildcard + credentials combination. Note that `defaults.origin` is `'*'`, so `cors({ credentials: true })` with no origin also takes the new path.\",\"citations\":[{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":64,\"endLine\":73},{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":104,\"endLine\":125},{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":157,\"endLine\":163}]},{\"kind\":\"core_change\",\"title\":\"Wildcard + credentials now echoes any Origin\",\"body\":\"When `optsOrigin === '*'` and `opts.credentials` is truthy, the resolver returns `origin || null`. Whatever `Origin` the request sends is reflected back, and an empty origin means the header is left off. Before, browsers refused these responses, so the config was effectively blocked. Now any site can make credentialed cross-origin requests and read the responses. That includes apps that only set `credentials: true`, since the default origin is `'*'`.\",\"citations\":[{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":77,\"endLine\":83}],\"flag\":{\"kind\":\"danger\",\"note\":\"With credentials on, every requesting origin gets cookie-authenticated read access. This happens silently, including under the default `origin` of `'*'`. Also, Express `cors` sends `*` literally for `origin: '*'` and only reflects the origin for `origin: true`, so the 'matches Express' claim may not hold.\"}},{\"kind\":\"core_change\",\"title\":\"`Vary: Origin` added when credentials reflect origin\",\"body\":\"Both `Vary` conditions change from `opts.origin !== '*'` to `opts.origin !== '*' || opts.credentials`. On preflight, `Vary` is replaced via `set` (later headers append to it). On normal responses it is appended after `next()`. Because the condition only checks `opts.credentials`, `Vary: Origin` is also sent when there is no `Origin` header and no Allow-Origin is set.\",\"citations\":[{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":123,\"endLine\":123},{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"old\",\"startLine\":118,\"endLine\":118},{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":161,\"endLine\":161},{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"old\",\"startLine\":156,\"endLine\":156}]},{\"kind\":\"edge\",\"title\":\"Test route set up for wildcard + credentials\",\"body\":\"A new `/api10/*` middleware uses `origin: '*'` with `credentials: true`, plus a matching GET handler that returns JSON.\",\"citations\":[{\"path\":\"src/middleware/cors/index.test.ts\",\"side\":\"new\",\"startLine\":87,\"endLine\":94},{\"path\":\"src/middleware/cors/index.test.ts\",\"side\":\"new\",\"startLine\":135,\"endLine\":138}]},{\"kind\":\"edge\",\"title\":\"Tests: reflection, preflight, missing and null Origin\",\"body\":\"The tests cover a GET reflecting `http://example.com` with `Vary: Origin`, and a preflight returning 204 with the reflected origin. They check that no Allow-Origin is sent when the request has no `Origin`, and that two different origins are each reflected. The last test pins down that `Origin: null`, which sandboxed iframes and `file:` pages send, is reflected as `'null'` with credentials. No test asserts the `Vary` header in the no-Origin case.\",\"citations\":[{\"path\":\"src/middleware/cors/index.test.ts\",\"side\":\"new\",\"startLine\":364,\"endLine\":420}]},{\"kind\":\"verdict_prompt\",\"title\":\"Should wildcard + credentials reflect every origin?\",\"body\":\"Before this PR, browsers blocked this config. After it, any origin, including `null`, gets credentialed access, and so does the default `origin` when `credentials: true` is set. Is that the behavior you want behind `origin: '*'`? The alternative is to require an explicit opt-in, such as a function or an allow-list.\",\"citations\":[{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":80,\"endLine\":82}]}],\"skips\":[]}",
+      "sessionId": "37676915-2e92-4abd-9510-fb6b60a20e60",
+      "text": "{\"stops\":[{\"kind\":\"intent\",\"title\":\"Stop sending `*` together with credentials\",\"body\":\"With `cors({ origin: '*', credentials: true })` the middleware used to send `Access-Control-Allow-Origin: *` along with `Access-Control-Allow-Credentials: true`, and browsers reject that pair. The PR changes the wildcard case: when `credentials` is set, the middleware now echoes back the request's `Origin`, and it adds `Vary: Origin`.\",\"flags\":[],\"citations\":[{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":75,\"endLine\":92}]},{\"kind\":\"map\",\"title\":\"One resolver branch and two Vary conditions\",\"body\":\"`findAllowOrigin` is built once per `cors()` call, based on `opts.origin`. The request handler calls it at line 109 and sets the header if the result is truthy. `Vary: Origin` is set in two places: on the preflight path (OPTIONS) and after `next()` for normal requests. The PR touches all three spots, and `index.test.ts` adds a new `/api10/*` route to test them.\",\"flags\":[],\"citations\":[{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":104,\"endLine\":125}]},{\"kind\":\"core_change\",\"title\":\"Wildcard plus credentials now echoes any Origin\",\"body\":\"When `optsOrigin === '*'` and `opts.credentials` is truthy, the resolver returns `origin || null`. Any non-empty request `Origin`, including the literal `'null'`, gets echoed back while `Allow-Credentials: true` is also sent. In practice, any website can now make credentialed requests and read the responses. Before, the browser blocked those reads because of the `*`. `origin` defaults to `'*'` (line 65), so passing only `credentials: true` also turns on this behavior. Express's `cors` package keeps sending `*` when `origin: '*'`; it only echoes the origin when `origin: true`.\",\"flags\":[{\"kind\":\"danger\",\"note\":\"Wildcard plus credentials now lets every origin (including the `null` origin from sandboxed pages) read credentialed responses, and a config that only sets `credentials: true` is affected too.\"},{\"kind\":\"mismatch\",\"note\":\"The description says this matches Express cors, but Express cors sends `*` for `origin: '*'` and only echoes the origin for `origin: true`.\"}],\"citations\":[{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":77,\"endLine\":83},{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":63,\"endLine\":73}]},{\"kind\":\"core_change\",\"title\":\"`Vary: Origin` added for the credentials case\",\"body\":\"Both Vary conditions change from `opts.origin !== '*'` to `opts.origin !== '*' || opts.credentials`. Because the header value now depends on the request's origin, caches have to key on it. Preflight uses `set` (it replaces the header), while normal responses use `append: true`. This matches how the code already handled non-wildcard origins.\",\"flags\":[],\"citations\":[{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":123,\"endLine\":125},{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"old\",\"startLine\":118,\"endLine\":118},{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":161,\"endLine\":163},{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"old\",\"startLine\":156,\"endLine\":156}]},{\"kind\":\"edge\",\"title\":\"Tests on the new `/api10` route\",\"body\":\"A new `/api10/*` route uses `origin: '*', credentials: true`. The tests check four things: a normal GET echoes the origin and sets `Vary: Origin`; a preflight echoes it and `Vary` includes Origin; with no Origin header, no Allow-Origin is sent but Allow-Credentials still is; and two different origins each get echoed. The `Origin: null` test expects `'null'` to be echoed with credentials, so that behavior is now locked in by a test.\",\"flags\":[],\"citations\":[{\"path\":\"src/middleware/cors/index.test.ts\",\"side\":\"new\",\"startLine\":87,\"endLine\":94},{\"path\":\"src/middleware/cors/index.test.ts\",\"side\":\"new\",\"startLine\":135,\"endLine\":138},{\"path\":\"src/middleware/cors/index.test.ts\",\"side\":\"new\",\"startLine\":364,\"endLine\":420}]},{\"kind\":\"verdict_prompt\",\"title\":\"Should a wildcard silently become “echo everyone”?\",\"body\":\"Is it acceptable for `origin: '*'` with `credentials: true` (or just `credentials: true`, since `'*'` is the default) to automatically let every origin, including `null`, read credentialed responses? Or should this configuration keep failing in the browser, or require an explicit opt-in, like Express's `origin: true`?\",\"flags\":[],\"citations\":[{\"path\":\"src/middleware/cors/index.ts\",\"side\":\"new\",\"startLine\":80,\"endLine\":82}]}],\"skips\":[]}",
       "structured": {
         "stops": [
           {
             "kind": "intent",
             "title": "Stop sending `*` together with credentials",
-            "body": "The PR targets `cors({ origin: '*', credentials: true })`, which currently sends `Access-Control-Allow-Origin: *` alongside `Access-Control-Allow-Credentials: true`. Browsers reject that combination for credentialed requests. The fix is to echo the request's `Origin` back instead of `*` and to add `Vary: Origin`.",
+            "body": "With `cors({ origin: '*', credentials: true })` the middleware used to send `Access-Control-Allow-Origin: *` along with `Access-Control-Allow-Credentials: true`, and browsers reject that pair. The PR changes the wildcard case: when `credentials` is set, the middleware now echoes back the request's `Origin`, and it adds `Vary: Origin`.",
+            "flags": [],
             "citations": [
               {
                 "path": "src/middleware/cors/index.ts",
@@ -20,56 +21,58 @@
           },
           {
             "kind": "map",
-            "title": "One origin resolver, two Vary sites, new tests",
-            "body": "`findAllowOrigin` is built once per `cors()` call from `opts.origin` and runs on every request at line 109. The `Vary: Origin` logic lives in two places: the OPTIONS preflight branch and the post-`next()` path for normal requests. Tests add an `/api10/*` route set up with the wildcard + credentials combination. Note that `defaults.origin` is `'*'`, so `cors({ credentials: true })` with no origin also takes the new path.",
+            "title": "One resolver branch and two Vary conditions",
+            "body": "`findAllowOrigin` is built once per `cors()` call, based on `opts.origin`. The request handler calls it at line 109 and sets the header if the result is truthy. `Vary: Origin` is set in two places: on the preflight path (OPTIONS) and after `next()` for normal requests. The PR touches all three spots, and `index.test.ts` adds a new `/api10/*` route to test them.",
+            "flags": [],
             "citations": [
-              {
-                "path": "src/middleware/cors/index.ts",
-                "side": "new",
-                "startLine": 64,
-                "endLine": 73
-              },
               {
                 "path": "src/middleware/cors/index.ts",
                 "side": "new",
                 "startLine": 104,
                 "endLine": 125
-              },
-              {
-                "path": "src/middleware/cors/index.ts",
-                "side": "new",
-                "startLine": 157,
-                "endLine": 163
               }
             ]
           },
           {
             "kind": "core_change",
-            "title": "Wildcard + credentials now echoes any Origin",
-            "body": "When `optsOrigin === '*'` and `opts.credentials` is truthy, the resolver returns `origin || null`. Whatever `Origin` the request sends is reflected back, and an empty origin means the header is left off. Before, browsers refused these responses, so the config was effectively blocked. Now any site can make credentialed cross-origin requests and read the responses. That includes apps that only set `credentials: true`, since the default origin is `'*'`.",
+            "title": "Wildcard plus credentials now echoes any Origin",
+            "body": "When `optsOrigin === '*'` and `opts.credentials` is truthy, the resolver returns `origin || null`. Any non-empty request `Origin`, including the literal `'null'`, gets echoed back while `Allow-Credentials: true` is also sent. In practice, any website can now make credentialed requests and read the responses. Before, the browser blocked those reads because of the `*`. `origin` defaults to `'*'` (line 65), so passing only `credentials: true` also turns on this behavior. Express's `cors` package keeps sending `*` when `origin: '*'`; it only echoes the origin when `origin: true`.",
+            "flags": [
+              {
+                "kind": "danger",
+                "note": "Wildcard plus credentials now lets every origin (including the `null` origin from sandboxed pages) read credentialed responses, and a config that only sets `credentials: true` is affected too."
+              },
+              {
+                "kind": "mismatch",
+                "note": "The description says this matches Express cors, but Express cors sends `*` for `origin: '*'` and only echoes the origin for `origin: true`."
+              }
+            ],
             "citations": [
               {
                 "path": "src/middleware/cors/index.ts",
                 "side": "new",
                 "startLine": 77,
                 "endLine": 83
+              },
+              {
+                "path": "src/middleware/cors/index.ts",
+                "side": "new",
+                "startLine": 63,
+                "endLine": 73
               }
-            ],
-            "flag": {
-              "kind": "danger",
-              "note": "With credentials on, every requesting origin gets cookie-authenticated read access. This happens silently, including under the default `origin` of `'*'`. Also, Express `cors` sends `*` literally for `origin: '*'` and only reflects the origin for `origin: true`, so the 'matches Express' claim may not hold."
-            }
+            ]
           },
           {
             "kind": "core_change",
-            "title": "`Vary: Origin` added when credentials reflect origin",
-            "body": "Both `Vary` conditions change from `opts.origin !== '*'` to `opts.origin !== '*' || opts.credentials`. On preflight, `Vary` is replaced via `set` (later headers append to it). On normal responses it is appended after `next()`. Because the condition only checks `opts.credentials`, `Vary: Origin` is also sent when there is no `Origin` header and no Allow-Origin is set.",
+            "title": "`Vary: Origin` added for the credentials case",
+            "body": "Both Vary conditions change from `opts.origin !== '*'` to `opts.origin !== '*' || opts.credentials`. Because the header value now depends on the request's origin, caches have to key on it. Preflight uses `set` (it replaces the header), while normal responses use `append: true`. This matches how the code already handled non-wildcard origins.",
+            "flags": [],
             "citations": [
               {
                 "path": "src/middleware/cors/index.ts",
                 "side": "new",
                 "startLine": 123,
-                "endLine": 123
+                "endLine": 125
               },
               {
                 "path": "src/middleware/cors/index.ts",
@@ -81,7 +84,7 @@
                 "path": "src/middleware/cors/index.ts",
                 "side": "new",
                 "startLine": 161,
-                "endLine": 161
+                "endLine": 163
               },
               {
                 "path": "src/middleware/cors/index.ts",
@@ -93,8 +96,9 @@
           },
           {
             "kind": "edge",
-            "title": "Test route set up for wildcard + credentials",
-            "body": "A new `/api10/*` middleware uses `origin: '*'` with `credentials: true`, plus a matching GET handler that returns JSON.",
+            "title": "Tests on the new `/api10` route",
+            "body": "A new `/api10/*` route uses `origin: '*', credentials: true`. The tests check four things: a normal GET echoes the origin and sets `Vary: Origin`; a preflight echoes it and `Vary` includes Origin; with no Origin header, no Allow-Origin is sent but Allow-Credentials still is; and two different origins each get echoed. The `Origin: null` test expects `'null'` to be echoed with credentials, so that behavior is now locked in by a test.",
+            "flags": [],
             "citations": [
               {
                 "path": "src/middleware/cors/index.test.ts",
@@ -107,14 +111,7 @@
                 "side": "new",
                 "startLine": 135,
                 "endLine": 138
-              }
-            ]
-          },
-          {
-            "kind": "edge",
-            "title": "Tests: reflection, preflight, missing and null Origin",
-            "body": "The tests cover a GET reflecting `http://example.com` with `Vary: Origin`, and a preflight returning 204 with the reflected origin. They check that no Allow-Origin is sent when the request has no `Origin`, and that two different origins are each reflected. The last test pins down that `Origin: null`, which sandboxed iframes and `file:` pages send, is reflected as `'null'` with credentials. No test asserts the `Vary` header in the no-Origin case.",
-            "citations": [
+              },
               {
                 "path": "src/middleware/cors/index.test.ts",
                 "side": "new",
@@ -125,8 +122,9 @@
           },
           {
             "kind": "verdict_prompt",
-            "title": "Should wildcard + credentials reflect every origin?",
-            "body": "Before this PR, browsers blocked this config. After it, any origin, including `null`, gets credentialed access, and so does the default `origin` when `credentials: true` is set. Is that the behavior you want behind `origin: '*'`? The alternative is to require an explicit opt-in, such as a function or an allow-list.",
+            "title": "Should a wildcard silently become “echo everyone”?",
+            "body": "Is it acceptable for `origin: '*'` with `credentials: true` (or just `credentials: true`, since `'*'` is the default) to automatically let every origin, including `null`, read credentialed responses? Or should this configuration keep failing in the browser, or require an explicit opt-in, like Express's `origin: true`?",
+            "flags": [],
             "citations": [
               {
                 "path": "src/middleware/cors/index.ts",
@@ -144,13 +142,33 @@
         "model": "claude-opus-5-5",
         "tokens": {
           "input": 4,
-          "output": 2357,
-          "cacheRead": 15526,
-          "cacheWrite": 1768
+          "output": 2285,
+          "cacheRead": 7787,
+          "cacheWrite": 9548
         },
-        "costMicroUsd": 64405,
-        "latencyMs": 24031
-      }
+        "costMicroUsd": 123657,
+        "latencyMs": 22141
+      },
+      "denials": []
+    }
+  ],
+  "question": [
+    {
+      "sessionId": "9eeb7af3-22c4-4026-9b75-50de080ceddb",
+      "text": "It returns `null`. When there's no `Origin` header, the middleware passes an empty string to the resolver (`c.req.header('origin') || ''`, line 109). In the wildcard-plus-credentials branch, `origin || null` turns that empty string into `null` (line 81).\n\nBecause the value is falsy, the `if (allowOrigin)` check at lines 110-112 skips it, so no `Access-Control-Allow-Origin` header is set. `Access-Control-Allow-Credentials: true` is still set, because that only depends on `opts.credentials` (lines 114-116).\n\nFor comparison, without credentials the `'*'` branch returns `'*'` no matter what the request sends (line 83). So in that case a request with no `Origin` still gets `Access-Control-Allow-Origin: *`.",
+      "cost": {
+        "job": "question",
+        "model": "claude-opus-5-5",
+        "tokens": {
+          "input": 4,
+          "output": 451,
+          "cacheRead": 6625,
+          "cacheWrite": 2539
+        },
+        "costMicroUsd": 30673,
+        "latencyMs": 6862
+      },
+      "denials": []
     }
   ]
 }
