@@ -4,12 +4,14 @@
 //
 // It mints a short-lived, narrowly scoped installation token, hands it to one allowlisted gh or
 // git command in a minimal env, scrubs secrets from everything printed, and revokes it after.
+// This is attribution and a guard against honest mistakes, not containment: an agent running as
+// the same OS user can read the key or edit this file. GitHub's rules are the real enforcement.
 
-import { execFileSync, spawn } from 'node:child_process';
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import { createPrivateKey, type KeyObject, sign } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { constants, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 const ROLES = ['builder', 'reviewer'] as const;
 export type Role = (typeof ROLES)[number];
@@ -23,7 +25,9 @@ const ORIGIN_URLS = [`https://github.com/${REPO}.git`, `https://github.com/${REP
 const DOC = 'docs/process/agent-identities.md';
 const DEFAULT_CONFIG = join(import.meta.dirname, '..', '.github', 'agent-apps.json');
 /** Where gh and git are looked up. Never the caller's PATH, which an agent controls. */
-const TOOL_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'];
+const TOOL_DIRS = ['/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'];
+/** The child's PATH, for anything gh or git runs in turn. */
+const SAFE_PATH = '/usr/bin:/bin';
 
 /** What each role's token may do. Metadata read is always included. */
 const TOKEN_PERMISSIONS: Record<Role, Record<string, 'read' | 'write'>> = {
@@ -42,6 +46,10 @@ export type Deps = {
   configPath?: string;
   cwd?: string;
   toolDirs?: string[];
+  /** Whether a resolved gh or git binary is safe to run. Defaults to rootOwned. */
+  trustTool?: (path: string) => boolean;
+  /** How to exit after a signal. Defaults to process.exit. */
+  exit?: (code: number) => void;
   /** Seconds since the epoch. */
   now?: () => number;
 };
@@ -73,10 +81,12 @@ const ALLOWED: Record<Role, string[]> = {
     'gh pr create|view|checks|diff|comment|edit ...',
     'gh pr merge <number> --squash',
     'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
+    'Never with gh --jq/-q or --template/-t, or --web/--editor.',
   ],
   reviewer: [
     'gh pr view|diff|checks|review|comment ...',
     'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
+    'Never with gh --jq/-q or --template/-t, or --web/--editor.',
   ],
 };
 
@@ -99,6 +109,11 @@ function allowed(role: Role, command: string[]): Allowed {
   if (program === 'git' && sub === 'push' && role === 'builder') {
     return { tool: 'git', args: gitPushArgs(rest, refuse) };
   }
+  if (program === 'gh') {
+    // --jq and --template can print $ENV.GH_TOKEN reshaped (base64, reversed), past the scrubber.
+    const formatter = rest.find((arg) => /^(-q|-t|--jq|--template)(=|$)|^-[qt]./.test(arg));
+    if (formatter) refuse(`${formatter} can print the token in a form the scrubber can't catch`);
+  }
   if (program === 'gh' && sub === 'api') {
     checkGhApi(rest, refuse);
     return { tool: 'gh', args: ['api', ...rest] };
@@ -106,6 +121,11 @@ function allowed(role: Role, command: string[]): Allowed {
   if (program === 'gh' && sub === 'pr') {
     const [action, ...args] = rest;
     if (args.some((arg) => arg.startsWith('--admin'))) refuse('--admin bypasses branch protection');
+    // A browser or editor would run outside the scrubber, with the token in its env.
+    const interactive = args.find((arg) => /^(--web|--editor)(=|$)|^-[we]$/.test(arg));
+    if (interactive && ['create', 'edit', 'comment', 'review'].includes(action ?? '')) {
+      refuse(`${interactive} opens a browser or editor`);
+    }
     if (action === 'merge' && role === 'builder') checkMerge(args, refuse);
     else if (!action || !PR_SUBCOMMANDS[role].includes(action)) {
       refuse(`"gh pr ${action ?? ''}" isn't allowed for the ${role}`);
@@ -144,7 +164,7 @@ function checkMerge(args: string[], refuse: (reason: string) => never): void {
 }
 
 /** gh api flags that take a value, so the value isn't mistaken for a flag. */
-const API_VALUE_FLAGS = ['-H', '--header', '-q', '--jq', '-t', '--template', '-p', '--preview'];
+const API_VALUE_FLAGS = ['-H', '--header', '-p', '--preview'];
 
 function checkGhApi(args: string[], refuse: (reason: string) => never): void {
   for (let i = 0; i < args.length; i++) {
@@ -249,37 +269,63 @@ async function github<T>(
   return (response.status === 204 ? undefined : await response.json()) as T;
 }
 
-function findTool(tool: 'gh' | 'git', dirs: string[]): string {
-  const dir = dirs.find((d) => existsSync(join(d, tool)));
-  if (!dir) throw new AgentError(`couldn't find ${tool} in ${dirs.join(', ')}`);
-  return join(dir, tool);
+/** True if the file and every folder above it are root-owned and writable only by root. */
+export function rootOwned(path: string): boolean {
+  for (let p = path; ; p = dirname(p)) {
+    const { uid, mode } = statSync(p);
+    if (uid !== 0 || (mode & 0o022) !== 0) return false;
+    if (p === dirname(p)) return true;
+  }
 }
 
 /**
- * Repo-local git config still applies, and it can send traffic elsewhere (proxies, url
- * rewrites, includes) or run programs. Refuse to hand a token to a repo configured like that.
+ * The real gh or git binary, from a fixed list of folders and never the caller's PATH. It must
+ * sit somewhere only root can change, or an agent could swap it for something that keeps the
+ * token. (Homebrew's /opt/homebrew is user-owned, so a Homebrew gh is refused on purpose.)
  */
-const RISKY_LOCAL_CONFIG =
-  /^(http\.|url\.|credential|protocol\.|include\.|includeif\.|core\.(hookspath|fsmonitor|sshcommand|askpass|gitproxy)$|remote\.origin\.(pushurl|receivepack|uploadpack|proxy)$)/;
+function findTool(tool: 'gh' | 'git', deps: Deps): string {
+  const dirs = deps.toolDirs ?? TOOL_DIRS;
+  const trusted = deps.trustTool ?? rootOwned;
+  const found = dirs.map((dir) => join(dir, tool)).find((path) => existsSync(path));
+  if (!found) throw new AgentError(`couldn't find ${tool} in ${dirs.join(', ')}`);
+  const real = realpathSync(found);
+  if (!trusted(real)) {
+    throw new AgentError(
+      `${tool} must be installed in a root-owned location for as-agent; see ${DOC}. ` +
+        `(${real}, or a folder above it, is not root-owned or is writable by others.)`,
+    );
+  }
+  return real;
+}
 
-function checkLocalGitConfig(git: string, cwd: string | undefined, env: NodeJS.ProcessEnv): void {
+/**
+ * Local and worktree git config still apply, and they can send traffic elsewhere (proxies, URL
+ * rewrites, includes) or run programs. So only known-harmless keys may be set. The core.* keys
+ * that run programs are overridden by the injected config, which takes precedence.
+ */
+const SAFE_LOCAL_CONFIG =
+  /^(core\.[a-z]+|remote\.origin\.(url|fetch)|branch\..+\.(remote|merge)|user\.(name|email)|extensions\.worktreeconfig)$/;
+const UNSAFE_CORE = /^core\.(sshcommand|askpass|gitproxy|editor|pager|alternaterefscommand)$/;
+
+function checkLocalGitConfig(git: string, cwd: string | undefined): void {
   let lines: string[];
   try {
-    const out = execFileSync(git, ['config', '--local', '--list'], {
+    const out = execFileSync(git, ['config', '--list', '--show-scope'], {
       cwd,
-      env,
+      env: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', PATH: SAFE_PATH },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
     lines = out.split('\n').filter(Boolean);
   } catch {
-    return; // Not a repo, so there's no local config to worry about.
+    return; // Not a repo, so there's no repo config to worry about.
   }
   for (const line of lines) {
-    const split = line.indexOf('=');
-    const key = line.slice(0, split);
-    const value = line.slice(split + 1);
-    if (RISKY_LOCAL_CONFIG.test(key)) {
+    const scoped = line.slice(line.indexOf('\t') + 1);
+    const split = scoped.indexOf('=');
+    const key = (split < 0 ? scoped : scoped.slice(0, split)).toLowerCase();
+    const value = scoped.slice(split + 1);
+    if (!SAFE_LOCAL_CONFIG.test(key) || UNSAFE_CORE.test(key)) {
       throw new AgentError(`refusing to run: this repo's git config sets ${key}. Remove it first.`);
     }
     if (key === 'remote.origin.url' && !ORIGIN_URLS.includes(value)) {
@@ -289,9 +335,9 @@ function checkLocalGitConfig(git: string, cwd: string | undefined, env: NodeJS.P
 }
 
 /** Env with nothing from the caller but HOME, LANG, TERM and TMPDIR. */
-function baseEnv(caller: NodeJS.ProcessEnv, toolDirs: string[]): NodeJS.ProcessEnv {
+function baseEnv(caller: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
-    PATH: [...new Set([...toolDirs, '/usr/bin', '/bin'])].join(':'),
+    PATH: SAFE_PATH,
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_TERMINAL_PROMPT: '0',
@@ -319,6 +365,7 @@ function agentEnv(
     ['core.fsmonitor', 'false'],
     ['protocol.allow', 'never'],
     ['protocol.https.allow', 'always'],
+    ['push.recurseSubmodules', 'no'],
   ];
   const env: NodeJS.ProcessEnv = {
     ...base,
@@ -364,7 +411,13 @@ function scrubber(write: (text: string) => void, secrets: string[]) {
 function run(
   file: string,
   args: string[],
-  opts: { env: NodeJS.ProcessEnv; cwd: string | undefined; deps: Deps; secrets: string[] },
+  opts: {
+    env: NodeJS.ProcessEnv;
+    cwd: string | undefined;
+    deps: Deps;
+    secrets: string[];
+    onSpawn: (child: ChildProcess) => void;
+  },
 ): Promise<number> {
   return new Promise((resolve, reject) => {
     const out = scrubber(opts.deps.stdout, opts.secrets);
@@ -374,6 +427,7 @@ function run(
       cwd: opts.cwd,
       stdio: ['inherit', 'pipe', 'pipe'],
     });
+    opts.onSpawn(child);
     child.stdout.setEncoding('utf8').on('data', out.push);
     child.stderr.setEncoding('utf8').on('data', err.push);
     child.on('error', () => reject(new AgentError(`couldn't start ${file}`)));
@@ -395,13 +449,29 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
   };
   let revoke: (() => Promise<void>) | undefined;
   let ghConfigDir: string | undefined;
+  let child: ChildProcess | undefined;
+  let cleaning: Promise<void> | undefined;
+  const cleanup = () => {
+    cleaning ??= (async () => {
+      if (ghConfigDir) rmSync(ghConfigDir, { recursive: true, force: true });
+      await revoke?.().catch((error: unknown) =>
+        say(`couldn't revoke the token: ${error instanceof Error ? error.message : 'unknown'}`),
+      );
+    })();
+    return cleaning;
+  };
+  // On Ctrl-C, kill or hangup: stop the child, revoke the token, then exit. SIGKILL can't be
+  // caught, so a killed runner leaves the token live until it expires (within the hour).
+  const onSignal = (signal: NodeJS.Signals) => {
+    child?.kill(signal);
+    void cleanup().finally(() => (deps.exit ?? process.exit)(128 + constants.signals[signal]));
+  };
   try {
     const { role, command } = parseArgs(argv);
     const { tool, args } = allowed(role, command);
-    const toolDirs = deps.toolDirs ?? TOOL_DIRS;
-    const file = findTool(tool, toolDirs);
-    const base = baseEnv(deps.env, toolDirs);
-    checkLocalGitConfig(findTool('git', toolDirs), deps.cwd, base);
+    const file = findTool(tool, deps);
+    const base = baseEnv(deps.env);
+    checkLocalGitConfig(findTool('git', deps), deps.cwd);
     const config = loadConfig(deps.configPath ?? DEFAULT_CONFIG, role);
     const key = loadKey(role, deps.env, secrets);
 
@@ -434,6 +504,7 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
     });
     const basicAuth = Buffer.from(`x-access-token:${token}`).toString('base64');
     secrets.push(token, basicAuth);
+    for (const signal of SIGNALS) process.on(signal, onSignal);
     revoke = () =>
       github(deps, {
         method: 'DELETE',
@@ -450,19 +521,22 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
     });
     ghConfigDir = mkdtempSync(join(tmpdir(), 'as-agent-gh-'));
     const env = agentEnv(base, token, basicAuth, ghConfigDir, bot);
-    const code = await run(file, args, { env, cwd: deps.cwd, deps, secrets });
+    const onSpawn = (spawned: ChildProcess) => {
+      child = spawned;
+    };
+    const code = await run(file, args, { env, cwd: deps.cwd, deps, secrets, onSpawn });
     if (code !== 0) say(`${tool} exited with ${code}`);
     return code;
   } catch (error) {
     say(error instanceof AgentError ? error.message : `unexpected error (${String(error)})`);
     return 1;
   } finally {
-    if (ghConfigDir) rmSync(ghConfigDir, { recursive: true, force: true });
-    await revoke?.().catch((error: unknown) =>
-      say(`couldn't revoke the token: ${error instanceof Error ? error.message : 'unknown error'}`),
-    );
+    await cleanup();
+    for (const signal of SIGNALS) process.off(signal, onSignal);
   }
 }
+
+const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 
 if (import.meta.main) {
   process.exitCode = await asAgent(process.argv.slice(2), {

@@ -108,6 +108,8 @@ function setup(
     stderr: (text) => err.push(text),
     configPath,
     toolDirs: [fakeBinaries(opts)],
+    // The fakes live in a user-owned temp dir; one test below checks the real ownership rule.
+    trustTool: () => true,
     now: () => NOW,
   };
   if (opts.cwd) deps.cwd = opts.cwd;
@@ -194,6 +196,8 @@ describe('as-agent', () => {
     expect(env).toContain(`GH_TOKEN=${TOKEN}\n`);
     expect(env).toContain('GIT_CONFIG_GLOBAL=/dev/null\n');
     expect(env).toContain('GIT_TERMINAL_PROMPT=0\n');
+    expect(env).toContain('PATH=/usr/bin:/bin\n');
+    expect(env).toMatch(/GIT_CONFIG_KEY_\d=push\.recurseSubmodules\n/);
     expect(env).not.toContain(KEY_ENV);
     expect(env).not.toContain('DOCENT_BUILDER_APP_KEY');
     for (const leaked of ['GIT_TRACE', 'GIT_CURL_VERBOSE', 'GH_DEBUG', 'EDITOR', '/caller/']) {
@@ -231,14 +235,60 @@ describe('as-agent', () => {
     expect(existsSync(join(dir, 'hook-ran'))).toBe(false);
   });
 
-  test('refuses a repo whose git config could redirect the token', async () => {
+  test.each([
+    [['config', 'http.proxy', 'http://evil:8080'], 'http.proxy'],
+    [['config', 'include.path', '/tmp/x'], 'include.path'],
+    [['config', 'alias.push', '!evil'], 'alias.push'],
+    [['config', 'core.sshCommand', 'evil'], 'core.sshcommand'],
+    [['remote', 'add', 'origin', 'https://github.com/someone/else.git'], 'origin must be'],
+  ])('refuses a repo whose git config sets %j', async (gitArgs, message) => {
     const repo = join(dir, 'repo');
     execFileSync(REAL_GIT, ['init', '-q', repo]);
-    execFileSync(REAL_GIT, ['-C', repo, 'config', 'http.proxy', 'http://evil:8080']);
+    execFileSync(REAL_GIT, ['-C', repo, ...gitArgs]);
     const { deps, calls, logs } = setup({ cwd: repo });
     expect(await asAgent(['builder', '--', ...VIEW], deps)).toBe(1);
     expect(calls).toEqual([]);
-    expect(logs()[0]).toContain('git config sets http.proxy');
+    expect(logs()[0]).toContain(message);
+  });
+
+  test('checks worktree-scope git config too', async () => {
+    const repo = join(dir, 'repo');
+    execFileSync(REAL_GIT, ['init', '-q', repo]);
+    execFileSync(REAL_GIT, ['-C', repo, 'config', 'extensions.worktreeConfig', 'true']);
+    execFileSync(REAL_GIT, [
+      '-C',
+      repo,
+      'config',
+      '--worktree',
+      'url.https://evil/.insteadOf',
+      'x',
+    ]);
+    const { deps, calls, logs } = setup({ cwd: repo });
+    expect(await asAgent(['builder', '--', ...VIEW], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain('git config sets url.https://evil/.insteadof');
+  });
+
+  test('refuses gh or git that a non-root user could replace', async () => {
+    const { deps, calls, logs } = setup();
+    delete deps.trustTool;
+    expect(await asAgent(['builder', '--', ...VIEW], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain('gh must be installed in a root-owned location for as-agent');
+  });
+
+  test('on SIGTERM, kills the command, revokes the token and exits', async () => {
+    const { deps, calls } = setup({ extra: `touch "${dir}/started"; exec sleep 5` });
+    let exitCode: number | undefined;
+    deps.exit = (code) => {
+      exitCode = code;
+    };
+    const running = asAgent(['builder', '--', ...VIEW], deps);
+    while (!existsSync(join(dir, 'started'))) await new Promise((r) => setTimeout(r, 10));
+    process.emit('SIGTERM', 'SIGTERM');
+    await running;
+    expect(exitCode).toBe(143);
+    expect(calls.filter((call) => call.method === 'DELETE')).toHaveLength(1);
   });
 
   test('scrubs the token from what the command prints', async () => {
@@ -315,6 +365,19 @@ describe('as-agent allowlist', () => {
     ['builder', 'gh api graphql --input query.json'],
     ['builder', 'gh api graphql --input=query.json'],
     ['builder', 'gh api /repos/hartz89/docent --jq --method=POST'],
+    ['builder', 'gh api /user --jq $ENV.GH_TOKEN|@base64'],
+    ['builder', 'gh api /user -q .login'],
+    ['builder', 'gh api /user -q.login'],
+    ['builder', 'gh api /user --jq=.login'],
+    ['builder', 'gh pr view 3 --json title --template {{.title}}'],
+    ['builder', 'gh pr view 3 --json title -t x'],
+    ['builder', 'gh pr view 3 --json title --template=x'],
+    ['builder', 'gh pr create --web'],
+    ['builder', 'gh pr create -w'],
+    ['builder', 'gh pr edit 3 --editor'],
+    ['builder', 'gh pr comment 3 -e'],
+    ['reviewer', 'gh pr review 3 --web'],
+    ['reviewer', 'gh pr view 3 --json body --jq .body'],
     ['builder', 'gh repo delete hartz89/docent'],
     ['builder', 'rm -rf /'],
     ['reviewer', 'git push origin feat/x'],
@@ -335,8 +398,8 @@ describe('as-agent allowlist', () => {
     ['gh pr create --title x --body-file body.md', 'gh pr create --title x --body-file body.md'],
     ['gh pr merge 3 --squash', 'gh pr merge 3 --squash'],
     [
-      'gh api /repos/hartz89/docent/pulls -X GET --jq .[].number',
-      'gh api /repos/hartz89/docent/pulls -X GET --jq .[].number',
+      'gh api /repos/hartz89/docent/pulls -X GET --paginate',
+      'gh api /repos/hartz89/docent/pulls -X GET --paginate',
     ],
   ];
 
