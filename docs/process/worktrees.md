@@ -14,5 +14,6 @@ Every agent works in its own git worktree. The main checkout is never touched, a
 ## Gotchas
 
 - **Every command, `!` commands included, must target the session's own worktree.** A command that changes into the main checkout to run git is refused. The guard is working as intended; land through GitHub instead.
+- **Pass PR descriptions as a file** (`gh pr create --body-file <path>`). A command whose inline text mentions git, such as a heredoc body, can trip the worktree guard.
 - **`gh repo create --source .` fails inside a worktree.** A worktree's `.git` is a file, not a folder. Create the repo, then `git remote add origin …` and push.
 - **Creating a public repo, publishing a package, or any other new public surface** is blocked by auto mode's classifier, and should stay that way. Prepare everything, then hand Ryan a one-line `!` command. See [`decisions.md`](decisions.md).
