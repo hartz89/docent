@@ -11,6 +11,10 @@ Calls that are the maintainer's, batched so they don't block work. The rules are
 - **2026-11-06 · License: Apache-2.0.** It includes an explicit patent grant, and its contribution terms (section 5) suit a project that wants community-built vendor adapters. The maintainer's other repos use MIT, which would also have been fine. This is easy to change until the first outside contribution lands; after that it needs contributors' consent.
 - **2026-11-06 · Eval fixtures from private repos stay out of this public repo.** They describe private code. The plan: a private fixtures repo of manifests (repo, SHAs, expected findings), fetched at run time, plus a committed public core set built from open-source PRs. See [`../docs/research/2026-11-06-eval-fixtures.md`](../docs/research/2026-11-06-eval-fixtures.md).
 
+- **2026-11-07 · The `docent` CLI lives in `apps/server` (`src/cli.ts`), not a new `apps/cli`.** It only parses arguments, wires the GitHub and model boundaries, and starts the server, which already owns startup. A separate package would add a workspace, a tsconfig and a dependency edge for about 100 lines. Split it out when it grows commands that don't start the server.
+- **2026-11-07 · The tour's default model is `claude-opus-5-5`.** One real run on a 78-line PR cost $0.06 to $0.13. Override with `--model` or `DOCENT_MODEL`.
+- **2026-11-07 · Tour cost comes from the result message's `usage`, priced with a list-price table in `apps/server/src/agent.ts`.** Assistant frames carry a start-of-stream usage snapshot (output tokens near zero), and `total_cost_usd` includes the parent session on resumes. The table needs updating when prices change.
+
 ## Decided by the maintainer
 
 - **2026-11-06 · Stack:** Hono server, Vite + React + TanStack Router/Query web app, TypeScript 7, pnpm. Chosen on agentic legibility, performance and product fit; familiarity didn't count.
