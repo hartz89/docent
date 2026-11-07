@@ -40,7 +40,7 @@ function fakeBinaries(): string {
     `env > "${dir}/probe.env"`,
     `"${REAL_GIT}" var GIT_AUTHOR_IDENT > "${dir}/probe.ident"`,
     `"${REAL_GIT}" config --get http.https://github.com/.extraheader > "${dir}/probe.header"`,
-    'exit "${FAKE_EXIT:-0}"',
+    'exit "$FAKE_EXIT"',
   ].join('\n');
   for (const name of ['gh', 'git']) writeFileSync(join(bin, name), script, { mode: 0o755 });
   return bin;
