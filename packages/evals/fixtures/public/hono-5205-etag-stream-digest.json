@@ -1,0 +1,35 @@
+{
+  "id": "hono-5205-etag-stream-digest",
+  "visibility": "public",
+  "source": {
+    "repo": "honojs/hono",
+    "pr": 5205,
+    "base": "cf785287b5ab41496a333c9c4b53b0f98ac731b9",
+    "head": "15eb50bf39e4e93ae13514f735353140f257f911"
+  },
+  "license": "MIT",
+  "title": "fix(etag): stabilize digest across stream chunks",
+  "size": "small",
+  "jobs": ["tour"],
+  "expectedFindings": [
+    {
+      "file": "src/middleware/etag/digest.ts",
+      "lines": { "start": 54, "end": 54 },
+      "description": "A partial chunk is kept with `value.subarray(offset)`, a view on the producer's buffer, across `reader.read()` calls. A producer that reuses its buffer overwrites those bytes before they're hashed, so the ETag is wrong (e.g. [A, B] hashed as [B, B])."
+    }
+  ],
+  "mustNotSkip": [
+    {
+      "file": "src/middleware/etag/digest.ts",
+      "lines": { "start": 41, "end": 86 },
+      "reason": "The new chunk-buffering loop and final flush."
+    }
+  ],
+  "expectDangerFlag": false,
+  "evidence": [
+    {
+      "url": "https://github.com/honojs/hono/pull/5239",
+      "note": "Fix PR: \"This regression was introduced in #5205\". Changes `subarray(offset)` to `slice(offset)` on this line."
+    }
+  ]
+}

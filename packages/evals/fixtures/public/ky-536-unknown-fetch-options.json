@@ -1,0 +1,62 @@
+{
+  "id": "ky-536-unknown-fetch-options",
+  "visibility": "public",
+  "source": {
+    "repo": "sindresorhus/ky",
+    "pr": 536,
+    "base": "577dd4c5e36f214930a22247523a73d37847c335",
+    "head": "7db62be1c026dadc8c77e376f496584bab69275d"
+  },
+  "license": "MIT",
+  "title": "Pass unknown options to fetch",
+  "size": "medium",
+  "jobs": ["tour", "skip"],
+  "expectedFindings": [
+    {
+      "file": "source/utils/options.ts",
+      "lines": { "start": 10, "end": 10 },
+      "description": "Request options are recognised with `key in request`. Firefox's Request has no `body` property, so `body` is treated as unknown and passed to fetch a second time, which breaks multipart boundaries.",
+      "externalKnowledge": "Firefox's Request objects have no readable `body` property, so `'body' in request` is false there."
+    }
+  ],
+  "mustNotSkip": [
+    {
+      "file": "source/utils/options.ts",
+      "lines": { "start": 1, "end": 16 },
+      "reason": "New file: decides which options are forwarded to fetch."
+    },
+    {
+      "file": "source/core/Ky.ts",
+      "lines": { "start": 298, "end": 304 },
+      "reason": "Every request now passes the unknown options to fetch."
+    },
+    {
+      "file": "source/core/constants.ts",
+      "lines": { "start": 49, "end": 60 },
+      "reason": "The registry of Ky's own option names that the filter relies on."
+    },
+    {
+      "file": "source/utils/timeout.ts",
+      "lines": { "start": 11, "end": 11 },
+      "reason": "New positional parameter on timeout(): a signature change for every caller."
+    }
+  ],
+  "shouldSkip": [
+    {
+      "file": "source/types/options.ts",
+      "lines": { "start": 194, "end": 236 },
+      "reason": "The `method` and `headers` doc blocks, moved unchanged from KyOptions into Options."
+    }
+  ],
+  "expectDangerFlag": false,
+  "evidence": [
+    {
+      "url": "https://github.com/sindresorhus/ky/pull/540",
+      "note": "Fix PR: \"Fixes: #539 (introduced in #536)\". Adds an explicit registry of Request init keys so `body` is never forwarded."
+    },
+    {
+      "url": "https://github.com/sindresorhus/ky/issues/539",
+      "note": "Bug report: multipart boundary mismatch."
+    }
+  ]
+}

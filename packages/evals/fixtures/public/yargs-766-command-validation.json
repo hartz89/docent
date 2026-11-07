@@ -1,0 +1,35 @@
+{
+  "id": "yargs-766-command-validation",
+  "visibility": "public",
+  "source": {
+    "repo": "yargs/yargs",
+    "pr": 766,
+    "base": "920e7f69832d2a150ab88b94f54abd4588445714",
+    "head": "dadd3008e5234678d4a0edc1780fbafcd8dacf7e"
+  },
+  "license": "MIT",
+  "title": "feat: rethink how options are inherited by commands",
+  "size": "large",
+  "jobs": ["tour"],
+  "expectedFindings": [
+    {
+      "file": "lib/command.js",
+      "lines": { "start": 176, "end": 184 },
+      "description": "Validation now runs inside runCommand, but after the handler and without knowing which keys are populated positionals. In strict() mode, `command <foo> [bar]` reports its own positionals as unknown arguments, and the handler has already run on input that then fails validation."
+    }
+  ],
+  "mustNotSkip": [
+    {
+      "file": "lib/command.js",
+      "lines": { "start": 176, "end": 184 },
+      "reason": "Order of positional population, handler, and the new post-hoc validation."
+    }
+  ],
+  "expectDangerFlag": false,
+  "evidence": [
+    {
+      "url": "https://github.com/yargs/yargs/pull/784",
+      "note": "Fix PR: \"address positional argument strict() bug introduced in #766\". Passes a positional map into validation and moves the handler after it."
+    }
+  ]
+}
