@@ -1,0 +1,45 @@
+{
+  "id": "vite-15365-env-file-watch",
+  "visibility": "public",
+  "source": {
+    "repo": "vitejs/vite",
+    "pr": 15365,
+    "base": "6ace32b41dbad2ea0ee10f97e7cc662dd03f81e1",
+    "head": "c8c39a1682cc41b8e7a98269f8bc1e964653a95d"
+  },
+  "license": "MIT",
+  "title": "fix: only watch needed env files",
+  "size": "small",
+  "jobs": ["tour"],
+  "expectedFindings": [
+    {
+      "file": "packages/vite/src/node/server/hmr.ts",
+      "lines": { "start": 77, "end": 77 },
+      "description": "`getEnvFilesForMode` now returns absolute paths, but HMR still compares them to the bare `fileName`. Editing a .env file no longer restarts the dev server."
+    }
+  ],
+  "mustNotSkip": [
+    {
+      "file": "packages/vite/src/node/server/hmr.ts",
+      "lines": { "start": 77, "end": 77 },
+      "reason": "The caller that wasn't updated for the new return value."
+    },
+    {
+      "file": "packages/vite/src/node/env.ts",
+      "lines": { "start": 8, "end": 14 },
+      "reason": "Changes what getEnvFilesForMode returns, from file names to joined paths."
+    },
+    {
+      "file": "packages/vite/src/node/server/index.ts",
+      "lines": { "start": 418, "end": 422 },
+      "reason": "Changes what the dev server watches."
+    }
+  ],
+  "expectDangerFlag": false,
+  "evidence": [
+    {
+      "url": "https://github.com/vitejs/vite/pull/15559",
+      "note": "Fix PR: \"hmr for env files, regression from #15365\". Compares against `file` (the full path) instead of `fileName`."
+    }
+  ]
+}

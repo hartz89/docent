@@ -1,0 +1,39 @@
+{
+  "id": "vite-4118-slash-esm",
+  "visibility": "public",
+  "source": {
+    "repo": "vitejs/vite",
+    "pr": 4118,
+    "base": "bf32b41bc4ac89e1fd39c27fb22c3bfa0a150152",
+    "head": "c737787a1d6449070dfe991beaa4f655966cce54"
+  },
+  "license": "MIT",
+  "title": "chore(deps): update dependency slash to v4",
+  "size": "small",
+  "jobs": ["skip"],
+  "expectedFindings": [
+    {
+      "file": "packages/plugin-vue/package.json",
+      "lines": { "start": 41, "end": 41 },
+      "description": "A bot dependency bump to slash v4, which is pure ESM. plugin-vue loads it with require(), so its dev mode breaks. CI passes only because CI bundles plugin-vue with esbuild."
+    }
+  ],
+  "mustNotSkip": [
+    {
+      "file": "packages/plugin-vue/package.json",
+      "lines": { "start": 41, "end": 41 },
+      "reason": "A major-version bump hidden behind lockfile noise; yarn.lock is safe to skip."
+    }
+  ],
+  "expectDangerFlag": false,
+  "evidence": [
+    {
+      "url": "https://github.com/vitejs/vite/pull/4118#issuecomment-893543022",
+      "note": "Maintainer: \"this actually breaks plugin-vue's dev mode since slash 4 is \"type\": \"module\" and can no longer be required\"."
+    },
+    {
+      "url": "https://github.com/vitejs/vite/pull/4519",
+      "note": "Revert PR: \"revert update dependency slash to v4 (#4118)\"."
+    }
+  ]
+}

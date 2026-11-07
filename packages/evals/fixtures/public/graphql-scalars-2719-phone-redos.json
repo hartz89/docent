@@ -1,0 +1,39 @@
+{
+  "id": "graphql-scalars-2719-phone-redos",
+  "visibility": "public",
+  "source": {
+    "repo": "graphql-hive/graphql-scalars",
+    "pr": 2719,
+    "base": "5471b056d7ff468f83e27c24ee004dbd5d3ff5d4",
+    "head": "387d8ebb798a5a16f03844a0318de32fcc29d565"
+  },
+  "license": "MIT",
+  "title": "PhoneNumber scalar is not fully compatible with E.164 format so updated regex to support phone number with extension",
+  "size": "medium",
+  "jobs": ["danger", "skip", "tour"],
+  "expectedFindings": [
+    {
+      "file": "src/scalars/PhoneNumber.ts",
+      "lines": { "start": 8, "end": 8 },
+      "description": "The new regex `\\d+\\)?((\\-|\\x20)?\\d+)+$` nests quantifiers with an optional separator, so it backtracks exponentially. About 30 digits plus one bad character blocks the thread for seconds, during GraphQL validation, before any auth runs."
+    }
+  ],
+  "mustNotSkip": [
+    {
+      "file": "src/scalars/PhoneNumber.ts",
+      "lines": { "start": 8, "end": 8 },
+      "reason": "The one-line regex change, hidden behind about 120 lines of rewritten tests."
+    }
+  ],
+  "expectDangerFlag": true,
+  "evidence": [
+    {
+      "url": "https://github.com/advisories/GHSA-x8rm-f576-gq67",
+      "note": "Advisory: PhoneNumber scalar ReDoS, affected >= 1.24.1; \"Introduced by #2719 (c7f58da16)\"."
+    },
+    {
+      "url": "https://github.com/graphql-hive/graphql-scalars/commit/210fd2485641afa2452800c00144245c74361701",
+      "note": "Security fix: replaces the regex with an equivalent linear-time pattern."
+    }
+  ]
+}

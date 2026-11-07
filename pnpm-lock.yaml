@@ -75,6 +75,8 @@ importers:
 
   packages/core: {}
 
+  packages/evals: {}
+
 packages:
 
   '@biomejs/biome@2.6.5':
