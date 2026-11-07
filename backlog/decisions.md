@@ -1,6 +1,6 @@
 # Decisions
 
-Calls that are Ryan's, batched so they don't block work. The rules are in AGENTS.md, under "Decisions". Once a decision is answered, it moves out of this file and into the doc or code it affects.
+Calls that are the maintainer's, batched so they don't block work. The rules are in AGENTS.md, under "Decisions". Once a decision is answered, it moves out of this file and into the doc or code it affects.
 
 ## Open
 
@@ -8,10 +8,10 @@ Calls that are Ryan's, batched so they don't block work. The rules are in AGENTS
 
 ## Done, reversible
 
-- **2026-11-06 · License: Apache-2.0.** It includes an explicit patent grant, and its contribution terms (section 5) suit a project that wants community-built vendor adapters. Ryan's other repos use MIT, which would also have been fine. This is easy to change until the first outside contribution lands; after that it needs contributors' consent.
+- **2026-11-06 · License: Apache-2.0.** It includes an explicit patent grant, and its contribution terms (section 5) suit a project that wants community-built vendor adapters. The maintainer's other repos use MIT, which would also have been fine. This is easy to change until the first outside contribution lands; after that it needs contributors' consent.
 - **2026-11-06 · Eval fixtures from private repos stay out of this public repo.** They describe private code. The plan: a private fixtures repo of manifests (repo, SHAs, expected findings), fetched at run time, plus a committed public core set built from open-source PRs. See [`../docs/research/2026-11-06-eval-fixtures.md`](../docs/research/2026-11-06-eval-fixtures.md).
 
-## Decided by Ryan
+## Decided by the maintainer
 
 - **2026-11-06 · Stack:** Hono server, Vite + React + TanStack Router/Query web app, TypeScript 7, pnpm. Chosen on agentic legibility, performance and product fit; familiarity didn't count.
 - **2026-11-06 · Open source from day one.**

@@ -17,4 +17,4 @@ Ranked. The top unclaimed item is next. Each item states the outcome it buys. Be
 
    Model-backed jobs run on a label or in a merge queue, since fork PRs get no secrets.
 9. **First scheduled maintenance agents:** dependency updates, architecture audits against the guards, and doc drift checks (does AGENTS.md still match the code?).
-10. **Briefs.** Briefs are triggered by how much the repo changed, not by the calendar. Add a skill that writes them, and keep notes on what Ryan finds useful.
+10. **Briefs.** Briefs are triggered by how much the repo changed, not by the calendar. Add a skill that writes them, and keep notes on what the maintainer finds useful.
