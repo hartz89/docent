@@ -40,7 +40,7 @@ function merge(a: readonly JobTotal[], b: readonly JobTotal[]): JobTotal[] {
 }
 
 describe('costByJob', () => {
-  test('K3: each job present gets its call count and exact totals; absent jobs are left out', () => {
+  test('K2, K3: each job present gets its call count and exact totals; absent jobs are left out', () => {
     fc.assert(
       fc.property(records, (rs) => {
         const totals = costByJob(rs);

@@ -255,7 +255,7 @@ describe('checkCoverage, by example', () => {
     expect(report).toEqual({ unexplained: [], doubled: [], unknownSkips: [] });
   });
 
-  test('C1: removed lines of a renamed file are found under the old path, not the new one', () => {
+  test('C1, D1: removed lines of a renamed file are found under the old path, not the new one', () => {
     const report = checkCoverage(
       diff,
       tour([

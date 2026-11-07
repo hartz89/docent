@@ -3,11 +3,12 @@
 import { expect, test } from 'vitest';
 import type { Anchor } from './anchor.ts';
 import { base } from './arbitraries.ts';
-import type { SentBatch } from './batch.ts';
-import type { Answer } from './question.ts';
+import type { BatchItem, SentBatch } from './batch.ts';
+import type { Job } from './cost.ts';
+import type { DiffFile } from './diff.ts';
+import { type Answer, type QuestionThread, threadId } from './question.ts';
 import { type Review, reviewId } from './review.ts';
-import type { Skip, Stop } from './tour.ts';
-import { stopId } from './tour.ts';
+import { type Skip, type Stop, stopId, type Tour } from './tour.ts';
 
 test('illegal states do not typecheck', () => {
   // R2: ids and commits can't be swapped.
@@ -58,6 +59,47 @@ test('illegal states do not typecheck', () => {
     items: [],
     sentAt: base,
   };
+
+  // R1: a review always has both commits.
+  // @ts-expect-error no head commit
+  const _noHead: Review = { id: reviewId('r'), pr: { repo: 'o/r', number: 1 }, base };
+
+  // D1: a diff file always says where it lived at base.
+  // @ts-expect-error no oldPath
+  const _file: DiffFile = { path: 'a', hunks: [] };
+
+  // T1: a tour is written for one head commit.
+  // @ts-expect-error no head commit
+  const _tour: Tour = { review: reviewId('r'), stops: [], skips: [] };
+
+  // T2: stop kinds are a closed list.
+  // @ts-expect-error not a stop kind
+  const _kind: Stop = { id: stopId('s'), kind: 'summary', title: '', body: '', anchors: [] };
+
+  // S1: a skip targets a file or a hunk, nothing else.
+  // @ts-expect-error not a skip target
+  const _target: Skip['target'] = { kind: 'line', path: 'a' };
+
+  // Q1: only the latest exchange can be waiting.
+  const _thread: QuestionThread = {
+    id: threadId('t'),
+    anchor: stale,
+    // @ts-expect-error an earlier exchange still waiting
+    earlier: [{ question: 'why?', answer: { state: 'waiting' } }],
+    latest: { question: 'and?', answer: { state: 'waiting' } },
+  };
+
+  // Q2: an author answer always names its session.
+  // @ts-expect-error no session id
+  const _author: Answer = { source: 'author_session', text: '', check: { state: 'pending' } };
+
+  // B1: a suggestion always carries its replacement lines.
+  // @ts-expect-error no replacement
+  const _suggestion: BatchItem = { kind: 'suggestion', anchor: stale, comment: '' };
+
+  // K1: jobs are a closed list, so a typo is caught.
+  // @ts-expect-error a typo
+  const _job: Job = 'tuor';
 
   expect(true).toBe(true);
 });
