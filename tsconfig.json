@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "packages/core" },
+    { "path": "packages/evals" },
     { "path": "apps/server" },
     { "path": "apps/web" },
     { "path": "e2e" },

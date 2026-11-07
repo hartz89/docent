@@ -1,0 +1,35 @@
+{
+  "id": "hono-4267-client-index-param",
+  "visibility": "public",
+  "source": {
+    "repo": "honojs/hono",
+    "pr": 4267,
+    "base": "407d1bdf64048c4876b883bc1b5cf270e12791e7",
+    "head": "bb16241b3c97120c979f6371c4d93e20e17b5852"
+  },
+  "license": "MIT",
+  "title": "fix(client): remove `index` string when calling `$url()`",
+  "size": "small",
+  "jobs": ["tour"],
+  "expectedFindings": [
+    {
+      "file": "src/client/client.ts",
+      "lines": { "start": 169, "end": 169 },
+      "description": "`removeIndexString` runs after path params are substituted, so a param whose value is \"index\" (e.g. `/docs/:page` with `page: 'index'`) is stripped and `$url()` returns `/docs`. `fetch` already strips before substituting."
+    }
+  ],
+  "mustNotSkip": [
+    {
+      "file": "src/client/client.ts",
+      "lines": { "start": 169, "end": 169 },
+      "reason": "The PR's only code change."
+    }
+  ],
+  "expectDangerFlag": false,
+  "evidence": [
+    {
+      "url": "https://github.com/honojs/hono/pull/5297",
+      "note": "Fix PR: \"This is a follow-up to #4267, which added the removeIndexString call ... and placed it at the end of the sequence\". Moves it ahead of param substitution."
+    }
+  ]
+}
