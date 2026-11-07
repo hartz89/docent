@@ -16,9 +16,15 @@ package.json              @hartz89
 /.npmrc                   @hartz89
 /biome.json               @hartz89
 tsconfig*.json            @hartz89
+/vitest.config.ts         @hartz89
+/playwright.config.ts     @hartz89
+/.nvmrc                   @hartz89
+/lefthook.yml             @hartz89
 
-# The security boundary: server auth and origin checks.
-/apps/server/src/app.ts   @hartz89
+# The security boundary: the server holds the origin checks and token auth.
+/apps/server/src/         @hartz89
+# Its tests stay unowned, so test-only changes don't wait (a later line with no owner wins).
+/apps/server/src/**/*.test.ts
 
 # Legal: licensing terms.
 /LICENSE                  @hartz89

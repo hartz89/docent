@@ -4,8 +4,10 @@
 
 | Role       | App does                                          | Permissions on hartz89/docent                                                         |
 | ---------- | ------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `builder`  | Pushes branches, authors commits, opens and merges PRs | Contents: write. Pull requests: write. Workflows: write. Checks: read. Metadata: read. |
-| `reviewer` | Posts reviews (the future AI reviewer)            | Pull requests: write. Contents: read. Metadata: read.                                 |
+| `builder`  | Pushes branches, opens and merges PRs  | Contents: write. Pull requests: write. Checks: read. Metadata: read. |
+| `reviewer` | Posts reviews (the future AI reviewer) | Pull requests: write. Contents: read. Metadata: read.                |
+
+The builder has no Workflows permission on purpose. Changes to CI are the maintainer's, so GitHub rejects a builder push that touches `.github/workflows/`.
 
 ## How tiers become mechanical
 
@@ -27,9 +29,14 @@ node scripts/as-agent.ts builder -- gh pr merge <number> --squash
 node scripts/as-agent.ts reviewer -- gh pr review <number> --comment --body-file <path>
 ```
 
-From the app's slug, it finds the app and its installation on this repo, then mints a one-hour installation token. It runs the command with `GH_TOKEN` and the bot's git author and committer set. Git gets the token through `GIT_CONFIG_*` env vars, so it never shows in argv, a remote URL or `.git/config`. The token and key are never printed.
+It finds the app's installation on this repo and mints a token scoped to that role's permissions. Then it runs the command with the token and the bot's git identity, and revokes the token when the command ends. The command is kept on a short leash:
+- it runs from a fixed `gh` or `git` path, never one found through the caller's `PATH`;
+- its env is built from scratch: nothing from the caller passes except `HOME`, `LANG`, `TERM` and `TMPDIR`, so no key, `GIT_TRACE` or `EDITOR` gets through;
+- git hooks, global and system git config, and non-HTTPS transports are switched off, and a repo whose local git config sets proxies, URL rewrites or includes is refused;
+- the token reaches git only through `GIT_CONFIG_*` env vars, never argv, a remote URL or `.git/config`;
+- everything the command prints is passed through a scrubber, so the token, key and auth header never show.
 
-**Only a short list of commands can run this way.** Each role has an allowlist in the runner: the builder can push a non-`main` branch without force, use most `gh pr` commands, squash-merge without `--admin`, and make read-only `gh api` calls; the reviewer can read PRs, review, comment, and make read-only `gh api` calls. Anything else is refused before a token exists. `scripts/` is code-owned, so widening the list needs the maintainer's approval. That's why a single `Bash(node scripts/as-agent.ts:*)` permission rule is safe.
+**Only a short list of commands can run this way.** Each role has an allowlist in the runner: the builder can push a non-`main` branch without force, use most `gh pr` commands, squash-merge without `--admin`, and make read-only `gh api` calls; the reviewer can read PRs, review, comment, and make read-only `gh api` calls. Anything else is refused before a token exists. `scripts/` is code-owned, so widening the list needs the maintainer's approval. That's why a single `Bash(node scripts/as-agent.ts:*)` permission rule is safe. Agents are only *forced* through the runner once settings also deny plain `gh` and `git push`, which comes after the apps work.
 
 **Until the apps exist,** the script stops with a message saying so. Run the command without it, which uses the maintainer's `gh` login, and say so in the PR's known gaps.
 
@@ -46,7 +53,7 @@ For each role (`builder`, then `reviewer`):
    rm ~/Downloads/docent-builder.*.private-key.pem
    ```
 
-   In CI, put the same base64 value (or the raw PEM) in `DOCENT_BUILDER_APP_KEY`.
+   Don't store app keys as repository secrets. If CI ever needs an app, its key goes in a GitHub environment limited to `main`. That's a later decision. The runner already reads `DOCENT_<ROLE>_APP_KEY` for that case.
 4. **Fill in** [`.github/agent-apps.json`](../../.github/agent-apps.json): the app's slug (the name in its URL), and copy the App ID from the app's settings page, for example `{ "slug": "docent-builder", "appId": 123456 }`. Land that through a PR. The script finds the installation id itself. It can look up the app id from the slug too, but only for public apps; GitHub hides private ones, like these, from that lookup.
 5. **Check it:** `node scripts/as-agent.ts builder -- gh api /installation/repositories --jq '.repositories[].full_name'` prints `hartz89/docent`.
 
