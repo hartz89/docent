@@ -1,40 +1,55 @@
 import { endLine } from './anchor.ts';
+import type { CommitSha } from './basics.ts';
 import { type ChangedLine, changedLines, type Diff, type LineRef, type Side } from './diff.ts';
 import type { Skip, StopId, Tour } from './tour.ts';
 
-/** Where a changed line is explained or skipped (C1). */
-export type Home =
-  | { readonly kind: 'stop'; readonly stop: StopId }
-  | { readonly kind: 'skip'; readonly skip: Skip };
-
-export type CoverageReport = {
-  /** Changed lines with no home (C5). */
-  readonly unexplained: readonly LineRef[];
-  /** Changed lines with two or more homes (C5). */
-  readonly doubled: readonly { readonly line: LineRef; readonly homes: readonly Home[] }[];
-  /** Skips whose target isn't in the diff (C6). */
-  readonly unknownSkips: readonly Skip[];
+/** A changed line that is both skipped and explained (C5). */
+export type Conflict = {
+  readonly line: LineRef;
+  readonly skips: readonly Skip[];
+  readonly stops: readonly StopId[];
 };
 
-/** Checks that every changed line in the diff has exactly one home in the tour (C1–C6). */
+export type CoverageReport =
+  /** C7: the tour was written for another head, so its lines weren't checked. */
+  | { readonly state: 'stale'; readonly tourHead: CommitSha; readonly diffHead: CommitSha }
+  | {
+      readonly state: 'checked';
+      /** Changed lines neither skipped nor explained (C5). */
+      readonly unexplained: readonly LineRef[];
+      /** Changed lines both skipped and explained (C5). */
+      readonly conflicts: readonly Conflict[];
+      /** Skips whose target isn't in the diff (C6). */
+      readonly unknownSkips: readonly Skip[];
+    };
+
+/** Checks that every changed line is skipped or explained, and not both (C1–C7). */
 export function checkCoverage(diff: Diff, tour: Tour): CoverageReport {
+  if (tour.head !== diff.head) {
+    return { state: 'stale', tourHead: tour.head, diffHead: diff.head };
+  }
   const lines = changedLines(diff);
-  const homes = new Map<string, Home[]>(lines.map((line) => [keyOf(line), []]));
-  const addHome = (line: LineRef, home: Home) => homes.get(keyOf(line))?.push(home);
+  const homes = new Map(
+    lines.map((line) => [keyOf(line), { skips: [] as Skip[], stops: [] as StopId[] }]),
+  );
 
   const unknownSkips: Skip[] = [];
   for (const skip of tour.skips) {
+    if (!targetExists(diff, skip)) {
+      unknownSkips.push(skip); // C6
+      continue;
+    }
+    if (skip.judgedAt !== diff.head) continue; // C3
     const target = skip.target;
-    const skipped = lines.filter((line) =>
-      target.kind === 'file' ? line.file === target.path : line.hunk === target.hunk,
-    );
-    if (!targetExists(diff, skip)) unknownSkips.push(skip);
-    for (const line of skipped) addHome(line, { kind: 'skip', skip });
+    for (const line of lines) {
+      const hit = target.kind === 'file' ? line.file === target.path : line.hunk === target.hunk;
+      if (hit) homes.get(keyOf(line))?.skips.push(skip);
+    }
   }
 
   for (const stop of tour.stops) {
     if (stop.kind !== 'core_change' && stop.kind !== 'edge') continue; // C2
-    const covered = new Set<string>(); // C4: one home per stop, however many anchors overlap
+    const covered = new Set<string>();
     for (const anchor of stop.anchors) {
       if (anchor.state !== 'current') continue; // C3
       const side = sideAt(diff, anchor.at.commit);
@@ -44,17 +59,18 @@ export function checkCoverage(diff: Diff, tour: Tour): CoverageReport {
         covered.add(keyOf({ path: anchor.at.path, side, line }));
       }
     }
-    for (const key of covered) homes.get(key)?.push({ kind: 'stop', stop: stop.id });
+    for (const key of covered) homes.get(key)?.stops.push(stop.id);
   }
 
   const unexplained: LineRef[] = [];
-  const doubled: { line: LineRef; homes: Home[] }[] = [];
+  const conflicts: Conflict[] = [];
   for (const line of lines) {
-    const lineHomes = homes.get(keyOf(line)) ?? [];
-    if (lineHomes.length === 0) unexplained.push(refOf(line));
-    else if (lineHomes.length > 1) doubled.push({ line: refOf(line), homes: lineHomes });
+    const { skips, stops } = homes.get(keyOf(line)) ?? { skips: [], stops: [] };
+    if (skips.length === 0 && stops.length === 0) unexplained.push(refOf(line));
+    else if (skips.length > 0 && stops.length > 0)
+      conflicts.push({ line: refOf(line), skips, stops });
   }
-  return { unexplained, doubled, unknownSkips };
+  return { state: 'checked', unexplained, conflicts, unknownSkips };
 }
 
 /** A hunk or file can exist with no changed lines (a pure rename, say); skipping it is fine. */

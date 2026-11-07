@@ -1,13 +1,20 @@
 import fc from 'fast-check';
 import { describe, expect, test } from 'vitest';
-import { type CostRecord, costByJob, JOBS, type JobTotal } from './cost.ts';
+import {
+  type CostRecord,
+  costByJob,
+  JOBS,
+  type JobTotal,
+  type MicroUsd,
+  microUsd,
+} from './cost.ts';
 
 const count = fc.nat({ max: 1_000_000 });
 const record: fc.Arbitrary<CostRecord> = fc.record({
   job: fc.constantFrom(...JOBS),
   model: fc.constantFrom('opus', 'haiku'),
   tokens: fc.record({ input: count, output: count, cacheRead: count, cacheWrite: count }),
-  costMicroUsd: count,
+  costMicroUsd: count.map((n) => microUsd(n) as MicroUsd),
   latencyMs: count,
 });
 const records = fc.array(record, { maxLength: 30 });
@@ -32,7 +39,7 @@ function merge(a: readonly JobTotal[], b: readonly JobTotal[]): JobTotal[] {
           cacheRead: x.tokens.cacheRead + y.tokens.cacheRead,
           cacheWrite: x.tokens.cacheWrite + y.tokens.cacheWrite,
         },
-        costMicroUsd: x.costMicroUsd + y.costMicroUsd,
+        costMicroUsd: (x.costMicroUsd + y.costMicroUsd) as MicroUsd,
         latencyMs: x.latencyMs + y.latencyMs,
       },
     ];
@@ -40,7 +47,7 @@ function merge(a: readonly JobTotal[], b: readonly JobTotal[]): JobTotal[] {
 }
 
 describe('costByJob', () => {
-  test('K2, K3: each job present gets its call count and exact totals; absent jobs are left out', () => {
+  test('K3: each job present gets its call count and exact totals; absent jobs are left out', () => {
     fc.assert(
       fc.property(records, (rs) => {
         const totals = costByJob(rs);
@@ -62,6 +69,18 @@ describe('costByJob', () => {
         expect(merge(costByJob(a), costByJob(b))).toEqual(costByJob([...a, ...b]));
       }),
     );
+  });
+
+  test('K2: only whole, non-negative micro-dollar amounts are accepted', () => {
+    fc.assert(
+      fc.property(fc.double(), (amount) => {
+        const ok = Number.isSafeInteger(amount) && amount >= 0;
+        expect(microUsd(amount)).toBe(ok ? amount : null);
+      }),
+    );
+    expect(microUsd(1_250)).toBe(1_250);
+    expect(microUsd(0.5)).toBeNull();
+    expect(microUsd(-1)).toBeNull();
   });
 
   test('K3: no records, no totals', () => {

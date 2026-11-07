@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, test } from 'vitest';
-import { base, diffs, head, placeHunks, rawFiles } from './arbitraries.ts';
+import { base, diffs, head, placeHunks, rawFiles } from './arbitraries.testing.ts';
 import { changedLines, type Diff, makeDiff } from './diff.ts';
 
 const ids = (diff: Diff) => diff.files.flatMap((file) => file.hunks.map((hunk) => hunk.id));

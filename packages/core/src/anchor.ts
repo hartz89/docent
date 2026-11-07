@@ -7,17 +7,20 @@ export type Location = {
   readonly startLine: number;
 };
 
+/** Up to two lines just before and just after an anchor's text, to tell copies apart (A1, A4). */
+export type Context = { readonly before: readonly string[]; readonly after: readonly string[] };
+
+const CONTEXT_LINES = 2;
+
+type Cited = { readonly lines: NonEmpty<string>; readonly context: Context };
+
 /**
  * The exact code a claim cites, and where it is (A1, A2). An out-of-date anchor keeps only the
  * place it was last seen, under a different name, so it can't be read as a current location.
  */
 export type Anchor =
-  | { readonly state: 'current'; readonly lines: NonEmpty<string>; readonly at: Location }
-  | {
-      readonly state: 'out_of_date';
-      readonly lines: NonEmpty<string>;
-      readonly lastSeen: Location;
-    };
+  | (Cited & { readonly state: 'current'; readonly at: Location })
+  | (Cited & { readonly state: 'out_of_date'; readonly lastSeen: Location });
 
 /** A version of one file: what re-anchoring checks against. */
 export type FileVersion = {
@@ -41,27 +44,45 @@ export function anchorAt(file: FileVersion, startLine: number, count: number): A
   return {
     state: 'current',
     lines: [first, ...rest],
+    context: contextAt(fileLines, startLine, count),
     at: { commit: file.commit, path: file.path, startLine },
   };
 }
 
-/** Checks an anchor against a new version of its file, following the code or flagging it (A4–A6). */
-export function reanchor(anchor: Anchor, file: FileVersion): Anchor {
+/**
+ * Checks an anchor against a new version of its file, or `null` if the file was deleted.
+ * It follows the code or flags it out of date, and never points at the wrong lines (A4–A6).
+ */
+export function reanchor(anchor: Anchor, file: FileVersion | null): Anchor {
+  const { lines, context } = anchor;
   const previous = anchor.state === 'current' ? anchor.at : anchor.lastSeen;
+  const outOfDate: Anchor = { state: 'out_of_date', lines, context, lastSeen: previous };
+  if (file === null) return outOfDate;
+
   const fileLines = splitLines(file.text);
-  const starts = matchesAt(fileLines, anchor.lines);
-  const startLine = starts.includes(previous.startLine)
-    ? previous.startLine
-    : starts.length === 1
-      ? starts[0]
-      : undefined;
-  if (startLine === undefined) {
-    return { state: 'out_of_date', lines: anchor.lines, lastSeen: previous };
+  let starts = matchesAt(fileLines, lines);
+  if (starts.length > 1) {
+    const want = JSON.stringify(context);
+    starts = starts.filter(
+      (start) => JSON.stringify(contextAt(fileLines, start, lines.length)) === want,
+    );
   }
+  const [startLine, ...others] = starts;
+  if (startLine === undefined || others.length > 0) return outOfDate;
   return {
     state: 'current',
-    lines: anchor.lines,
+    lines,
+    // The code's new surroundings, so the next re-anchoring compares against them.
+    context: contextAt(fileLines, startLine, lines.length),
     at: { commit: file.commit, path: file.path, startLine },
+  };
+}
+
+function contextAt(fileLines: readonly string[], startLine: number, count: number): Context {
+  const start = startLine - 1;
+  return {
+    before: fileLines.slice(Math.max(0, start - CONTEXT_LINES), start),
+    after: fileLines.slice(start + count, start + count + CONTEXT_LINES),
   };
 }
 
