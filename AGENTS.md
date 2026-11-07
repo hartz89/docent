@@ -40,6 +40,7 @@ Ryan sets outcomes, high-level architecture, and the environment agents work in.
 - **Settle open questions by experiment, not debate.**
 - **The UX bar is high.** People won't use tools that feel cheap, glitchy or hasty.
 - **Human attention is the scarcest resource.** Spend it only where agents and scripts fall short.
+- **In chat, every PR, issue, CI run or artifact you mention is a clickable link.** For example, write `[PR #1](https://github.com/hartz89/docent/pull/1)`, never a bare "PR #1".
 
 ## Rules that always apply
 
