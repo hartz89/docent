@@ -3,7 +3,7 @@
 Ranked. The top unclaimed item is next. Each item states the outcome it buys. Before starting work on an item, add your branch name to it.
 
 1. **Thin path through the whole loop.** `docent review <PR>` → fetch the PR with `gh` → one tour from a model call → shown in the web app. Ugly is fine, as long as it's real end to end. Log cost from the first call. _Outcome: every later piece has somewhere to plug in._
-2. **Core data model.** Review, tour stop with its anchor, question thread, batch, and cost record, written as types that can't represent bad states. Property tests for the anchor and diff-coverage rules. _(SDD experiment: approach C, spec-anchored.)_
+2. **Core data model.** Review, tour stop with its anchor, question thread, batch, and cost record, written as types that can't represent bad states. Property tests for the anchor and diff-coverage rules. _(SDD experiment: approach C, spec-anchored.)_ Branch: `core/data-model`.
 3. **Question path.** Fork the author's session through the Agent SDK, with read-only enforcement and a per-session lock. Use the stack from [`docs/research/2026-11-06-session-spike.md`](../docs/research/2026-11-06-session-spike.md). Integration tests use a fake adapter; one e2e test uses a real session. _Outcome: proves the core bet in-product._
 4. **Eval harness, plus the public core fixture set.** The manifest schema, a runner, and 8–10 open-source PRs with known defects. Report quality and cost together. _Outcome: prompt and model changes become measured._
 5. **Design exploration for the tour screen,** before building the real UI. _Outcome: the brief's design bar is set by a mockup, not discovered in code._

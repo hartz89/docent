@@ -29,3 +29,4 @@ Spec-as-source, where humans edit only specs, is out of scope for now. Böckeler
 
 | Item | Approach | Size | Defects later | Rework | Notes |
 | ---- | -------- | ---- | ------------- | ------ | ----- |
+| 2. Core data model | C | M: 1.6k lines, about 40% code and spec, 60% tests | | | Spec took about 5 of 15 minutes. Writing it surfaced two design conflicts before any code: a map stop would "double-home" lines that core stops explain (resolved as C2), and guide answers must not carry an answer check (Q3). A spec-citation test then caught 10 of 39 invariants with no test. |
