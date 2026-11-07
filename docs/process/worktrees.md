@@ -13,6 +13,7 @@ Every agent works in its own git worktree. The main checkout is never touched, a
 
 ## Gotchas
 
+- **One worktree per branch, and never share a worktree between agents.** Don't switch the branch of a worktree another agent may still be using; create a new worktree instead. (On 2026-11-07 an orchestrator switched a shared worktree mid-task, and the agent working there had to stop.)
 - **Every command, `!` commands included, must target the session's own worktree.** A command that changes into the main checkout to run git is refused. The guard is working as intended; land through GitHub instead.
 - **Pass PR descriptions as a file** (`gh pr create --body-file <path>`). A command whose inline text mentions git, such as a heredoc body, can trip the worktree guard.
 - **`gh repo create --source .` fails inside a worktree.** A worktree's `.git` is a file, not a folder. Create the repo, then `git remote add origin …` and push.
