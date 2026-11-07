@@ -49,6 +49,98 @@ function parseArgs(argv: string[]): { role: Role; command: string[] } {
   return { role, command };
 }
 
+// The allowlist. A broad "allow as-agent" permission rule is only safe because this is strict:
+// anything not matching one of these forms is refused before a token exists. scripts/ is
+// code-owned, so widening it needs the maintainer's approval.
+const ALLOWED: Record<Role, string[]> = {
+  builder: [
+    'git push [-u] origin <branch>   (not main; no force, +refspec, :refspec, --delete, --mirror)',
+    'gh pr create|view|checks|diff|comment|edit ...',
+    'gh pr merge <number> --squash',
+    'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
+  ],
+  reviewer: [
+    'gh pr view|diff|checks|review|comment ...',
+    'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
+  ],
+};
+
+const PR_SUBCOMMANDS: Record<Role, string[]> = {
+  builder: ['create', 'view', 'checks', 'diff', 'comment', 'edit'],
+  reviewer: ['view', 'diff', 'checks', 'review', 'comment'],
+};
+
+/** Returns why the command is refused, or null if it's allowed. */
+function refusal(role: Role, command: string[]): string | null {
+  const [program, sub, ...rest] = command;
+  if (program === 'git' && sub === 'push' && role === 'builder') return refuseGitPush(rest);
+  if (program === 'gh' && sub === 'api') return refuseGhApi(rest);
+  if (program === 'gh' && sub === 'pr') {
+    const [action, ...args] = rest;
+    if (args.some((arg) => arg.startsWith('--admin'))) return '--admin bypasses branch protection';
+    if (action === 'merge' && role === 'builder') return refuseMerge(args);
+    if (action && PR_SUBCOMMANDS[role].includes(action)) return null;
+    return `"gh pr ${action ?? ''}" isn't allowed for the ${role}`;
+  }
+  return `the ${role} may only run the commands below`;
+}
+
+function refuseGitPush(args: string[]): string | null {
+  const flags = args.filter((arg) => arg.startsWith('-'));
+  const positionals = args.filter((arg) => !arg.startsWith('-'));
+  const badFlag = flags.find((flag) => flag !== '-u' && flag !== '--set-upstream');
+  if (badFlag) return `push flag ${badFlag} isn't allowed`;
+  const [remote, branch, ...extra] = positionals;
+  if (remote !== 'origin' || !branch || extra.length > 0) {
+    return 'push exactly one branch to origin';
+  }
+  if (branch.includes('+') || branch.includes(':')) return `refspec ${branch} isn't allowed`;
+  if (branch === 'main' || branch === 'refs/heads/main') return 'main moves only by merging PRs';
+  return null;
+}
+
+function refuseMerge(args: string[]): string | null {
+  const [number, ...flags] = args.filter((arg) => !arg.startsWith('-'));
+  const options = args.filter((arg) => arg.startsWith('-'));
+  if (!number || !/^\d+$/.test(number) || flags.length > 0) return 'merge takes one PR number';
+  if (options.length !== 1 || options[0] !== '--squash') return 'merge only with --squash';
+  return null;
+}
+
+/** gh api flags that take a value, so the value isn't mistaken for a flag. */
+const API_VALUE_FLAGS = ['-H', '--header', '-q', '--jq', '-t', '--template', '-p', '--preview'];
+
+function refuseGhApi(args: string[]): string | null {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    if (arg === '-X' || arg === '--method') {
+      const method = args[++i];
+      if (method?.toUpperCase() !== 'GET')
+        return `gh api method ${method ?? '(none)'} isn't allowed`;
+    } else if (arg.startsWith('--method=')) {
+      if (arg.slice(9).toUpperCase() !== 'GET') return `gh api ${arg} isn't allowed`;
+    } else if (API_VALUE_FLAGS.includes(arg)) {
+      i++;
+    } else if (/^-[^-]./.test(arg)) {
+      // Short flags must stand alone, so "-XPOST" or "-ifbody=x" can't sneak a write past.
+      return `write ${arg} as separate flags`;
+    } else if (arg === '-f' || arg === '-F' || /^--(field|raw-field|input)(=|$)/.test(arg)) {
+      return `gh api ${arg} sends a request body, which isn't allowed`;
+    }
+  }
+  return null;
+}
+
+function checkAllowed(role: Role, command: string[]): void {
+  const reason = refusal(role, command);
+  if (reason) {
+    throw new AgentError(
+      `refused "${command.join(' ')}": ${reason}. The ${role} may run:\n` +
+        ALLOWED[role].map((form) => `  ${form}`).join('\n'),
+    );
+  }
+}
+
 function loadConfig(path: string, role: Role): AppConfig {
   const all: unknown = JSON.parse(readFileSync(path, 'utf8'));
   const { slug, appId } = (all as Record<string, Record<string, unknown> | undefined>)[role] ?? {};
@@ -178,6 +270,7 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
   };
   try {
     const { role, command } = parseArgs(argv);
+    checkAllowed(role, command);
     const config = loadConfig(deps.configPath ?? DEFAULT_CONFIG, role);
     const key = loadKey(role, deps.env);
     const appId =

@@ -27,7 +27,9 @@ node scripts/as-agent.ts builder -- gh pr merge <number> --squash
 node scripts/as-agent.ts reviewer -- gh pr review <number> --comment --body-file <path>
 ```
 
-From the app's slug, it finds the app and its installation on this repo, then mints a one-hour installation token. It runs the command with `GH_TOKEN` and the bot's git author and committer set. Git gets the token through `GIT_CONFIG_*` env vars, so it never shows in argv, a remote URL or `.git/config`. The token and key are never printed. To author local commits as the bot too, wrap `git commit` the same way.
+From the app's slug, it finds the app and its installation on this repo, then mints a one-hour installation token. It runs the command with `GH_TOKEN` and the bot's git author and committer set. Git gets the token through `GIT_CONFIG_*` env vars, so it never shows in argv, a remote URL or `.git/config`. The token and key are never printed.
+
+**Only a short list of commands can run this way.** Each role has an allowlist in the runner: the builder can push a non-`main` branch without force, use most `gh pr` commands, squash-merge without `--admin`, and make read-only `gh api` calls; the reviewer can read PRs, review, comment, and make read-only `gh api` calls. Anything else is refused before a token exists. `scripts/` is code-owned, so widening the list needs the maintainer's approval. That's why a single `Bash(node scripts/as-agent.ts:*)` permission rule is safe.
 
 **Until the apps exist,** the script stops with a message saying so. Run the command without it, which uses the maintainer's `gh` login, and say so in the PR's known gaps.
 
@@ -45,7 +47,7 @@ For each role (`builder`, then `reviewer`):
    ```
 
    In CI, put the same base64 value (or the raw PEM) in `DOCENT_BUILDER_APP_KEY`.
-4. **Fill in** the app's slug (the name in its URL) in [`.github/agent-apps.json`](../../.github/agent-apps.json), and land that through a PR. The script looks up the app id and installation id itself. GitHub hides private apps from the app-id lookup, so if the script says so, also add `"appId": <number>` from the app's settings page.
+4. **Fill in** [`.github/agent-apps.json`](../../.github/agent-apps.json): the app's slug (the name in its URL), and copy the App ID from the app's settings page, for example `{ "slug": "docent-builder", "appId": 123456 }`. Land that through a PR. The script finds the installation id itself. It can look up the app id from the slug too, but only for public apps; GitHub hides private ones, like these, from that lookup.
 5. **Check it:** `node scripts/as-agent.ts builder -- gh api /installation/repositories --jq '.repositories[].full_name'` prints `hartz89/docent`.
 
 Then apply the ruleset once, from the repo root:
