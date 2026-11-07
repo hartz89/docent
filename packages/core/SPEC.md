@@ -1,6 +1,6 @@
 # Core data model
 
-The domain model of a Docent review. This spec lives next to the code in `src/` and changes in the same PR. Each rule has a number; the tests cite it, for example `// D3`. Where the types already make a rule impossible to break, the rule says "(type)".
+The domain model of a Docent review. This spec lives next to the code in `src/` and changes in the same PR. Each rule has a number; the tests cite it, for example `// D3`. Where the types already make a rule impossible to break, the rule says "(type)", and `src/types.test.ts` proves it with `@ts-expect-error` lines. `src/spec.test.ts` fails if a rule has no test citing it, or a test cites a rule that isn't here.
 
 Conventions: line numbers are 1-based. A file's text is split into lines on `\n` or `\r\n`. A **commit** is a git SHA. "Non-empty" means at least one element, enforced by the type.
 
