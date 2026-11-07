@@ -34,7 +34,13 @@ test('the CLI opens a recorded PR, and the reviewer walks the tour by keyboard',
     await test.step('→ again reaches the third stop, with its cited lines in view', async () => {
       await page.keyboard.press('ArrowRight');
       await expect(page.locator('.narration-title')).toHaveText(titles[2] ?? '');
-      await expect(page.locator('.line.cited').first()).toBeInViewport();
+      // The header names the focused citation ("lines 77–83 · cited by this stop"); its first
+      // line is scrolled into view and marked as cited.
+      const range = await page.locator('.code-range').textContent();
+      const start = range?.match(/lines (\d+)/)?.[1] ?? '';
+      const first = page.locator(`.line[data-line="${start}"]`);
+      await expect(first).toHaveClass(/cited/);
+      await expect(first).toBeInViewport();
     });
 
     await test.step('← goes back, and the route marks only the first stop done', async () => {
