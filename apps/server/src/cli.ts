@@ -1,0 +1,109 @@
+// `docent review <github-pr-url>`: opens a PR for review in the local app.
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
+import { type AgentRunner, sdkRunner } from './agent.ts';
+import { fixtureRunner, fixtureSource, recording } from './fixture.ts';
+import { defaultCacheDir, githubSource, type PrSource, parsePrUrl } from './github.ts';
+import { Review } from './review.ts';
+import { startServer } from './server.ts';
+
+const DEFAULT_MODEL = 'claude-opus-5-5';
+
+const usage = `Usage: docent review <github-pr-url> [options]
+
+Options:
+  --model <id>      Model for the guide (default: $DOCENT_MODEL or ${DEFAULT_MODEL})
+  --no-open         Don't open the browser (also off when CI is set)
+  --no-cache        Ignore the cached tour and write a fresh one
+  --record <dir>    Save the PR, files and guide replies as a fixture
+  --fixture <dir>   Replay a recorded fixture: no GitHub or model calls`;
+
+const { values, positionals } = parseArgs({
+  allowPositionals: true,
+  options: {
+    model: { type: 'string' },
+    'no-open': { type: 'boolean', default: false },
+    'no-cache': { type: 'boolean', default: false },
+    record: { type: 'string' },
+    fixture: { type: 'string' },
+    help: { type: 'boolean', short: 'h', default: false },
+  },
+});
+
+const [command, url] = positionals;
+if (values.help || command !== 'review' || (!url && !values.fixture)) {
+  console.log(usage);
+  process.exit(values.help ? 0 : 1);
+}
+if (url && !values.fixture && !parsePrUrl(url)) {
+  console.error(`Not a GitHub pull request URL: ${url}\n\n${usage}`);
+  process.exit(1);
+}
+
+// Resolves from both src/ and dist/, which sit at the same depth.
+const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url));
+if (!existsSync(webRoot)) {
+  console.error(`Web app not built (missing ${webRoot}). Run: pnpm build`);
+  process.exit(1);
+}
+
+const model = values.model ?? process.env.DOCENT_MODEL ?? DEFAULT_MODEL;
+const cacheDir = defaultCacheDir();
+let source: PrSource;
+let runner: AgentRunner;
+if (values.fixture) {
+  source = fixtureSource(values.fixture);
+  runner = fixtureRunner(values.fixture);
+} else {
+  source = githubSource(url ?? '', cacheDir);
+  runner = sdkRunner;
+  if (values.record) ({ source, runner } = recording(values.record, source, runner));
+}
+
+const review = new Review({
+  source,
+  runner,
+  model,
+  // Fixtures and recordings always run the job; a cached tour would skip it.
+  ...(values.fixture || values.record || values['no-cache'] ? {} : { cacheDir }),
+});
+const server = await startServer({ webRoot, review });
+
+// The token rides in the URL fragment, which browsers never send to servers.
+const link = `${server.origin}/#token=${server.token}`;
+console.log(`Docent is running at ${link}`);
+if (!values['no-open'] && !process.env.CI) openBrowser(link);
+
+const started = Date.now();
+review.subscribe((tour) => {
+  if (tour.state === 'ready') {
+    const cost = tour.costs.reduce((sum, c) => sum + c.costMicroUsd, 0) / 1e6;
+    const seconds = ((Date.now() - started) / 1000).toFixed(1);
+    console.log(
+      tour.cached
+        ? 'Tour loaded from cache: no model calls.'
+        : `Tour ready in ${seconds}s: ${tour.tour.stops.length} stops, ${tour.attempts} attempt(s), $${cost.toFixed(4)} on ${tour.model}.`,
+    );
+    if (tour.problems.length) console.log(`Unresolved checks:\n- ${tour.problems.join('\n- ')}`);
+  } else if (tour.state === 'failed') {
+    console.error(`Tour failed: ${tour.reason}`);
+  }
+});
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => void server.close().then(() => process.exit(0)));
+}
+
+function openBrowser(target: string) {
+  const [cmd, args] =
+    process.platform === 'darwin'
+      ? ['open', [target]]
+      : process.platform === 'win32'
+        ? ['cmd', ['/c', 'start', '', target]]
+        : ['xdg-open', [target]];
+  spawn(cmd as string, args as string[], { stdio: 'ignore', detached: true })
+    .on('error', () => console.log('Could not open a browser; open the link above.'))
+    .unref();
+}
