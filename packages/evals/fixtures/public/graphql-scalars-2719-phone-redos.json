@@ -25,6 +25,12 @@
       "reason": "The one-line regex change, hidden behind about 120 lines of rewritten tests."
     }
   ],
+  "shouldSkip": [
+    {
+      "file": "tests/PhoneNumber.test.ts",
+      "reason": "Rewritten test cases. None of them exercises backtracking."
+    }
+  ],
   "expectDangerFlag": true,
   "evidence": [
     {

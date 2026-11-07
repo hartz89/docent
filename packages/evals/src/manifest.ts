@@ -16,7 +16,10 @@ export function sizeFor(changedLines: number): Size {
   return 'large';
 }
 
-/** 1-based, inclusive line numbers in the file as it is at the head commit. */
+/**
+ * 1-based, inclusive line numbers on the new side: the file as it is at the head commit.
+ * Pure deletions have no new-side lines, so they can't be pinned yet.
+ */
 export interface LineRange {
   readonly start: number;
   readonly end: number;
@@ -27,6 +30,11 @@ export interface ExpectedFinding {
   readonly file: string;
   readonly lines: LineRange;
   readonly description: string;
+  /**
+   * What spotting this needs that the diff and repo can't show, such as how a browser or
+   * an npm package behaves. The runner reports findings with this separately.
+   */
+  readonly externalKnowledge?: string;
 }
 
 /** Changed lines the skip decision must never collapse. */
@@ -36,10 +44,36 @@ export interface MustNotSkip {
   readonly reason: string;
 }
 
+/** Changes the skip decision should collapse: a whole file, or a range in it. */
+export interface ShouldSkip {
+  readonly file: string;
+  /** Leave out to mean every changed line in the file. */
+  readonly lines?: LineRange;
+  readonly reason: string;
+}
+
 /** A link that proves the ground truth, such as the PR or commit that fixed the defect. */
 export interface Evidence {
   readonly url: string;
   readonly note: string;
+}
+
+/**
+ * How a run is scored. A tour stop matches a finding when their line ranges in the same file
+ * overlap, after widening the finding by `toleranceLines` on each side. The stop's wording
+ * is not compared with the finding's description.
+ */
+export interface Scoring {
+  readonly toleranceLines: number;
+  /** A tour with more stops than this counts as too long. */
+  readonly maxStops: number;
+}
+
+export const DEFAULT_SCORING: Scoring = { toleranceLines: 3, maxStops: 10 };
+
+/** The fixture's scoring: the defaults, with any per-fixture overrides applied. */
+export function scoringFor(manifest: FixtureManifest): Scoring {
+  return { ...DEFAULT_SCORING, ...manifest.scoring };
 }
 
 export interface FixtureSource {
@@ -64,10 +98,14 @@ export interface FixtureManifest {
   readonly title: string;
   readonly size: Size;
   readonly jobs: readonly Job[];
+  /** A trivial PR: nothing to find, nothing to keep, nothing to flag. */
+  readonly negativeControl?: boolean;
   /** Empty only for negative controls. */
   readonly expectedFindings: readonly ExpectedFinding[];
   readonly mustNotSkip: readonly MustNotSkip[];
+  readonly shouldSkip?: readonly ShouldSkip[];
   readonly expectDangerFlag: boolean;
+  readonly scoring?: Partial<Scoring>;
   readonly evidence: readonly Evidence[];
 }
 
@@ -107,9 +145,12 @@ export function validateManifest(input: unknown): ValidationResult {
     }
     if (pattern && !pattern.test(v)) fail(join(path, key), `${hint}, got ${JSON.stringify(v)}`);
   };
-  const positiveInt = (v: unknown, path: string) => {
-    if (typeof v === 'number' && Number.isInteger(v) && v >= 1) return true;
-    fail(path, `must be a whole number of at least 1, got ${describe(v)}`);
+  const optionalStr = (value: Obj, key: string, path: string) => {
+    if (value[key] !== undefined) str(value, key, path);
+  };
+  const wholeNumber = (v: unknown, path: string, min: number) => {
+    if (typeof v === 'number' && Number.isInteger(v) && v >= min) return true;
+    fail(path, `must be a whole number of at least ${min}, got ${describe(v)}`);
     return false;
   };
   const array = (value: Obj, key: string, path: string): unknown[] => {
@@ -123,21 +164,29 @@ export function validateManifest(input: unknown): ValidationResult {
     const at = join(path, 'lines');
     if (!isObj(lines, at)) return;
     onlyKeys(lines, at, ['start', 'end']);
-    const start = positiveInt(lines.start, join(at, 'start'));
-    const end = positiveInt(lines.end, join(at, 'end'));
+    const start = wholeNumber(lines.start, join(at, 'start'), 1);
+    const end = wholeNumber(lines.end, join(at, 'end'), 1);
     if (start && end && (lines.end as number) < (lines.start as number)) {
       fail(join(at, 'end'), `must not be before start (${lines.end} < ${lines.start})`);
     }
   };
-  const codeRanges = (value: Obj, key: string, textKey: string) => {
+  /** An array of `{ file, lines, <text> }` entries. Absent is allowed when `optional`. */
+  const codeRanges = (
+    value: Obj,
+    key: string,
+    textKey: string,
+    extra: { optionalKeys?: readonly string[]; optionalLines?: boolean; optional?: boolean } = {},
+  ) => {
+    if (extra.optional && value[key] === undefined) return [];
     const items = array(value, key, '');
     items.forEach((item, i) => {
       const path = `${key}[${i}]`;
       if (!isObj(item, path)) return;
-      onlyKeys(item, path, ['file', 'lines', textKey]);
+      onlyKeys(item, path, ['file', 'lines', textKey, ...(extra.optionalKeys ?? [])]);
       str(item, 'file', path);
-      range(item, path);
+      if (!(extra.optionalLines && item.lines === undefined)) range(item, path);
       str(item, textKey, path);
+      for (const optionalKey of extra.optionalKeys ?? []) optionalStr(item, optionalKey, path);
     });
     return items;
   };
@@ -152,9 +201,12 @@ export function validateManifest(input: unknown): ValidationResult {
     'title',
     'size',
     'jobs',
+    'negativeControl',
     'expectedFindings',
     'mustNotSkip',
+    'shouldSkip',
     'expectDangerFlag',
+    'scoring',
     'evidence',
   ]);
 
@@ -166,7 +218,7 @@ export function validateManifest(input: unknown): ValidationResult {
   if (isObj(m.source, 'source')) {
     onlyKeys(m.source, 'source', ['repo', 'pr', 'base', 'head']);
     str(m.source, 'repo', 'source', REPO, 'must look like "owner/name"');
-    positiveInt(m.source.pr, 'source.pr');
+    wholeNumber(m.source.pr, 'source.pr', 1);
     str(m.source, 'base', 'source', SHA, 'must be a full 40-character lowercase commit SHA');
     str(m.source, 'head', 'source', SHA, 'must be a full 40-character lowercase commit SHA');
     if (typeof m.source.base === 'string' && m.source.base === m.source.head) {
@@ -190,11 +242,24 @@ export function validateManifest(input: unknown): ValidationResult {
     }
   });
 
-  const findings = codeRanges(m, 'expectedFindings', 'description');
-  const mustNotSkip = codeRanges(m, 'mustNotSkip', 'reason');
+  if (m.negativeControl !== undefined && typeof m.negativeControl !== 'boolean') {
+    fail('negativeControl', `must be true or false, got ${describe(m.negativeControl)}`);
+  }
+
+  codeRanges(m, 'expectedFindings', 'description', { optionalKeys: ['externalKnowledge'] });
+  codeRanges(m, 'mustNotSkip', 'reason');
+  codeRanges(m, 'shouldSkip', 'reason', { optionalLines: true, optional: true });
 
   if (typeof m.expectDangerFlag !== 'boolean') {
     fail('expectDangerFlag', `must be true or false, got ${describe(m.expectDangerFlag)}`);
+  }
+
+  if (m.scoring !== undefined && isObj(m.scoring, 'scoring')) {
+    onlyKeys(m.scoring, 'scoring', ['toleranceLines', 'maxStops']);
+    if (m.scoring.toleranceLines !== undefined) {
+      wholeNumber(m.scoring.toleranceLines, 'scoring.toleranceLines', 0);
+    }
+    if (m.scoring.maxStops !== undefined) wholeNumber(m.scoring.maxStops, 'scoring.maxStops', 1);
   }
 
   const evidence = array(m, 'evidence', '');
@@ -210,36 +275,54 @@ export function validateManifest(input: unknown): ValidationResult {
   });
 
   // Rules across fields. Only checked once the shape is right, so messages stay specific.
-  if (errors.length === 0) {
-    const manifest = m as unknown as FixtureManifest;
-    if (manifest.expectDangerFlag && !manifest.jobs.includes('danger')) {
-      fail('expectDangerFlag', 'is true, so jobs must include "danger"');
-    }
-    if (manifest.jobs.includes('tour') && findings.length === 0) {
-      fail('expectedFindings', 'must not be empty when jobs include "tour"');
-    }
-    manifest.expectedFindings.forEach((finding, i) => {
-      const covered = mustNotSkip.some((entry) => contains(entry as MustNotSkip, finding));
-      if (!covered) {
-        fail(
-          `expectedFindings[${i}]`,
-          `${finding.file}:${finding.lines.start}-${finding.lines.end} must also be inside a mustNotSkip range, since the tour can't surface code it skipped`,
-        );
-      }
-    });
-  }
+  if (errors.length === 0) crossFieldRules(m as unknown as FixtureManifest, fail);
 
   return errors.length === 0
     ? { ok: true, manifest: m as unknown as FixtureManifest }
     : { ok: false, errors };
 }
 
-function contains(outer: MustNotSkip, inner: ExpectedFinding): boolean {
-  return (
-    outer.file === inner.file &&
-    outer.lines.start <= inner.lines.start &&
-    inner.lines.end <= outer.lines.end
-  );
+function crossFieldRules(m: FixtureManifest, fail: (path: string, message: string) => void) {
+  if (m.expectDangerFlag && !m.jobs.includes('danger')) {
+    fail('expectDangerFlag', 'is true, so jobs must include "danger"');
+  }
+  if (m.negativeControl) {
+    if (m.expectedFindings.length > 0)
+      fail('expectedFindings', 'must be empty for a negative control');
+    if (m.mustNotSkip.length > 0) fail('mustNotSkip', 'must be empty for a negative control');
+    if (m.expectDangerFlag) fail('expectDangerFlag', 'must be false for a negative control');
+  } else if (m.jobs.includes('tour') && m.expectedFindings.length === 0) {
+    fail(
+      'expectedFindings',
+      'must not be empty when jobs include "tour", unless negativeControl is true',
+    );
+  }
+  m.expectedFindings.forEach((finding, i) => {
+    if (!m.mustNotSkip.some((entry) => contains(entry.file, entry.lines, finding))) {
+      fail(
+        `expectedFindings[${i}]`,
+        `${where(finding)} must also be inside a mustNotSkip range, since the tour can't surface code it skipped`,
+      );
+    }
+  });
+  (m.shouldSkip ?? []).forEach((skip, i) => {
+    const clash = m.mustNotSkip.find((keep) => overlaps(skip, keep));
+    if (clash) fail(`shouldSkip[${i}]`, `${where(skip)} overlaps mustNotSkip ${where(clash)}`);
+  });
+}
+
+function contains(file: string, outer: LineRange, inner: { file: string; lines: LineRange }) {
+  return file === inner.file && outer.start <= inner.lines.start && inner.lines.end <= outer.end;
+}
+
+function overlaps(skip: ShouldSkip, keep: MustNotSkip): boolean {
+  if (skip.file !== keep.file) return false;
+  if (!skip.lines) return true;
+  return skip.lines.start <= keep.lines.end && keep.lines.start <= skip.lines.end;
+}
+
+function where(entry: { file: string; lines?: LineRange }): string {
+  return entry.lines ? `${entry.file}:${entry.lines.start}-${entry.lines.end}` : entry.file;
 }
 
 function join(path: string, key: string): string {

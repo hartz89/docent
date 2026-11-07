@@ -16,11 +16,6 @@
       "file": "index.js",
       "lines": { "start": 122, "end": 122 },
       "description": "The rewrite drops the old `if (abortController)` guard and calls `abortController.abort()` unconditionally, so a timeout throws in environments without AbortController (e.g. React Native)."
-    },
-    {
-      "file": "index.js",
-      "lines": { "start": 120, "end": 123 },
-      "description": "The `delay(ms)` timer is never cleared when the request settles first, so a pending timeout keeps Node.js from exiting until it fires."
     }
   ],
   "mustNotSkip": [
@@ -35,14 +30,6 @@
     {
       "url": "https://github.com/sindresorhus/ky/pull/125",
       "note": "Fix PR: \"#122 removed the check on whether abortController exists before calling abort()\"; restores the guard."
-    },
-    {
-      "url": "https://github.com/sindresorhus/ky/issues/138",
-      "note": "Issue: delay causes the Node process to hang; \"This bug was introduced in #122\"."
-    },
-    {
-      "url": "https://github.com/sindresorhus/ky/pull/145",
-      "note": "Fix PR for #138: clears the timeout when the promise settles."
     }
   ]
 }

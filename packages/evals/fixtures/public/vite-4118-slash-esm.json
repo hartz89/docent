@@ -15,7 +15,8 @@
     {
       "file": "packages/plugin-vue/package.json",
       "lines": { "start": 41, "end": 41 },
-      "description": "A bot dependency bump to slash v4, which is pure ESM. plugin-vue loads it with require(), so its dev mode breaks. CI passes only because CI bundles plugin-vue with esbuild."
+      "description": "A bot dependency bump to slash v4, which is pure ESM. plugin-vue loads it with require(), so its dev mode breaks. CI passes only because CI bundles plugin-vue with esbuild.",
+      "externalKnowledge": "slash 4.0.0 on npm is pure ESM (\"type\": \"module\") and can't be loaded with require()."
     }
   ],
   "mustNotSkip": [
@@ -23,6 +24,12 @@
       "file": "packages/plugin-vue/package.json",
       "lines": { "start": 41, "end": 41 },
       "reason": "A major-version bump hidden behind lockfile noise; yarn.lock is safe to skip."
+    }
+  ],
+  "shouldSkip": [
+    {
+      "file": "yarn.lock",
+      "reason": "Lockfile entry generated for the new version."
     }
   ],
   "expectDangerFlag": false,

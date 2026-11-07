@@ -15,7 +15,8 @@
     {
       "file": "source/utils/options.ts",
       "lines": { "start": 10, "end": 10 },
-      "description": "Request options are recognised with `key in request`. Firefox's Request has no `body` property, so `body` is treated as unknown and passed to fetch a second time, which breaks multipart boundaries."
+      "description": "Request options are recognised with `key in request`. Firefox's Request has no `body` property, so `body` is treated as unknown and passed to fetch a second time, which breaks multipart boundaries.",
+      "externalKnowledge": "Firefox's Request objects have no readable `body` property, so `'body' in request` is false there."
     }
   ],
   "mustNotSkip": [
@@ -38,6 +39,13 @@
       "file": "source/utils/timeout.ts",
       "lines": { "start": 11, "end": 11 },
       "reason": "New positional parameter on timeout(): a signature change for every caller."
+    }
+  ],
+  "shouldSkip": [
+    {
+      "file": "source/types/options.ts",
+      "lines": { "start": 194, "end": 236 },
+      "reason": "The `method` and `headers` doc blocks, moved unchanged from KyOptions into Options."
     }
   ],
   "expectDangerFlag": false,

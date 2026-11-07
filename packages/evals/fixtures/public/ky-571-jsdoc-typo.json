@@ -10,9 +10,16 @@
   "license": "MIT",
   "title": "fix a small typo in a JSDoc comment",
   "size": "small",
-  "jobs": ["skip", "danger"],
+  "jobs": ["tour", "skip", "danger"],
+  "negativeControl": true,
   "expectedFindings": [],
   "mustNotSkip": [],
+  "shouldSkip": [
+    {
+      "file": "source/types/hooks.ts",
+      "reason": "Comment-only typo fix."
+    }
+  ],
   "expectDangerFlag": false,
   "evidence": [
     {

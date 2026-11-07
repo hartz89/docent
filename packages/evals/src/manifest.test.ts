@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
-import { loadFixtures, PUBLIC_FIXTURES_DIR, validateManifest } from './index.ts';
+import {
+  DEFAULT_SCORING,
+  loadFixtures,
+  PUBLIC_FIXTURES_DIR,
+  scoringFor,
+  validateManifest,
+} from './index.ts';
 
 describe('the committed public fixtures', () => {
   test('all validate, with ids matching file names', () => {
@@ -90,15 +96,62 @@ describe('validateManifest', () => {
     [
       'a tour fixture with nothing to find',
       () => ({ ...valid(), expectedFindings: [] }),
-      'expectedFindings: must not be empty when jobs include "tour"',
+      'expectedFindings: must not be empty when jobs include "tour", unless negativeControl is true',
+    ],
+    [
+      'a negative control expecting a danger flag',
+      () => ({
+        ...valid(),
+        negativeControl: true,
+        jobs: ['danger'],
+        expectedFindings: [],
+        mustNotSkip: [],
+        expectDangerFlag: true,
+      }),
+      'expectDangerFlag: must be false for a negative control',
     ],
     [
       'a finding the skip decision could collapse',
       () => ({ ...valid(), mustNotSkip: [] }),
       "expectedFindings[0]: src/a.ts:3-4 must also be inside a mustNotSkip range, since the tour can't surface code it skipped",
     ],
+    [
+      'a blank externalKnowledge',
+      () => ({
+        ...valid(),
+        expectedFindings: [{ ...valid().expectedFindings[0], externalKnowledge: ' ' }],
+      }),
+      'expectedFindings[0].externalKnowledge: must be a non-empty string, got " "',
+    ],
+    [
+      'a shouldSkip that overlaps mustNotSkip',
+      () => ({ ...valid(), shouldSkip: [{ file: 'src/a.ts', reason: 'Noise.' }] }),
+      'shouldSkip[0]: src/a.ts overlaps mustNotSkip src/a.ts:1-10',
+    ],
+    [
+      'a negative tolerance',
+      () => ({ ...valid(), scoring: { toleranceLines: -1 } }),
+      'scoring.toleranceLines: must be a whole number of at least 0, got number -1',
+    ],
   ])('rejects %s with a clear message', (_name, build, message) => {
     expect(errorsFor(build())).toEqual([message]);
+  });
+
+  test('accepts a negative control on the tour, and fills scoring defaults', () => {
+    const control = {
+      ...valid(),
+      negativeControl: true,
+      expectedFindings: [],
+      mustNotSkip: [],
+      shouldSkip: [{ file: 'README.md', reason: 'Typo fix.' }],
+      scoring: { maxStops: 2 },
+    };
+    const result = validateManifest(control);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(scoringFor(result.manifest)).toEqual({ ...DEFAULT_SCORING, maxStops: 2 });
+    }
   });
 
   test('reports every problem at once', () => {

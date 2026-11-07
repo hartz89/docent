@@ -1,5 +1,6 @@
 export { type FixtureSet, loadFixtures, PUBLIC_FIXTURES_DIR } from './fixtures.ts';
 export {
+  DEFAULT_SCORING,
   type Evidence,
   type ExpectedFinding,
   type FixtureManifest,
@@ -8,8 +9,11 @@ export {
   type Job,
   type LineRange,
   type MustNotSkip,
+  type Scoring,
+  type ShouldSkip,
   SIZES,
   type Size,
+  scoringFor,
   sizeFor,
   type ValidationResult,
   validateManifest,

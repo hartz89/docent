@@ -63,14 +63,16 @@ function checkFixture(fixture: FixtureManifest): string[] {
   const ranges = [
     ...fixture.expectedFindings.map((r, i) => ({ ...r, at: `expectedFindings[${i}]` })),
     ...fixture.mustNotSkip.map((r, i) => ({ ...r, at: `mustNotSkip[${i}]` })),
+    ...(fixture.shouldSkip ?? []).map((r, i) => ({ ...r, at: `shouldSkip[${i}]` })),
   ];
   for (const { at, file, lines } of ranges) {
-    const where = `${at} ${file}:${lines.start}-${lines.end}`;
+    const where = lines ? `${at} ${file}:${lines.start}-${lines.end}` : `${at} ${file}`;
     const changedFile = compare.files.find((f) => f.filename === file);
     if (!changedFile) {
       problems.push(`${where}: file is not in the diff`);
       continue;
     }
+    if (!lines) continue; // A whole-file entry only needs the file to be in the diff.
     if (!changedFile.patch) {
       problems.push(`${where}: GitHub sent no patch for this file (too large?)`);
       continue;
