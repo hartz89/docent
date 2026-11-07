@@ -13,9 +13,11 @@ import { join } from 'node:path';
 const ROLES = ['builder', 'reviewer'] as const;
 export type Role = (typeof ROLES)[number];
 
-type AppConfig = { slug: string; appId: number; installationId: number };
+/** Only the slug is needed. appId is an optional override for when the lookup can't see the app. */
+type AppConfig = { slug: string; appId?: number };
 
 const API = 'https://api.github.com';
+const REPO = 'hartz89/docent';
 const DOC = 'docs/process/agent-identities.md';
 const DEFAULT_CONFIG = join(import.meta.dirname, '..', '.github', 'agent-apps.json');
 
@@ -49,23 +51,19 @@ function parseArgs(argv: string[]): { role: Role; command: string[] } {
 
 function loadConfig(path: string, role: Role): AppConfig {
   const all: unknown = JSON.parse(readFileSync(path, 'utf8'));
-  const entry = (all as Record<string, Record<string, unknown> | undefined>)[role] ?? {};
-  const { slug, appId, installationId } = entry;
-  const unfilled = Object.entries({ slug, appId, installationId })
-    .filter(([key, value]) =>
-      key === 'slug'
-        ? typeof value !== 'string' || value === '' || value === 'REPLACE_ME'
-        : !Number.isInteger(value) || (value as number) <= 0,
-    )
-    .map(([key]) => key);
-  if (unfilled.length > 0) {
+  const { slug, appId } = (all as Record<string, Record<string, unknown> | undefined>)[role] ?? {};
+  if (typeof slug !== 'string' || slug === '' || slug === 'REPLACE_ME') {
     throw new AgentError(
-      `the ${role} GitHub App isn't set up yet: ${unfilled.join(', ')} in ${path} still need real ` +
-        `values. The maintainer creates the app and fills them in; see ${DOC}. Until then, run ` +
-        'the command without as-agent (it uses your own gh login) and say so in the PR.',
+      `the ${role} GitHub App isn't set up yet: its slug in ${path} still needs a real value. ` +
+        `The maintainer creates the app and fills it in; see ${DOC}. Until then, run the ` +
+        'command without as-agent (it uses your own gh login) and say so in the PR.',
     );
   }
-  return { slug: slug as string, appId: appId as number, installationId: installationId as number };
+  if (appId === undefined) return { slug };
+  if (!Number.isInteger(appId) || (appId as number) <= 0) {
+    throw new AgentError(`the ${role} appId in ${path} must be a positive integer, or left out.`);
+  }
+  return { slug, appId: appId as number };
 }
 
 /** The key is stored base64-encoded (the Keychain mangles multi-line values); raw PEM also works. */
@@ -112,18 +110,16 @@ async function github<T>(
   deps: Deps,
   method: string,
   path: string,
-  auth: string,
+  auth: string | null,
   hint: string,
 ): Promise<T> {
-  const response = await deps.fetch(`${API}${path}`, {
-    method,
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: auth,
-      'User-Agent': 'docent-as-agent',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-  });
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'docent-as-agent',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+  if (auth) headers.Authorization = auth;
+  const response = await deps.fetch(`${API}${path}`, { method, headers });
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as { message?: unknown };
     const message = typeof body.message === 'string' ? `: ${body.message}` : '';
@@ -184,14 +180,33 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
     const { role, command } = parseArgs(argv);
     const config = loadConfig(deps.configPath ?? DEFAULT_CONFIG, role);
     const key = loadKey(role, deps.env);
-    const jwt = appJwt(config.appId, key, deps.now?.() ?? Math.floor(Date.now() / 1000));
+    const appId =
+      config.appId ??
+      (
+        await github<{ id: number }>(
+          deps,
+          'GET',
+          `/apps/${encodeURIComponent(config.slug)}`,
+          null,
+          `Check the ${role} slug in the config. If the app is private, GitHub hides it from ` +
+            'this lookup: add its "appId" (from the app settings page) to the config.',
+        )
+      ).id;
+    const jwt = appJwt(appId, key, deps.now?.() ?? Math.floor(Date.now() / 1000));
     secrets.push(jwt);
+    const installation = await github<{ id: number }>(
+      deps,
+      'GET',
+      `/repos/${REPO}/installation`,
+      `Bearer ${jwt}`,
+      `Check the ${role} app is installed on ${REPO} and that the key belongs to it.`,
+    );
     const { token } = await github<{ token: string }>(
       deps,
       'POST',
-      `/app/installations/${config.installationId}/access_tokens`,
+      `/app/installations/${installation.id}/access_tokens`,
       `Bearer ${jwt}`,
-      `Check appId and installationId in the config, and that the key belongs to the ${role} app.`,
+      `Check that the key belongs to the ${role} app.`,
     );
     secrets.push(token);
     const bot = await github<{ login: string; id: number }>(

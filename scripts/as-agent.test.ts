@@ -13,8 +13,8 @@ const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 20
 const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 
 const filled = {
-  builder: { slug: 'docent-builder', appId: 111, installationId: 222 },
-  reviewer: { slug: 'REPLACE_ME', appId: 'REPLACE_ME', installationId: 'REPLACE_ME' },
+  builder: { slug: 'docent-builder' },
+  reviewer: { slug: 'REPLACE_ME' },
 };
 
 let dir: string;
@@ -26,9 +26,9 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 type Call = { method: string; url: string; auth: string };
 
 /** A fake GitHub API. `fail` makes one path answer with an error status. */
-function setup(opts: { fail?: string } = {}) {
+function setup(opts: { fail?: string; config?: object } = {}) {
   const configPath = join(dir, 'agent-apps.json');
-  writeFileSync(configPath, JSON.stringify(filled));
+  writeFileSync(configPath, JSON.stringify(opts.config ?? filled));
   const calls: Call[] = [];
   const logs: string[] = [];
   const fakeFetch = async (input: string | URL | Request, init?: RequestInit) => {
@@ -39,6 +39,8 @@ function setup(opts: { fail?: string } = {}) {
       // A hostile error body that echoes the token back, to prove output is scrubbed.
       return Response.json({ message: `Bad credentials ${TOKEN}` }, { status: 401 });
     }
+    if (url.endsWith('/apps/docent-builder')) return Response.json({ id: 111 });
+    if (url.endsWith('/repos/hartz89/docent/installation')) return Response.json({ id: 222 });
     if (url.endsWith('/app/installations/222/access_tokens')) {
       return Response.json({ token: TOKEN, expires_at: '2027-01-01T00:00:00Z' }, { status: 201 });
     }
@@ -64,14 +66,27 @@ function probe(out: string): string[] {
   ];
 }
 
+/** The claims of the JWT a call was authorized with. */
+function claims(call: Call | undefined) {
+  const payload = (call?.auth ?? '').replace('Bearer ', '').split('.')[1] ?? '';
+  return JSON.parse(Buffer.from(payload, 'base64url').toString());
+}
+
 describe('as-agent', () => {
-  test('signs a valid app JWT and trades it for an installation token', async () => {
+  test('finds the app from its slug, signs a valid JWT, and gets an installation token', async () => {
     const { deps, calls } = setup();
     expect(await asAgent(['builder', '--', 'true'], deps)).toBe(0);
 
-    const [exchange, lookup] = calls;
+    const [app, installation, exchange, lookup] = calls;
+    expect(app).toEqual({
+      method: 'GET',
+      url: 'https://api.github.com/apps/docent-builder',
+      auth: '',
+    });
+    expect(installation?.url).toBe('https://api.github.com/repos/hartz89/docent/installation');
     expect(exchange?.method).toBe('POST');
     expect(exchange?.url).toBe('https://api.github.com/app/installations/222/access_tokens');
+    expect(exchange?.auth).toBe(installation?.auth);
     const [header, payload, signature] = (exchange?.auth ?? '').replace('Bearer ', '').split('.');
     expect(
       verify(
@@ -93,6 +108,22 @@ describe('as-agent', () => {
 
     expect(lookup?.url).toBe('https://api.github.com/users/docent-builder%5Bbot%5D');
     expect(lookup?.auth).toBe(`Bearer ${TOKEN}`);
+  });
+
+  test('uses an appId from the config instead of looking it up', async () => {
+    const { deps, calls } = setup({ config: { builder: { slug: 'docent-builder', appId: 999 } } });
+    expect(await asAgent(['builder', '--', 'true'], deps)).toBe(0);
+    expect(calls.map((call) => call.url)).not.toContain(
+      'https://api.github.com/apps/docent-builder',
+    );
+    expect(claims(calls[0]).iss).toBe('999');
+  });
+
+  test('suggests setting appId when GitHub hides a private app', async () => {
+    const { deps, logs } = setup({ config: { builder: { slug: 'private-app' } } });
+    expect(await asAgent(['builder', '--', 'true'], deps)).toBe(1);
+    expect(logs[0]).toContain('GET /apps/private-app returned 404');
+    expect(logs[0]).toContain('add its "appId"');
   });
 
   test('runs the command as the bot, with the token only in env', async () => {
@@ -129,7 +160,7 @@ describe('as-agent', () => {
     expect(calls).toEqual([]);
     expect(logs).toHaveLength(1);
     expect(logs[0]).toContain("the reviewer GitHub App isn't set up yet");
-    expect(logs[0]).toContain('slug, appId, installationId');
+    expect(logs[0]).toContain('its slug');
     expect(logs[0]).toContain('docs/process/agent-identities.md');
   });
 

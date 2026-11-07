@@ -1,12 +1,4 @@
 {
-  "builder": {
-    "slug": "REPLACE_ME",
-    "appId": "REPLACE_ME",
-    "installationId": "REPLACE_ME"
-  },
-  "reviewer": {
-    "slug": "REPLACE_ME",
-    "appId": "REPLACE_ME",
-    "installationId": "REPLACE_ME"
-  }
+  "builder": { "slug": "REPLACE_ME" },
+  "reviewer": { "slug": "REPLACE_ME" }
 }

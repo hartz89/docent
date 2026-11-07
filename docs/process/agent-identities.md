@@ -27,7 +27,7 @@ node scripts/as-agent.ts builder -- gh pr merge <number> --squash
 node scripts/as-agent.ts reviewer -- gh pr review <number> --comment --body-file <path>
 ```
 
-It mints a one-hour installation token and runs the command with `GH_TOKEN` and the bot's git author and committer set. Git gets the token through `GIT_CONFIG_*` env vars, so it never shows in argv, a remote URL or `.git/config`. The token and key are never printed. To author local commits as the bot too, wrap `git commit` the same way.
+From the app's slug, it finds the app and its installation on this repo, then mints a one-hour installation token. It runs the command with `GH_TOKEN` and the bot's git author and committer set. Git gets the token through `GIT_CONFIG_*` env vars, so it never shows in argv, a remote URL or `.git/config`. The token and key are never printed. To author local commits as the bot too, wrap `git commit` the same way.
 
 **Until the apps exist,** the script stops with a message saying so. Run the command without it, which uses the maintainer's `gh` login, and say so in the PR's known gaps.
 
@@ -36,7 +36,7 @@ It mints a one-hour installation token and runs the command with `GH_TOKEN` and 
 For each role (`builder`, then `reviewer`):
 
 1. **Create the app** at https://github.com/settings/apps/new. Name it, for example, `docent-builder`. Turn off the webhook. Give it exactly the permissions in the table above. Allow installation on "Only on this account".
-2. **Install it** from the app's page, on `hartz89/docent` only. The installation id is the number at the end of the installation's settings URL.
+2. **Install it** from the app's page, on `hartz89/docent` only.
 3. **Generate a private key** on the app's page, and store it in the Keychain base64-encoded (the Keychain garbles multi-line values). Then delete the downloaded file:
 
    ```bash
@@ -45,7 +45,7 @@ For each role (`builder`, then `reviewer`):
    ```
 
    In CI, put the same base64 value (or the raw PEM) in `DOCENT_BUILDER_APP_KEY`.
-4. **Fill in** [`.github/agent-apps.json`](../../.github/agent-apps.json): the app's slug (from its URL), app id (on its page), and installation id. Land that through a PR.
+4. **Fill in** the app's slug (the name in its URL) in [`.github/agent-apps.json`](../../.github/agent-apps.json), and land that through a PR. The script looks up the app id and installation id itself. GitHub hides private apps from the app-id lookup, so if the script says so, also add `"appId": <number>` from the app's settings page.
 5. **Check it:** `node scripts/as-agent.ts builder -- gh api /installation/repositories --jq '.repositories[].full_name'` prints `hartz89/docent`.
 
 Then apply the ruleset once, from the repo root:
