@@ -6,7 +6,13 @@ import { dirname, join } from 'node:path';
 import { type CostRecord, type Diff, parseUnifiedDiff } from '@docent/core';
 import type { AgentRunner } from './agent.ts';
 import type { PrInfo, PrSource, Workspace } from './github.ts';
-import { generateTour, type TourOutcome, type TourProgress } from './tour.ts';
+import {
+  generateTour,
+  TOUR_PROMPT_VERSION,
+  TourError,
+  type TourOutcome,
+  type TourProgress,
+} from './tour.ts';
 
 export type StepId = 'reading' | 'planning' | 'checking';
 export type Step = { id: StepId; label: string; status: 'done' | 'active' | 'pending' };
@@ -14,7 +20,7 @@ export type Step = { id: StepId; label: string; status: 'done' | 'active' | 'pen
 export type TourState =
   | { state: 'working'; steps: Step[]; detail: string | null; attempt: number }
   | ({ state: 'ready' } & TourOutcome)
-  | { state: 'failed'; reason: string };
+  | { state: 'failed'; reason: string; costs: CostRecord[] };
 
 export type ReviewSnapshot = {
   pr: PrInfo | null;
@@ -22,7 +28,8 @@ export type ReviewSnapshot = {
   tour: TourState;
 };
 
-export type GuideAnswer = { text: string; source: 'guide'; cost: CostRecord };
+/** Q2, Q4: a guide answer, and the head commit it was asked at. */
+export type GuideAnswer = { text: string; source: 'guide'; askedAt: string; cost: CostRecord };
 
 export type ReviewOptions = {
   source: PrSource;
@@ -96,7 +103,7 @@ Answer the reviewer's question from the code. Read what you need. Describe what 
 
 Question: ${question}`,
     });
-    return { text: reply.text, source: 'guide', cost: reply.cost };
+    return { text: reply.text, source: 'guide', askedAt: workspace.pr.head, cost: reply.cost };
   }
 
   #set(tour: TourState) {
@@ -117,7 +124,7 @@ Question: ${question}`,
             this.#options.cacheDir,
             'tours',
             workspace.pr.repo.replace('/', '__'),
-            `${workspace.pr.head}.v1.json`,
+            tourCacheName(workspace.pr, this.#options.model),
           )
         : null;
       if (cacheFile && existsSync(cacheFile)) {
@@ -142,6 +149,7 @@ Question: ${question}`,
       this.#set({
         state: 'failed',
         reason: error instanceof Error ? error.message : String(error),
+        costs: error instanceof TourError ? error.costs : [],
       });
     }
   }
@@ -180,4 +188,13 @@ function fromProgress(progress: TourProgress, previous: TourState): TourState {
         progress.attempt + 1,
       );
   }
+}
+
+/**
+ * The cached tour's file name. A tour depends on the exact diff (base and head), the model and
+ * the prompt, so all four are in the key; changing any of them writes a fresh tour.
+ */
+export function tourCacheName(pr: { base: string; head: string }, model: string): string {
+  const safeModel = model.replace(/[^\w.-]/g, '_');
+  return `${pr.base.slice(0, 12)}-${pr.head}-${safeModel}-p${TOUR_PROMPT_VERSION}.json`;
 }

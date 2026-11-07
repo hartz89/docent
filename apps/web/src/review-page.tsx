@@ -32,7 +32,11 @@ export function ReviewPage() {
     const controller = new AbortController();
     followTour(setTour, controller.signal).catch((error: unknown) => {
       if (controller.signal.aborted) return;
-      setTour({ state: 'failed', reason: `Lost the progress stream: ${String(error)}` });
+      setTour({
+        state: 'failed',
+        reason: `Lost the progress stream: ${String(error)}`,
+        costs: [],
+      });
     });
     return () => controller.abort();
   }, [data]);
@@ -49,7 +53,7 @@ export function ReviewPage() {
   if (snapshot.isError) {
     return (
       <div className="app">
-        <StatusScreen tour={{ state: 'failed', reason: snapshot.error.message }} />
+        <StatusScreen tour={{ state: 'failed', reason: snapshot.error.message, costs: [] }} />
       </div>
     );
   }

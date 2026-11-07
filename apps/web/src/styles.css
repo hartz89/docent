@@ -765,11 +765,25 @@ code,
   border-radius: 8px;
   background: var(--ground);
   border: 1px solid var(--border);
-  white-space: pre-line;
+  white-space: normal;
 }
 
 .exchange-answer p {
   margin: 0 0 10px;
+}
+
+.exchange-answer ul,
+.exchange-answer ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+
+.exchange-answer li + li {
+  margin-top: 4px;
+}
+
+.exchange-answer > :last-child {
+  margin-bottom: 0;
 }
 
 .exchange-answer p:last-child {

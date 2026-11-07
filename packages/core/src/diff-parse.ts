@@ -52,7 +52,7 @@ export function parseRawFiles(text: string): RawFile[] {
 
     while (i < lines.length && (lines[i] ?? '').startsWith('@@ ')) {
       const parsed = parseHunk(lines, i);
-      hunks.push(parsed.hunk);
+      if (parsed.hunk) hunks.push(parsed.hunk);
       i = parsed.next;
     }
 
@@ -65,9 +65,13 @@ export function parseRawFiles(text: string): RawFile[] {
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
-function parseHunk(lines: readonly string[], start: number): { hunk: RawHunk; next: number } {
+/** Reads one hunk. A malformed header is skipped (hunk: null), so one bad line never sinks a diff. */
+function parseHunk(
+  lines: readonly string[],
+  start: number,
+): { hunk: RawHunk | null; next: number } {
   const match = HUNK_HEADER.exec(lines[start] ?? '');
-  if (!match) throw new Error(`Malformed hunk header: ${lines[start]}`);
+  if (!match) return { hunk: null, next: start + 1 };
   const oldStart = Number(match[1]);
   const newStart = Number(match[3]);
   let oldLeft = match[2] === undefined ? 1 : Number(match[2]);

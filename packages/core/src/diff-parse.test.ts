@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, test } from 'vitest';
-import { base, head, rawFiles } from './arbitraries.ts';
+import { base, head, rawFiles } from './arbitraries.testing.ts';
 import { makeDiff, type RawFile, type RawHunkLine } from './diff.ts';
 import { parseRawFiles, parseUnifiedDiff } from './diff-parse.ts';
 
@@ -9,9 +9,9 @@ const count = (lines: readonly RawHunkLine[], skip: RawHunkLine['kind']) =>
   lines.filter((line) => line.kind !== skip).length;
 
 /** Prints raw files the way `git diff` does, so the parser can be checked against its inverse. */
-function render(files: readonly RawFile[]): string {
+function render(files: readonly RawFile[], junk: readonly boolean[] = []): string {
   return files
-    .map((file) => {
+    .map((file, index) => {
       const out = [`diff --git a/${file.oldPath} b/${file.path}`];
       if (file.oldPath !== file.path) {
         out.push('similarity index 90%', `rename from ${file.oldPath}`, `rename to ${file.path}`);
@@ -25,6 +25,7 @@ function render(files: readonly RawFile[]): string {
         out.push(`@@ -${hunk.oldStart},${old} +${hunk.newStart},${neu} @@ function f() {`);
         for (const line of hunk.lines) out.push(`${MARK[line.kind]}${line.text}`);
       }
+      if (junk[index]) out.push('@@ this is not a hunk header @@');
       return out.join('\n');
     })
     .join('\n');
@@ -44,6 +45,18 @@ describe('parseUnifiedDiff', () => {
       fc.property(rawFiles, (files) => {
         expect(parseUnifiedDiff(render(files), base, head)).toEqual(makeDiff(base, head, files));
       }),
+    );
+  });
+
+  test('skips a malformed hunk header and keeps every real hunk', () => {
+    fc.assert(
+      fc.property(
+        rawFiles,
+        fc.array(fc.boolean(), { minLength: 4, maxLength: 4 }),
+        (files, junk) => {
+          expect(parseRawFiles(render(files, junk))).toEqual(files);
+        },
+      ),
     );
   });
 

@@ -1,7 +1,7 @@
 // The boundary to the model. Everything Docent asks an agent goes through an AgentRunner, so tests
 // can swap in a scripted runner and never make a model call.
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { CostRecord, Job } from '@docent/core';
+import { type CostRecord, type Job, type MicroUsd, microUsd } from '@docent/core';
 
 export type AgentRequest = {
   job: Job;
@@ -24,52 +24,74 @@ export type AgentReply = {
   /** The parsed structured output, when a schema was given. */
   structured: unknown;
   cost: CostRecord;
+  /** Tools the session tried and was refused, as the SDK reports them. */
+  denials: string[];
 };
 
 export type AgentRunner = (request: AgentRequest) => Promise<AgentReply>;
+
+/** The agent stopped without an answer (max turns, max budget, an API error). Carries its cost. */
+export class AgentError extends Error {
+  readonly cost: CostRecord;
+  constructor(message: string, cost: CostRecord) {
+    super(message);
+    this.cost = cost;
+  }
+}
 
 /** Tools are fixed for every call: changing the set breaks prompt caching (see the session spike). */
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
 
 /**
- * Runs Claude Code headlessly through the Agent SDK, read-only. The flags stack, because no single
- * one holds on its own (docs/research/2026-11-06-session-spike.md):
- * - only Read, Grep and Glob exist in the session;
- * - `dontAsk` denies anything not pre-approved, and `canUseTool` denies whatever would still ask;
- * - no MCP servers, and no filesystem settings, so the checkout's own `.claude/` hooks,
- *   permissions and CLAUDE.md never load. The code under review is data, not configuration.
+ * The read-only session options. The flags stack, because no single one holds on its own
+ * (docs/research/2026-11-06-session-spike.md):
+ * - `tools`: only Read, Grep and Glob exist in the session. No Bash, Edit, Write or Task.
+ * - `permissionMode: 'dontAsk'`: any call that would need approval (a read outside the cwd,
+ *   say) is denied without asking. There is no `canUseTool`: under `dontAsk` it is never
+ *   consulted, so it would only suggest a gate that isn't there. There is no `allowedTools`
+ *   either; read-only tools inside the cwd need no approval.
+ * - `strictMcpConfig` with no servers, and `settingSources: []`: the checkout's own `.claude/`
+ *   settings, hooks, permissions, MCP config and CLAUDE.md never load. The code under review is
+ *   data, not configuration.
+ * `src/agent.test.ts` pins these options; `src/agent.live.test.ts` proves them against a hostile
+ * checkout with a real session.
  */
+export function readOnlyOptions(
+  request: Pick<AgentRequest, 'cwd' | 'model' | 'schema' | 'resume'>,
+) {
+  return {
+    cwd: request.cwd,
+    model: request.model,
+    tools: READ_ONLY_TOOLS,
+    permissionMode: 'dontAsk' as const,
+    strictMcpConfig: true,
+    mcpServers: {},
+    settingSources: [],
+    maxTurns: 60,
+    maxBudgetUsd: 2,
+    ...(request.resume ? { resume: request.resume } : {}),
+    ...(request.schema
+      ? { outputFormat: { type: 'json_schema' as const, schema: request.schema } }
+      : {}),
+  };
+}
+
+/** Runs Claude Code headlessly through the Agent SDK, read-only (see `readOnlyOptions`). */
 export const sdkRunner: AgentRunner = async (request) => {
   const started = Date.now();
   const abortController = new AbortController();
   request.signal?.addEventListener('abort', () => abortController.abort());
 
   let model = request.model;
-  let result: { sessionId: string; text: string; structured: unknown; usage: Usage } | undefined;
-  let failure: string | undefined;
+  let ended:
+    | { ok: true; sessionId: string; text: string; structured: unknown; usage: Usage }
+    | { ok: false; failure: string; usage: Usage }
+    | undefined;
+  let denials: string[] = [];
 
   for await (const message of query({
     prompt: request.prompt,
-    options: {
-      cwd: request.cwd,
-      model: request.model,
-      tools: READ_ONLY_TOOLS,
-      permissionMode: 'dontAsk',
-      canUseTool: async (toolName) => ({
-        behavior: 'deny',
-        message: `${toolName} is not available: this session is read-only.`,
-      }),
-      strictMcpConfig: true,
-      mcpServers: {},
-      settingSources: [],
-      maxTurns: 60,
-      maxBudgetUsd: 2,
-      abortController,
-      ...(request.resume ? { resume: request.resume } : {}),
-      ...(request.schema
-        ? { outputFormat: { type: 'json_schema' as const, schema: request.schema } }
-        : {}),
-    },
+    options: { ...readOnlyOptions(request), abortController },
   })) {
     if (message.type === 'assistant' && message.parent_tool_use_id === null) {
       model = message.message.model || model;
@@ -79,23 +101,38 @@ export const sdkRunner: AgentRunner = async (request) => {
         }
       }
     } else if (message.type === 'result') {
+      denials = message.permission_denials.map((d) => d.tool_name);
       if (message.subtype === 'success' && !message.is_error) {
-        result = {
+        ended = {
+          ok: true,
           sessionId: message.session_id,
           text: message.result,
           structured: message.structured_output,
           usage: message.usage,
         };
       } else {
+        // Error results (max turns, max budget) still spent tokens: record them too.
         const errors = 'errors' in message ? message.errors.join('; ') : '';
-        failure = `${message.subtype}${errors ? `: ${errors}` : ''}`;
+        ended = {
+          ok: false,
+          failure: `${message.subtype}${errors ? `: ${errors}` : ''}`,
+          usage: message.usage,
+        };
       }
     }
   }
 
-  if (!result) throw new Error(`The agent stopped without an answer (${failure ?? 'no result'})`);
-  const { usage, ...answer } = result;
-  return { ...answer, cost: costRecord(request.job, model, usage, Date.now() - started) };
+  if (!ended) throw new Error('The agent stopped without a result.');
+  const cost = costRecord(request.job, model, ended.usage, Date.now() - started);
+  if (!ended.ok)
+    throw new AgentError(`The agent stopped without an answer (${ended.failure})`, cost);
+  return {
+    sessionId: ended.sessionId,
+    text: ended.text,
+    structured: ended.structured,
+    cost,
+    denials,
+  };
 };
 
 /** The result message's usage: this turn's API calls only, even when resuming a session. */
@@ -140,7 +177,8 @@ export function costRecord(job: Job, model: string, usage: Usage, latencyMs: num
         oneHour * price.input * 2) /
       1e6
     : 0;
-  return { job, model, tokens, costMicroUsd: Math.round(usd * 1e6), latencyMs };
+  const costMicroUsd = microUsd(Math.max(0, Math.round(usd * 1e6))) ?? (0 as MicroUsd);
+  return { job, model, tokens, costMicroUsd, latencyMs };
 }
 
 /** Longest matching id prefix, so `claude-opus-5-5-…` doesn't price as `claude-opus-5`. */

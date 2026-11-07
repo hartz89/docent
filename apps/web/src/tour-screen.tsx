@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
+import { Markdown } from './markdown.tsx';
 import type { Ready } from './review-page.tsx';
 
 type Props = { snapshot: ReviewSnapshot; tour: Ready };
@@ -224,11 +225,11 @@ function Route({
                 <span>
                   <span className="stop-kind">
                     {KIND_LABELS[stop.kind]}
-                    {stop.flag && (
-                      <span className="stop-flag">
-                        · {stop.flag.kind === 'danger' ? 'danger' : 'mismatch'}
+                    {stop.flags.map((flag) => (
+                      <span key={flag} className="stop-flag">
+                        · {flag}
                       </span>
-                    )}
+                    ))}
                   </span>
                   <span className="stop-title">{inline(stop.title)}</span>
                 </span>
@@ -389,14 +390,14 @@ function Narration({
           </div>
         )}
 
-        {stop.flag && (
-          <div className={`callout ${stop.flag.kind}`} role="note">
+        {stop.flagNotes.map(({ flag, note }) => (
+          <div key={flag} className={`callout ${flag}`} role="note">
             <div className="callout-label">
-              {stop.flag.kind === 'danger' ? 'Possible danger' : 'Description and code differ'}
+              {flag === 'danger' ? 'Possible danger' : 'Description and code differ'}
             </div>
-            <p>{inline(stop.flag.note)}</p>
+            <p>{inline(note)}</p>
           </div>
-        )}
+        ))}
 
         <div className="question">
           <label htmlFor={`question-${stop.id}`}>Your question</label>
@@ -431,7 +432,9 @@ function Narration({
               <p className="exchange-question">{exchange.question}</p>
               {exchange.answer ? (
                 <>
-                  <div className="exchange-answer">{paragraphs(exchange.answer.text)}</div>
+                  <div className="exchange-answer">
+                    <Markdown text={exchange.answer.text} />
+                  </div>
                   <div className="exchange-source">
                     Answered by the guide, not the author ·{' '}
                     {formatUsd(exchange.answer.cost.costMicroUsd)}

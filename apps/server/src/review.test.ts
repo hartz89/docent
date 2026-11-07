@@ -1,20 +1,22 @@
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { commitSha } from '@docent/core';
+import { type CostRecord, commitSha, type Job, type MicroUsd } from '@docent/core';
 import { hc } from 'hono/client';
 import { describe, expect, test } from 'vitest';
-import type { AgentReply, AgentRequest, AgentRunner } from './agent.ts';
+import { AgentError, type AgentReply, type AgentRequest, type AgentRunner } from './agent.ts';
 import { type AppType, createApp } from './app.ts';
 import type { PrSource } from './github.ts';
 import { Review, type TourState } from './review.ts';
 
 // A small PR: one behavior change in src/cors.ts, plus a lockfile bump.
-const head = {
+const head: Record<string, string> = {
   'src/cors.ts': 'export function cors() {\n  const origin = reflect();\n  return origin;\n}\n',
   'pnpm-lock.yaml': 'lockfileVersion: 9\n',
+  'logo.png': 'PNG\0binary',
+  'huge.txt': 'x'.repeat(2_000_001),
 };
-const base = {
+const base: Record<string, string> = {
   'src/cors.ts': "export function cors() {\n  const origin = '*';\n  return origin;\n}\n",
   'pnpm-lock.yaml': 'lockfileVersion: 8\n',
 };
@@ -51,8 +53,7 @@ const source: PrSource = async (onStep) => {
     },
     diffText,
     dir: '/nowhere',
-    readFile: async (side, path) =>
-      (side === 'new' ? head : base)[path as keyof typeof head] ?? null,
+    readFile: async (side, path) => (side === 'new' ? head : base)[path] ?? null,
   };
 };
 
@@ -73,7 +74,7 @@ const goodTour = {
       kind: 'core_change',
       title: 'The origin is reflected',
       body: 'The wildcard is replaced.',
-      flag: { kind: 'mismatch', note: 'The description does not mention Vary.' },
+      flags: [{ kind: 'mismatch', note: 'The description does not mention Vary.' }],
       citations: [cite('new', 2), cite('old', 2)],
     },
   ]),
@@ -85,6 +86,16 @@ const gappyTour = {
   stops: stops([{ kind: 'core_change', title: 'x', body: 'y', citations: [cite('new', 2)] }]),
 };
 
+/** Stands in for a turn that hit the budget cap: the runner throws, with the cost so far. */
+const BUDGET = Symbol('budget');
+const cost = (job: Job, micro: number): CostRecord => ({
+  job,
+  model: 'claude-test',
+  tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+  costMicroUsd: micro as MicroUsd,
+  latencyMs: 1,
+});
+
 /** The model boundary, scripted: hands out the given tours in order and records each request. */
 function scripted(...tours: unknown[]) {
   const requests: AgentRequest[] = [];
@@ -92,17 +103,17 @@ function scripted(...tours: unknown[]) {
     requests.push(request);
     const structured = request.job === 'tour' ? tours[requests.length - 1] : undefined;
     if (request.job === 'tour' && structured === undefined) throw new Error('model unavailable');
+    if (structured === BUDGET)
+      throw new AgentError(
+        'The agent stopped without an answer (error_max_budget_usd)',
+        cost(request.job, 900),
+      );
     return {
       sessionId: 'session-1',
       text: request.job === 'question' ? 'It calls `reflect()` on line 2.' : '',
       structured,
-      cost: {
-        job: request.job,
-        model: 'claude-test',
-        tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
-        costMicroUsd: 1500,
-        latencyMs: 1,
-      },
+      denials: [],
+      cost: cost(request.job, 1500),
     } satisfies AgentReply;
   };
   return { runner, requests };
@@ -111,11 +122,11 @@ function scripted(...tours: unknown[]) {
 const origin = 'http://127.0.0.1:4123';
 const token = 'test-token';
 
-async function open(runner: AgentRunner, cacheDir?: string) {
+async function open(runner: AgentRunner, cacheDir?: string, model = 'claude-test') {
   const review = new Review({
     source,
     runner,
-    model: 'claude-test',
+    model,
     ...(cacheDir ? { cacheDir } : {}),
   });
   await review.done;
@@ -152,10 +163,10 @@ describe('GET /api/review', () => {
     const tour = ready(body.tour);
     expect(tour.problems).toEqual([]);
     expect(tour.tour.stops.map((s) => s.kind)).toEqual(['intent', 'core_change', 'verdict_prompt']);
-    expect(tour.tour.stops[1]?.flag).toEqual({
-      kind: 'mismatch',
-      note: 'The description does not mention Vary.',
-    });
+    expect(tour.tour.stops[1]?.flags).toEqual(['mismatch']);
+    expect(tour.tour.stops[1]?.flagNotes).toEqual([
+      { flag: 'mismatch', note: 'The description does not mention Vary.' },
+    ]);
     expect(tour.tour.skips).toEqual([
       { path: 'pnpm-lock.yaml', hunk: null, reason: 'Lockfile bump' },
     ]);
@@ -183,7 +194,7 @@ describe('GET /api/review', () => {
 
     expect(requests).toHaveLength(3);
     expect(tour.problems).toEqual([
-      'Unexplained: src/cors.ts base line 2 has no home. Cite it in one core_change or edge stop, or skip it.',
+      'Unexplained: src/cors.ts base line 2 has no home. Cite it in a core_change or edge stop, or skip it.',
     ]);
   });
 
@@ -208,7 +219,7 @@ describe('GET /api/review', () => {
 
     const { tour } = await snapshot(api);
 
-    expect(tour).toEqual({ state: 'failed', reason: 'model unavailable' });
+    expect(tour).toEqual({ state: 'failed', reason: 'model unavailable', costs: [] });
   });
 
   test('reopening a PR loads the cached tour with no model calls', async () => {
@@ -222,6 +233,36 @@ describe('GET /api/review', () => {
     expect(second.requests).toEqual([]);
     expect(tour.cached).toBe(true);
     expect(tour.tour.stops).toHaveLength(3);
+  });
+
+  test('a different model writes a fresh tour instead of reusing the cached one', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    await open(scripted(goodTour).runner, cacheDir, 'model-a');
+    const second = scripted(goodTour);
+
+    await open(second.runner, cacheDir, 'model-b');
+
+    expect(second.requests).toHaveLength(1);
+  });
+
+  test('keeps the last good tour when a retry fails, and records what the failure cost', async () => {
+    const { runner, requests } = scripted(gappyTour, 'not a tour', BUDGET);
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(requests).toHaveLength(3);
+    expect(tour.tour.stops.map((s) => s.title)).toContain('x');
+    expect(tour.problems).toHaveLength(1);
+    expect(tour.costs.map((c) => c.costMicroUsd)).toEqual([1500, 1500, 900]);
+  });
+
+  test('a first attempt that hits the budget fails with its cost recorded', async () => {
+    const { api } = await open(scripted(BUDGET).runner);
+
+    const { tour } = await snapshot(api);
+
+    expect(tour).toMatchObject({ state: 'failed', costs: [{ costMicroUsd: 900 }] });
   });
 
   test('needs the token', async () => {
@@ -268,6 +309,13 @@ describe('GET /api/file', () => {
     const { api } = await open(scripted(goodTour).runner);
 
     expect((await api.file.$get({ query: { path: 'nope.ts', side: 'new' } })).status).toBe(404);
+  });
+
+  test('refuses binary files and files over 2 MB', async () => {
+    const { api } = await open(scripted(goodTour).runner);
+
+    expect((await api.file.$get({ query: { path: 'logo.png', side: 'new' } })).status).toBe(415);
+    expect((await api.file.$get({ query: { path: 'huge.txt', side: 'new' } })).status).toBe(413);
   });
 });
 

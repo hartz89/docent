@@ -7,6 +7,9 @@ import { validator } from 'hono/validator';
 import { isSafeRepoPath } from './github.ts';
 import type { Review, TourState } from './review.ts';
 
+/** The code view shows text files up to this size. */
+const MAX_FILE_CHARS = 2_000_000;
+
 export type AppOptions = {
   /** Per-launch secret. Every /api request must send it as a bearer token. */
   token: string;
@@ -37,7 +40,11 @@ export function createApp({ token, origin, version, webRoot, review }: AppOption
           queue.push(tour);
           wake?.();
         });
-        stream.onAbort(unsubscribe);
+        // Wake the loop on abort too, or it would wait forever for a state that never comes.
+        stream.onAbort(() => {
+          unsubscribe();
+          wake?.();
+        });
         while (!stream.aborted) {
           const next = queue.shift();
           if (!next) {
@@ -70,7 +77,11 @@ export function createApp({ token, origin, version, webRoot, review }: AppOption
         if (!review) return c.json(noReview, 404);
         const { path, side } = c.req.valid('query');
         const text = await review.readFile(side, path);
-        if (text === null) return c.json({ error: `${path} doesn't exist at ${side}` }, 404);
+        if (text === null) return c.json({ error: `${path} does not exist at ${side}` }, 404);
+        if (text.length > MAX_FILE_CHARS) {
+          return c.json({ error: `${path} is too large to show (over 2 MB)` }, 413);
+        }
+        if (text.includes('\0')) return c.json({ error: `${path} is a binary file` }, 415);
         return c.json({ path, side, text }, 200);
       },
     )

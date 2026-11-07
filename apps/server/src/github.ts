@@ -108,7 +108,7 @@ export function githubSource(url: string, cacheDir: string): PrSource {
     const show = async (sha: string, path: string) => {
       if (!isSafeRepoPath(path)) return null;
       try {
-        const { stdout } = await run('git', ['-C', dir, 'show', `${sha}:${path}`], {
+        const { stdout } = await git(dir, ['show', `${sha}:${path}`], {
           maxBuffer: 64 * 1024 * 1024,
         });
         return stdout;
@@ -126,28 +126,71 @@ export function githubSource(url: string, cacheDir: string): PrSource {
 }
 
 /**
- * A shallow, blobless fetch of just the two commits, checked out detached at head. Fork PRs work
- * because GitHub serves every PR's head as refs/pull/N/head on the base repo.
+ * A shallow, blobless fetch of exactly the two commits, by SHA, checked out detached at head.
+ * GitHub serves a fork PR's head commit from the base repo too, so fork PRs work.
  */
 async function ensureCheckout(dir: string, repo: string, pr: PrInfo): Promise<void> {
-  const ready = join(dir, '.git', 'docent-ready');
+  const ready = join(dir, '.git', 'docent-ready-v2'); // v2: hardened checkout
   if (existsSync(ready)) return;
   await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { recursive: true });
-  const git = (...args: string[]) => run('git', ['-C', dir, ...args], { maxBuffer: 1 << 26 });
-  await git('init', '--quiet');
-  await git('remote', 'add', 'origin', `https://github.com/${repo}.git`);
-  await git(
+  await git(dir, ['init', '--quiet']);
+  await git(dir, ['remote', 'add', 'origin', `https://github.com/${repo}.git`]);
+  await git(dir, [
     'fetch',
     '--quiet',
     '--depth=1',
     '--filter=blob:none',
+    '--no-recurse-submodules',
     'origin',
     pr.base,
-    `refs/pull/${pr.number}/head`,
-  );
-  await git('-c', 'advice.detachedHead=false', 'checkout', '--quiet', '--detach', pr.head);
+    pr.head,
+  ]);
+  await git(dir, ['checkout', '--quiet', '--detach', pr.head]);
   await writeFile(ready, `${new Date().toISOString()}\n`);
+}
+
+/**
+ * Git over code we don't trust. The checkout is read by an agent and served to the browser, so:
+ * - no user or system config (no aliases, hooks, filters or helpers from the machine), except
+ *   `gh` as the credential helper, so private repos still fetch;
+ * - no hooks, no submodules, no LFS downloads, no file:// transport;
+ * - symlinks check out as plain files holding the link text, so nothing points out of the
+ *   checkout.
+ */
+export function git(dir: string, args: readonly string[], options: { maxBuffer?: number } = {}) {
+  return run(
+    'git',
+    [
+      '-C',
+      dir,
+      '-c',
+      'core.symlinks=false',
+      '-c',
+      'core.hooksPath=/dev/null',
+      '-c',
+      'submodule.recurse=false',
+      '-c',
+      'protocol.file.allow=never',
+      '-c',
+      'advice.detachedHead=false',
+      '-c',
+      'credential.helper=',
+      '-c',
+      'credential.helper=!gh auth git-credential',
+      ...args,
+    ],
+    {
+      maxBuffer: options.maxBuffer ?? 1 << 26,
+      env: {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_LFS_SKIP_SMUDGE: '1',
+        GIT_TERMINAL_PROMPT: '0',
+      },
+    },
+  );
 }
 
 async function gh(args: string[]): Promise<string> {
