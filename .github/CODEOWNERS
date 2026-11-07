@@ -1,0 +1,25 @@
+# Tier-2 paths (docs/process/pull-requests.md). A PR touching any of them needs the
+# maintainer's approval; everything else merges on green CI. See docs/process/agent-identities.md.
+
+# The harness: how agents work here, including this file and CI.
+AGENTS.md                 @hartz89
+CLAUDE.md                 @hartz89
+/.claude/                 @hartz89
+/docs/process/            @hartz89
+/scripts/                 @hartz89
+/.github/                 @hartz89
+
+# Dependencies and toolchain: they change what gets installed and how code builds.
+package.json              @hartz89
+/pnpm-lock.yaml           @hartz89
+/pnpm-workspace.yaml      @hartz89
+/.npmrc                   @hartz89
+/biome.json               @hartz89
+tsconfig*.json            @hartz89
+
+# The security boundary: server auth and origin checks.
+/apps/server/src/app.ts   @hartz89
+
+# Legal: licensing terms.
+/LICENSE                  @hartz89
+/NOTICE                   @hartz89
