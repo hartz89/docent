@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(pnpm verify:*)",
+      "Bash(pnpm test:e2e:*)",
+      "Bash(pnpm dev:*)",
+      "Bash(pnpm fix:*)",
+      "Bash(pnpm build:*)",
+      "Bash(pnpm exec biome:*)",
+      "Bash(pnpm exec vitest:*)",
+      "Bash(pnpm exec playwright:*)",
+      "Bash(pnpm exec tsc:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch)",
+      "Bash(git branch --show-current)",
+      "Bash(git branch --list:*)"
+    ],
+    "deny": ["Read(./.env*)", "Read(./**/.env*)", "Bash(git push --force*)", "Bash(git push -f*)"]
+  },
+  "worktree": {
+    "baseRef": "head"
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "EnterWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pnpm install --frozen-lockfile --prefer-offline",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}

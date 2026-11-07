@@ -1,0 +1,11 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Supply-chain care. Docent ships via npx, so what we install matters.
+# Refuse versions published less than a day ago: most malicious releases are
+# caught and pulled within hours.
+minimumReleaseAge: 1440
+# Install scripts are off unless a package is listed here.
+onlyBuiltDependencies:
+  - lefthook

@@ -1,1 +1,20 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+
+# Claude Code: per-machine settings and agent worktrees
 .claude/worktrees/
+.claude/settings.local.json
+
+# Secrets
+.env*
+!.env.example
+
+.DS_Store

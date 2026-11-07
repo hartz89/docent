@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "apps/server" },
+    { "path": "apps/web" },
+    { "path": "e2e" },
+    { "path": "scripts" }
+  ]
+}
