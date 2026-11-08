@@ -5,18 +5,23 @@ PRs are sorted into risk tiers, and humans review a sample of them. Trust is ear
 | Tier | What it covers                                                                                                                                                                                                                                                    | Review                                                                                      |
 | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | 0    | Docs, comments, tests only, formatting                                                                                                                                                                                                                            | Mechanical checks                                                                           |
-| 1    | Feature work inside one package, with tests                                                                                                                                                                                                                       | Checks + a fresh-context agent review; the maintainer samples some                                    |
-| 2    | Security boundaries (server auth, read-only session gates, scrubbing, credentials), shared contracts (adapter interface, snapshot format, tour schema), CI, releases, dependencies, and the agent harness (`AGENTS.md`, `CLAUDE.md`, `.claude/`, `docs/process/`) | Checks + agent review + the maintainer, always (for now). Harness changes also run the harness evals. |
+| 1 | Feature work inside one package, with tests | Checks + a fresh-context agent review; the maintainer samples some |
+| 2a | Shared contracts (core model, adapter interface, snapshot format, tour schema) that don't touch scrubbing, auth or session gates; new dependencies without install or build scripts, outside `apps/server`; version bumps and lockfile-only changes | Checks + a fresh-context agent review with no blockers open. An agent merges, and logs the merge in `backlog/decisions.md` for the maintainer's veto. |
+| 2b | Security boundaries (server auth, read-only session gates, scrubbing, credentials, agent identities: the GitHub Apps, `scripts/as-agent.ts`, and app keys), permissions and settings (`.claude/`), CI and releases, the agent harness (`AGENTS.md`, `CLAUDE.md`, `docs/process/`), the tier definitions and merge rules themselves, any contract change that touches scrubbing, auth or session gates, and dependencies with install scripts or used by `apps/server` | Checks + agent review + the maintainer, always (for now). Harness changes also run the harness evals. |
 
 The tier comes from the paths a PR changes. If paths span several tiers, the highest one wins. A script will assign tiers mechanically; until then, state the tier and why.
+
+**Changing the rules is tier 2b.** Any change to tier definitions, the autonomy dial or merge rules is 2b, wherever it lives, so agents can't loosen their own gates.
 
 **Trust metric:** escaped defects per tier, meaning defects found later (by sampled review or a later fix) that trace back to a merged PR. Track it once there's volume.
 
 ## The autonomy dial
 
 Autonomy expands quickly and pulls back on evidence, not on worry. Where the dial stands today:
-- Agents merge tier 0 and tier 1.
-- Tier 2 waits for the maintainer.
+- Agents merge tiers 0, 1 and 2a. A 2a merge needs a fresh-context review with no open blockers, and is logged in `backlog/decisions.md` for veto.
+- Tier 2b waits for the maintainer.
+
+This was set on 2026-11-07, at the maintainer's direction: merge autonomously when PRs pass the quality and risk gates, and escalate only when it's genuinely critical.
 
 **When to turn it down.** An agent-merged PR causes an escaped defect: a bug, a regression, or a broken rule. Then tighten that tier one step, for example sending tier 1 back to the maintainer, and record what happened and why here. When the trust metric shows the tier is clean again, turn it back up.
 
