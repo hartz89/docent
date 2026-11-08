@@ -3,7 +3,7 @@
 import { createReadStream, existsSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { type SessionId, sessionId } from '@docent/core';
 import { git } from './github.ts';
@@ -125,17 +125,19 @@ export const fixedSession =
     session;
 
 /**
- * Ties a transcript to the PR: the session worked on the PR's head branch, in a checkout of the
- * PR's repo. With the head branch in the PR's own repo, only someone who can push there could
- * have made that branch, so a link pasted into someone else's PR doesn't match.
+ * Ties a transcript to the PR: one of its records shows the session on the PR's head branch, in
+ * a checkout of the PR's repo. Branch and checkout come from the same record, so a session that
+ * was on a same-named branch in another project, and only visited this repo, doesn't match.
+ * With the head branch in the PR's own repo, only someone who can push there could have made
+ * that branch, so a link pasted into someone else's PR doesn't match either.
  */
 async function matchesPr(
   summary: Summary,
   handoff: Handoff,
   repoOf: (dir: string) => Promise<string | null>,
 ): Promise<boolean> {
-  if (!summary.branches.has(handoff.headRef)) return false;
-  for (const cwd of [...summary.cwds].slice(0, 20)) {
+  const checkouts = summary.checkoutsByBranch.get(handoff.headRef) ?? new Set<string>();
+  for (const cwd of [...checkouts].slice(0, 20)) {
     const repo = await repoOf(cwd).catch(() => null);
     if (repo?.toLowerCase() === handoff.repo.toLowerCase()) return true;
   }
@@ -193,7 +195,8 @@ async function findLinked(
         entry.subtype === 'bridge_status' &&
         typeof entry.url === 'string' &&
         links.has(entry.url) &&
-        typeof entry.sessionId === 'string' &&
+        // The record must be this transcript's own, so the session checked is the one forked.
+        entry.sessionId === basename(path, '.jsonl') &&
         UUID.test(entry.sessionId)
       ) {
         matches.push({
@@ -210,27 +213,25 @@ async function findLinked(
 }
 
 type Summary = {
-  branches: Set<string>;
-  cwds: Set<string>;
+  /** Each branch the session was on, and the checkouts it was on it in, record by record. */
+  checkoutsByBranch: Map<string, Set<string>>;
   lastCwd: string | null;
   contextTokens: number | null;
 };
 
 /** What a transcript says about where it worked, and how big its context got. */
 async function summarize(path: string): Promise<Summary> {
-  const summary: Summary = {
-    branches: new Set(),
-    cwds: new Set(),
-    lastCwd: null,
-    contextTokens: null,
-  };
+  const summary: Summary = { checkoutsByBranch: new Map(), lastCwd: null, contextTokens: null };
   for await (const line of lines(path)) {
     const entry = parse(line);
     if (!entry) continue;
-    if (typeof entry.gitBranch === 'string') summary.branches.add(entry.gitBranch);
     if (typeof entry.cwd === 'string') {
-      summary.cwds.add(entry.cwd);
       summary.lastCwd = entry.cwd;
+      if (typeof entry.gitBranch === 'string') {
+        const checkouts = summary.checkoutsByBranch.get(entry.gitBranch) ?? new Set<string>();
+        checkouts.add(entry.cwd);
+        summary.checkoutsByBranch.set(entry.gitBranch, checkouts);
+      }
     }
     const usage = (entry.message as { usage?: Record<string, unknown> } | undefined)?.usage;
     if (entry.type === 'assistant' && usage) {

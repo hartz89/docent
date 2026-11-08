@@ -101,6 +101,39 @@ test("a link pasted into someone else's PR doesn't pick that session", async () 
   expect(await locate(pr({ headRef: 'secret-work' }))).toEqual(noMatch);
 });
 
+test('the branch and the checkout must come from the same record', async () => {
+  // A session that worked on `fix-ci` in another project, and was in this repo's checkout only
+  // on `main`. Someone who can push here opens a PR from a branch named `fix-ci`, with its link.
+  const projectsDir = await projects({
+    session: AUTHOR,
+    lines: [
+      bridgeStatus(AUTHOR, LINK, '/Users/someone/private'),
+      turn(AUTHOR, '2026-11-07T11:00:00.000Z', 'fix-ci', '/Users/someone/private'),
+      turn(AUTHOR, '2026-11-07T11:05:00.000Z', 'main', CHECKOUT),
+    ],
+  });
+
+  expect(await localSessions({ projectsDir, repoOf })(pr({ headRef: 'fix-ci' }))).toEqual({
+    found: false,
+    reason: "The linked session doesn't match this PR",
+  });
+});
+
+test("a record naming another session doesn't make its transcript that session", async () => {
+  // This transcript carries a copy of the author's record under the author's id. Checking this
+  // file and forking the author would test one session and fork another.
+  const copy = randomUUID();
+  const projectsDir = await projects({
+    session: copy,
+    lines: [bridgeStatus(AUTHOR), turn(copy, '2026-11-07T11:00:00.000Z', 'fix')],
+  });
+
+  expect(await localSessions({ projectsDir, repoOf })(pr())).toEqual({
+    found: false,
+    reason: "The author's session isn't on this machine",
+  });
+});
+
 test('a PR from a fork never picks a session by its link', async () => {
   const projectsDir = await projects(authorTranscript());
 

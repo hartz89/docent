@@ -14,6 +14,8 @@ export type AgentRequest = {
   /** Called with short descriptions of what the agent is doing, like "Reading src/cors.ts". */
   onActivity?: (activity: string) => void;
   signal?: AbortSignal;
+  /** The most the session may spend. Default $2. */
+  maxBudgetUsd?: number;
 } & (
   | {
       /** Continue Docent's own earlier session, as the checker loop does with its problems. */
@@ -73,7 +75,7 @@ const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
  * checkout with a real session, and proves a fork leaves the author's transcript unchanged.
  */
 export function readOnlyOptions(
-  request: Pick<AgentRequest, 'cwd' | 'model' | 'schema' | 'resume' | 'fork'>,
+  request: Pick<AgentRequest, 'cwd' | 'model' | 'schema' | 'resume' | 'fork' | 'maxBudgetUsd'>,
 ) {
   return {
     cwd: request.cwd,
@@ -84,7 +86,7 @@ export function readOnlyOptions(
     mcpServers: {},
     settingSources: [],
     maxTurns: 60,
-    maxBudgetUsd: 2,
+    maxBudgetUsd: request.maxBudgetUsd ?? 2,
     ...(request.resume ? { resume: request.resume } : {}),
     ...(request.fork ? { resume: request.fork, forkSession: true, persistSession: false } : {}),
     ...(request.schema
@@ -95,6 +97,9 @@ export function readOnlyOptions(
 
 /** Runs Claude Code headlessly through the Agent SDK, read-only (see `readOnlyOptions`). */
 export const sdkRunner: AgentRunner = async (request) => {
+  // An abort listener never fires for a signal that's already aborted, so check first: an
+  // expired deadline must never start a call with no time limit.
+  request.signal?.throwIfAborted();
   const started = Date.now();
   const abortController = new AbortController();
   request.signal?.addEventListener('abort', () => abortController.abort());
@@ -233,11 +238,15 @@ export function costRecord(job: Job, model: string, usage: Usage, latencyMs: num
 
 /**
  * What a fork's first call costs, before it runs: it writes the parent's whole context to the
- * prompt cache, at 1.25x input. Null for a model with no known price.
+ * prompt cache. Priced as a 1-hour cache write (2x input), which is what Claude Code uses on a
+ * subscription by default (the SDK's `promptCacheTtl`: "1 hour on a Claude subscription"). The
+ * PR #17 live run agrees: 196k written tokens at 2x account for its $1.63. On an API key writes
+ * are 5-minute (1.25x), so this overestimates there, which is the safe direction.
+ * Null for a model with no known price.
  */
 export function forkCostEstimateUsd(model: string, contextTokens: number): number | null {
   const price = priceFor(model);
-  return price ? (contextTokens * price.input * 1.25) / 1e6 : null;
+  return price ? (contextTokens * price.input * 2) / 1e6 : null;
 }
 
 /** Longest matching id prefix, so `claude-opus-5-5-…` doesn't price as `claude-opus-5`. */
