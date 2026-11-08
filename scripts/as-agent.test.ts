@@ -375,6 +375,14 @@ describe('as-agent allowlist', () => {
     ['builder', 'git push --mirror origin'],
     ['builder', 'gh pr merge 3 --squash --admin'],
     ['builder', 'gh pr merge 3 --merge'],
+    ['builder', 'gh pr merge 3 --squash --auto --admin'],
+    ['builder', 'gh pr merge 3 --auto'],
+    ['builder', 'gh pr merge 3 --auto --merge'],
+    ['builder', 'gh pr merge 3 --auto --rebase'],
+    ['builder', 'gh pr merge 3 --squash --auto --body x'],
+    ['builder', 'gh pr merge 3 --squash --auto --delete-branch'],
+    ['builder', 'gh pr merge 3 --squash --auto --auto'],
+    ['builder', 'gh pr merge 3 4 --squash --auto'],
     ['builder', 'gh api -X POST /repos/hartz89/docent/pulls'],
     ['builder', 'gh api --method=DELETE /repos/hartz89/docent/git/refs/heads/x'],
     ['builder', 'gh api -XPATCH /repos/hartz89/docent'],
@@ -401,6 +409,7 @@ describe('as-agent allowlist', () => {
     ['builder', 'rm -rf /'],
     ['reviewer', 'git push origin feat/x'],
     ['reviewer', 'gh pr merge 3 --squash'],
+    ['reviewer', 'gh pr merge 3 --squash --auto'],
     ['reviewer', 'gh pr create --title x'],
   ];
 
@@ -416,6 +425,7 @@ describe('as-agent allowlist', () => {
     ['git push origin feat/x', 'git push origin refs/heads/feat/x:refs/heads/feat/x'],
     ['gh pr create --title x --body-file body.md', 'gh pr create --title x --body-file body.md'],
     ['gh pr merge 3 --squash', 'gh pr merge 3 --squash'],
+    ['gh pr merge 3 --squash --auto', 'gh pr merge 3 --squash --auto'],
     [
       'gh api /repos/hartz89/docent/pulls -X GET --paginate',
       'gh api /repos/hartz89/docent/pulls -X GET --paginate',
