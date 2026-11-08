@@ -35,6 +35,6 @@ A negative control has no findings. Its evidence is the PR's own diff, with a no
    - `size`: `small` under 100 changed lines, `medium` under 500, `large` otherwise.
 5. Run `pnpm verify`, then `pnpm --filter @docent/evals check:fixtures`. The check confirms the SHAs, the merge base, the size, and that every range is in the diff.
 
-**Dogfood fixtures** come from the maintainer's `Docent feedback:` comments on this repo's own PRs ([`docs/process/pull-requests.md`](../../docs/process/pull-requests.md), "Dogfooding Docent"). They follow the same steps. The id is `docent-<pr>-<short-slug>`, the license is `Apache-2.0`, and the feedback comment is the evidence.
+**Dogfood fixtures** come from the maintainer's `Docent feedback:` comments on this repo's own PRs ([`docs/process/pull-requests.md`](../../docs/process/pull-requests.md), "Dogfooding Docent"). They follow the same steps, with one change: `head` is the commit the tour was prepared at, named in the tour-ready comment, not the PR's final head. Later pushes may have fixed the miss or moved its lines. The id is `docent-<pr>-<short-slug>`, the license is `Apache-2.0`, and the feedback comment is the evidence.
 
 Prefer small and medium PRs, since every fixture costs model calls on every run. Keep the job mix spread: mostly tour, plus skip-decision noise (lockfiles, generated code, moved code), danger flags, and negative controls.

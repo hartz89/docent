@@ -45,8 +45,10 @@ if (url && !values.fixture && !parsePrUrl(url)) {
   process.exit(1);
 }
 
-if (values.prepare && values['no-cache']) {
-  console.error('--prepare writes the tour to the cache, so it cannot be used with --no-cache.');
+if (values.prepare && (values['no-cache'] || values.record)) {
+  // A cache hit would skip the job, leaving a recording with no replies.
+  const other = values.record ? '--record' : '--no-cache';
+  console.error(`--prepare writes the tour to the cache, so it cannot be used with ${other}.`);
   process.exit(1);
 }
 
@@ -75,7 +77,8 @@ const review = new Review({
   runner,
   model,
   // Fixtures and recordings always run the job, since a cached tour would skip it. Preparing
-  // always caches: that is its whole point.
+  // always caches: that is its whole point. (`--fixture --prepare` writes a replayed tour to
+  // the cache, so point DOCENT_CACHE_DIR somewhere else for that.)
   ...(values.prepare || !(values.fixture || values.record || values['no-cache'])
     ? { cacheDir }
     : {}),
@@ -84,12 +87,14 @@ const review = new Review({
 if (values.prepare) await prepare(review);
 else await serve(review);
 
-/** Writes the tour to the cache and returns. Exit code 1 if the tour failed. */
+/** Writes the tour to the cache, then exits: 0 if it's ready, 1 if it failed. */
 async function prepare(review: Review) {
   report(review);
   await review.done;
-  if (review.snapshot().tour.state !== 'ready') process.exitCode = 1;
-  else if (url) console.log(`Open it with: pnpm docent review ${url}`);
+  const ready = review.snapshot().tour.state === 'ready';
+  if (ready && url) console.log(`Open it with: pnpm docent review ${url}`);
+  // Exit outright, so a lingering agent subprocess can't hang an unattended run. Flush first.
+  process.stdout.write('', () => process.exit(ready ? 0 : 1));
 }
 
 async function serve(review: Review) {

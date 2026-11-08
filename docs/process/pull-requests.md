@@ -40,9 +40,9 @@ It's what Docent itself reads, and often the only part a human reads. Make it wo
 
 ## Dogfooding Docent
 
-Every PR that needs the maintainer gets a Docent tour, prepared ahead of time. The steps are in [`worktrees.md`](worktrees.md), step 6. Each of these reviews is also a chance to find out where the tour falls short.
+Every PR that needs the maintainer gets a Docent tour, prepared ahead of time. The steps are in [`worktrees.md`](worktrees.md), under "Prepare a Docent tour". Each of these reviews is also a chance to find out where the tour falls short.
 
-**Feedback goes on the PR.** If the tour missed something or got something wrong, the maintainer replies to the tour-ready comment with a line starting `Docent feedback:`. Point at the file and lines, and say what was missed or wrong. Silence means the tour was fine. Agents find all feedback with `gh api search/issues -X GET -f q='repo:hartz89/docent "Docent feedback" in:comments'`.
+**Feedback goes on the PR.** If the tour missed something or got something wrong, the maintainer replies to the tour-ready comment with a line starting `Docent feedback:`. Point at the file and lines, and say what was missed or wrong. Silence means the tour was fine. To find feedback, list the PRs with `gh api search/issues -X GET -f q='repo:hartz89/docent commenter:hartz89 "Docent feedback" in:comments'`. That returns PRs, not comments, so read each PR's comments and keep the maintainer's that start with `Docent feedback:`.
 
 **A miss becomes an eval fixture.** An agent turns each miss into a manifest in [`packages/evals/fixtures/public/`](../../packages/evals/fixtures/public/), with the same schema and checks as every other fixture (see [`packages/evals/AGENTS.md`](../../packages/evals/AGENTS.md)). The id starts with `docent-<pr>-`. The maintainer's feedback comment is the evidence link. This repo is public, so these fixtures are public too.
 
