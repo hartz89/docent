@@ -65,14 +65,19 @@ export async function highlight(path: string, text: string): Promise<Token[][]> 
   const plain = () => text.split(/\r?\n/).map((line) => [{ text: line, color: undefined }]);
   if (text.length > MAX_HIGHLIGHT_CHARS) return plain();
   try {
-    shiki ??= loadShiki();
+    // Only a failed load clears the cache, so one file that fails to tokenize doesn't throw away
+    // the highlighter and every grammar it has compiled. (Some browsers cache a failed import(),
+    // so a retry may fail again; then files stay plain, which is the fallback anyway.)
+    shiki ??= loadShiki().catch((error: unknown) => {
+      shiki = undefined;
+      throw error;
+    });
     const { core, languageFor, load } = await shiki;
     const lang = languageFor(path);
     if (!lang || !(await load(lang))) return plain();
     const { tokens } = core.codeToTokens(text, { lang, theme: THEME });
     return tokens.map((line) => line.map((token) => ({ text: token.content, color: token.color })));
   } catch {
-    shiki = undefined; // a failed load (say, a dropped chunk request) gets retried next time
     return plain();
   }
 }
