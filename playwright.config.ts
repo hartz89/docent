@@ -5,6 +5,8 @@ import { defineConfig, devices } from '@playwright/test';
 // `pnpm test:e2e`, which builds first.
 export default defineConfig({
   testDir: 'e2e',
+  testMatch: '*.spec.ts',
+  testIgnore: 'fixtures/**',
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'line',

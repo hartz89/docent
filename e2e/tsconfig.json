@@ -4,5 +4,6 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": [".", "../playwright.config.ts", "../vitest.config.ts"]
+  "include": [".", "../playwright.config.ts", "../vitest.config.ts"],
+  "exclude": ["fixtures"]
 }

@@ -1,0 +1,197 @@
+// The boundary to the model. Everything Docent asks an agent goes through an AgentRunner, so tests
+// can swap in a scripted runner and never make a model call.
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import { type CostRecord, type Job, type MicroUsd, microUsd } from '@docent/core';
+
+export type AgentRequest = {
+  job: Job;
+  prompt: string;
+  /** The checkout the agent may read. It can't write anywhere. */
+  cwd: string;
+  model: string;
+  /** JSON Schema for structured output. Leave out for a plain-text answer. */
+  schema?: Record<string, unknown>;
+  /** Continue an earlier session, as the checker loop does when it sends back problems. */
+  resume?: string;
+  /** Called with short descriptions of what the agent is doing, like "Reading src/cors.ts". */
+  onActivity?: (activity: string) => void;
+  signal?: AbortSignal;
+};
+
+export type AgentReply = {
+  sessionId: string;
+  text: string;
+  /** The parsed structured output, when a schema was given. */
+  structured: unknown;
+  cost: CostRecord;
+  /** Tools the session tried and was refused, as the SDK reports them. */
+  denials: string[];
+};
+
+export type AgentRunner = (request: AgentRequest) => Promise<AgentReply>;
+
+/** The agent stopped without an answer (max turns, max budget, an API error). Carries its cost. */
+export class AgentError extends Error {
+  readonly cost: CostRecord;
+  constructor(message: string, cost: CostRecord) {
+    super(message);
+    this.cost = cost;
+  }
+}
+
+/** Tools are fixed for every call: changing the set breaks prompt caching (see the session spike). */
+const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
+
+/**
+ * The read-only session options. The flags stack, because no single one holds on its own
+ * (docs/research/2026-11-06-session-spike.md):
+ * - `tools`: only Read, Grep and Glob exist in the session. No Bash, Edit, Write or Task.
+ * - `permissionMode: 'dontAsk'`: any call that would need approval (a read outside the cwd,
+ *   say) is denied without asking. There is no `canUseTool`: under `dontAsk` it is never
+ *   consulted, so it would only suggest a gate that isn't there. There is no `allowedTools`
+ *   either; read-only tools inside the cwd need no approval.
+ * - `strictMcpConfig` with no servers, and `settingSources: []`: the checkout's own `.claude/`
+ *   settings, hooks, permissions, MCP config and CLAUDE.md never load. The code under review is
+ *   data, not configuration.
+ * `src/agent.test.ts` pins these options; `src/agent.live.test.ts` proves them against a hostile
+ * checkout with a real session.
+ */
+export function readOnlyOptions(
+  request: Pick<AgentRequest, 'cwd' | 'model' | 'schema' | 'resume'>,
+) {
+  return {
+    cwd: request.cwd,
+    model: request.model,
+    tools: READ_ONLY_TOOLS,
+    permissionMode: 'dontAsk' as const,
+    strictMcpConfig: true,
+    mcpServers: {},
+    settingSources: [],
+    maxTurns: 60,
+    maxBudgetUsd: 2,
+    ...(request.resume ? { resume: request.resume } : {}),
+    ...(request.schema
+      ? { outputFormat: { type: 'json_schema' as const, schema: request.schema } }
+      : {}),
+  };
+}
+
+/** Runs Claude Code headlessly through the Agent SDK, read-only (see `readOnlyOptions`). */
+export const sdkRunner: AgentRunner = async (request) => {
+  const started = Date.now();
+  const abortController = new AbortController();
+  request.signal?.addEventListener('abort', () => abortController.abort());
+
+  let model = request.model;
+  let ended:
+    | { ok: true; sessionId: string; text: string; structured: unknown; usage: Usage }
+    | { ok: false; failure: string; usage: Usage }
+    | undefined;
+  let denials: string[] = [];
+
+  for await (const message of query({
+    prompt: request.prompt,
+    options: { ...readOnlyOptions(request), abortController },
+  })) {
+    if (message.type === 'assistant' && message.parent_tool_use_id === null) {
+      model = message.message.model || model;
+      for (const block of message.message.content) {
+        if (block.type === 'tool_use') {
+          request.onActivity?.(describeTool(block.name, block.input, request.cwd));
+        }
+      }
+    } else if (message.type === 'result') {
+      denials = message.permission_denials.map((d) => d.tool_name);
+      if (message.subtype === 'success' && !message.is_error) {
+        ended = {
+          ok: true,
+          sessionId: message.session_id,
+          text: message.result,
+          structured: message.structured_output,
+          usage: message.usage,
+        };
+      } else {
+        // Error results (max turns, max budget) still spent tokens: record them too.
+        const errors = 'errors' in message ? message.errors.join('; ') : '';
+        ended = {
+          ok: false,
+          failure: `${message.subtype}${errors ? `: ${errors}` : ''}`,
+          usage: message.usage,
+        };
+      }
+    }
+  }
+
+  if (!ended) throw new Error('The agent stopped without a result.');
+  const cost = costRecord(request.job, model, ended.usage, Date.now() - started);
+  if (!ended.ok)
+    throw new AgentError(`The agent stopped without an answer (${ended.failure})`, cost);
+  return {
+    sessionId: ended.sessionId,
+    text: ended.text,
+    structured: ended.structured,
+    cost,
+    denials,
+  };
+};
+
+/** The result message's usage: this turn's API calls only, even when resuming a session. */
+type Usage = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_creation?: { ephemeral_5m_input_tokens: number; ephemeral_1h_input_tokens: number } | null;
+};
+
+/** USD per million tokens, list prices as of 2026-10. */
+const PRICES: Record<string, { input: number; output: number; cacheRead: number }> = {
+  'claude-fable-5-1': { input: 10, output: 50, cacheRead: 0.25 },
+  'claude-fable-5': { input: 10, output: 50, cacheRead: 1 },
+  'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2 },
+  'claude-opus-5': { input: 5, output: 25, cacheRead: 0.5 },
+  'claude-sonnet-5': { input: 2, output: 10, cacheRead: 0.2 },
+  'claude-haiku-5-5': { input: 0.1, output: 0.5, cacheRead: 0.01 },
+};
+
+/**
+ * Prices one turn's usage (K1, K2). Not from `total_cost_usd`, which includes the parent session's
+ * cost on forks and resumes (see the session spike). Not from assistant frames either: their
+ * `usage` is a snapshot from the start of streaming, with output tokens near zero.
+ * Cache writes cost 1.25x input for 5-minute entries and 2x for 1-hour ones.
+ */
+export function costRecord(job: Job, model: string, usage: Usage, latencyMs: number): CostRecord {
+  const tokens = {
+    input: usage.input_tokens,
+    output: usage.output_tokens,
+    cacheRead: usage.cache_read_input_tokens,
+    cacheWrite: usage.cache_creation_input_tokens,
+  };
+  const oneHour = usage.cache_creation?.ephemeral_1h_input_tokens ?? 0;
+  const price = priceFor(model);
+  const usd = price
+    ? (tokens.input * price.input +
+        tokens.output * price.output +
+        tokens.cacheRead * price.cacheRead +
+        (tokens.cacheWrite - oneHour) * price.input * 1.25 +
+        oneHour * price.input * 2) /
+      1e6
+    : 0;
+  const costMicroUsd = microUsd(Math.max(0, Math.round(usd * 1e6))) ?? (0 as MicroUsd);
+  return { job, model, tokens, costMicroUsd, latencyMs };
+}
+
+/** Longest matching id prefix, so `claude-opus-5-5-…` doesn't price as `claude-opus-5`. */
+function priceFor(model: string) {
+  const key = Object.keys(PRICES)
+    .filter((id) => model.startsWith(id))
+    .sort((a, b) => b.length - a.length)[0];
+  return key ? PRICES[key] : undefined;
+}
+
+function describeTool(name: string, input: unknown, cwd: string): string {
+  const args = (input ?? {}) as Record<string, unknown>;
+  const target = String(args.file_path ?? args.pattern ?? args.path ?? '').replace(`${cwd}/`, '');
+  const verb = name === 'Read' ? 'Reading' : name === 'Grep' ? 'Searching for' : 'Looking for';
+  return target ? `${verb} ${target}` : verb;
+}

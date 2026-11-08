@@ -1,4 +1,4 @@
-import type { AppType } from '@docent/server';
+import type { AppType, TourState } from '@docent/server';
 import { hc } from 'hono/client';
 
 /**
@@ -19,6 +19,39 @@ function takeToken(): string {
   return sessionStorage.getItem('docent-token') ?? '';
 }
 
-export const api = hc<AppType>(window.location.origin, {
+type Client = ReturnType<typeof hc<AppType>>;
+
+export const api: Client['api'] = hc<AppType>(window.location.origin, {
   headers: { Authorization: `Bearer ${takeToken()}` },
 }).api;
+
+/**
+ * Follows the tour's progress over server-sent events. EventSource can't send the bearer token,
+ * so this reads the stream through fetch instead. Resolves when the server closes the stream.
+ */
+export async function followTour(
+  onState: (state: TourState) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const res = await api.review.events.$get(undefined, { init: { signal } });
+  if (!res.ok || !res.body) throw new Error(`Progress stream answered ${res.status}`);
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    buffer += value;
+    let end = buffer.indexOf('\n\n');
+    while (end !== -1) {
+      const data = buffer
+        .slice(0, end)
+        .split('\n')
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart())
+        .join('\n');
+      buffer = buffer.slice(end + 2);
+      if (data) onState(JSON.parse(data) as TourState);
+      end = buffer.indexOf('\n\n');
+    }
+  }
+}
