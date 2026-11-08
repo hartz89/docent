@@ -331,7 +331,8 @@ type Exchange = {
 
 /** Who answered, and what it cost: the author's session, or the guide and why. */
 function answerSource(answer: AnswerView): string {
-  const cost = formatUsd(answer.costs.reduce((sum, c) => sum + c.costMicroUsd, 0));
+  const known = formatUsd(answer.costs.reduce((sum, c) => sum + c.costMicroUsd, 0));
+  const cost = answer.costIncomplete ? `${known}, plus a failed fork of unknown cost` : known;
   return answer.source === 'author_session'
     ? `Answered by the author's session, in a read-only copy · ${cost}`
     : `Answered by the guide, not the author (${lowerFirst(answer.whyNotAuthor)}) · ${cost}`;

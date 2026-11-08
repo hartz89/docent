@@ -1,10 +1,12 @@
 // Finds the PR author's Claude Code session on this machine, so a question can fork it and get an
 // answer that knows why the change was built the way it was.
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { createReadStream, existsSync } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { getSessionInfo } from '@anthropic-ai/claude-agent-sdk';
+import { createInterface } from 'node:readline';
 import { type SessionId, sessionId } from '@docent/core';
+import { git } from './github.ts';
 
 /** The author's session, or why questions go to the guide instead. */
 export type AuthorSession =
@@ -15,11 +17,21 @@ export type AuthorSession =
       cwd: string | null;
       /** How it was found, for the UI: "the --session flag", say. */
       via: string;
+      /** The session's context size at its last turn, which a fork pays to cache. */
+      contextTokens: number | null;
     }
   | { found: false; reason: string };
 
-/** What the PR says about its author session: the description and the commit messages. */
-export type Handoff = { body: string; commitMessages: readonly string[] };
+/** What the PR says about itself: enough to find its author session and tie it to the PR. */
+export type Handoff = {
+  repo: string;
+  headRef: string;
+  /** The head branch lives in the PR's own repo, so only someone with write access pushed it. */
+  headInBaseRepo: boolean;
+  body: string;
+  /** Oldest first, as GitHub lists them. */
+  commitMessages: readonly string[];
+};
 
 export type SessionLocator = (handoff: Handoff) => Promise<AuthorSession>;
 
@@ -31,33 +43,78 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  */
 const SESSION_LINK = /https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+/g;
 
+/** Transcripts bigger than this are skipped, with a warning, rather than read. */
+const MAX_TRANSCRIPT_BYTES = 1024 ** 3;
+
+const NO_MATCH = "The linked session doesn't match this PR";
+
 /**
  * Finds the author session among this machine's Claude Code transcripts.
- * - An explicit id (`docent review --session <id>`) wins. It must exist on this machine.
- * - Otherwise, a session link in the PR body or commits. The link names the session on
- *   claude.ai, not on disk, but the local transcript records it when the session was started
- *   with remote control on. So the transcript that recorded it is the author's.
+ * - An explicit id (`docent review --session <id>`) wins. It must exist on this machine. The
+ *   reviewer chose it, so it isn't checked against the PR.
+ * - Otherwise, a session link in the PR. Links are public, so anyone can paste one into a PR,
+ *   and a link alone never picks a session. The link names the session on claude.ai, and the
+ *   local transcript records it when remote control starts. That transcript is the author's
+ *   only if it is also tied to this PR (see `matchesPr`). Links are tried in order: the PR
+ *   body's first, then the commits', newest first.
  */
 export function localSessions(
-  options: { explicit?: string; projectsDir?: string } = {},
+  options: {
+    explicit?: string;
+    projectsDir?: string;
+    /** The `owner/repo` a local checkout belongs to. Tests replace the git lookup. */
+    repoOf?: (dir: string) => Promise<string | null>;
+  } = {},
 ): SessionLocator {
   const projectsDir = options.projectsDir ?? join(homedir(), '.claude', 'projects');
+  const repoOf = options.repoOf ?? originRepo;
   return async (handoff) => {
+    const transcripts = await listTranscripts(projectsDir);
+
     if (options.explicit !== undefined) {
       const id = options.explicit;
       if (!UUID.test(id)) return { found: false, reason: `${id} is not a Claude Code session id` };
-      const info = await getSessionInfo(id).catch(() => undefined);
-      if (!info) return { found: false, reason: `Session ${id} isn't on this machine` };
-      return { found: true, id: sessionId(id), cwd: info.cwd ?? null, via: 'the --session flag' };
+      const path = transcripts.find((t) => t.name === `${id}.jsonl`)?.path;
+      if (!path) return { found: false, reason: `Session ${id} isn't on this machine` };
+      const summary = await summarize(path);
+      return {
+        found: true,
+        id: sessionId(id),
+        cwd: summary.lastCwd,
+        via: 'the --session flag',
+        contextTokens: summary.contextTokens,
+      };
     }
 
-    const links = new Set(
-      [handoff.body, ...handoff.commitMessages].flatMap((text) => text.match(SESSION_LINK) ?? []),
-    );
-    if (links.size === 0) return { found: false, reason: 'The PR names no author session' };
-    const found = await findLinkedTranscript(projectsDir, links);
-    if (!found) return { found: false, reason: "The author's session isn't on this machine" };
-    return { ...found, found: true, via: 'the session link in the PR' };
+    const links = [
+      ...(handoff.body.match(SESSION_LINK) ?? []),
+      ...[...handoff.commitMessages].reverse().flatMap((text) => text.match(SESSION_LINK) ?? []),
+    ].filter((link, i, all) => all.indexOf(link) === i);
+    if (links.length === 0) return { found: false, reason: 'The PR names no author session' };
+    // A PR from a fork could name any session, and nothing ties a fork's branch to this repo.
+    if (!handoff.headInBaseRepo) return { found: false, reason: NO_MATCH };
+
+    const candidates = await findLinked(transcripts, new Set(links));
+    if (candidates.length === 0) {
+      return { found: false, reason: "The author's session isn't on this machine" };
+    }
+    for (const link of links) {
+      const forLink = candidates
+        .filter((c) => c.link === link)
+        .sort((a, b) => a.firstSeen.localeCompare(b.firstSeen));
+      for (const candidate of forLink) {
+        const summary = await summarize(candidate.path);
+        if (!(await matchesPr(summary, handoff, repoOf))) continue;
+        return {
+          found: true,
+          id: candidate.id,
+          cwd: candidate.cwd,
+          via: 'the session link in the PR',
+          contextTokens: summary.contextTokens,
+        };
+      }
+    }
+    return { found: false, reason: NO_MATCH };
   };
 }
 
@@ -68,30 +125,67 @@ export const fixedSession =
     session;
 
 /**
- * The transcript that recorded one of these links when remote control started. Only that record
- * counts: Docent's own tour sessions quote the PR body, link included, and must not match.
- * Oldest transcript first, because a fork copies its parent's records, including this one.
+ * Ties a transcript to the PR: the session worked on the PR's head branch, in a checkout of the
+ * PR's repo. With the head branch in the PR's own repo, only someone who can push there could
+ * have made that branch, so a link pasted into someone else's PR doesn't match.
  */
-async function findLinkedTranscript(
-  projectsDir: string,
-  links: ReadonlySet<string>,
-): Promise<{ id: SessionId; cwd: string | null } | null> {
-  const files: { path: string; born: number }[] = [];
+async function matchesPr(
+  summary: Summary,
+  handoff: Handoff,
+  repoOf: (dir: string) => Promise<string | null>,
+): Promise<boolean> {
+  if (!summary.branches.has(handoff.headRef)) return false;
+  for (const cwd of [...summary.cwds].slice(0, 20)) {
+    const repo = await repoOf(cwd).catch(() => null);
+    if (repo?.toLowerCase() === handoff.repo.toLowerCase()) return true;
+  }
+  return false;
+}
+
+type Transcript = { name: string; path: string; size: number };
+
+/** Top-level session transcripts. Subagent transcripts live in subfolders and are left out. */
+async function listTranscripts(projectsDir: string): Promise<Transcript[]> {
+  const found: Transcript[] = [];
   for (const project of await readdir(projectsDir).catch(() => [])) {
     const dir = join(projectsDir, project);
     for (const name of await readdir(dir).catch(() => [])) {
       if (!name.endsWith('.jsonl')) continue;
       const path = join(dir, name);
       const info = await stat(path).catch(() => null);
-      if (info?.isFile()) files.push({ path, born: info.birthtimeMs || info.mtimeMs });
+      if (info?.isFile()) found.push({ name, path, size: info.size });
     }
   }
-  files.sort((a, b) => a.born - b.born);
+  return found;
+}
 
-  for (const { path } of files) {
-    const text = await readFile(path, 'utf8').catch(() => '');
-    if (!text.includes('"bridge_status"')) continue;
-    for (const line of text.split('\n')) {
+type Candidate = {
+  link: string;
+  path: string;
+  id: SessionId;
+  cwd: string | null;
+  /** The transcript's first timestamp. A fork starts later than its parent. */
+  firstSeen: string;
+};
+
+/**
+ * Transcripts that recorded one of these links when remote control started. Only that record
+ * counts: Docent's own tour sessions quote the PR body, link included, and must not match.
+ */
+async function findLinked(
+  transcripts: readonly Transcript[],
+  links: ReadonlySet<string>,
+): Promise<Candidate[]> {
+  const found: Candidate[] = [];
+  for (const { path, size } of transcripts) {
+    if (size > MAX_TRANSCRIPT_BYTES) {
+      console.warn(`Skipped a transcript too big to search (${size} bytes): ${path}`);
+      continue;
+    }
+    let firstSeen = '';
+    const matches: Omit<Candidate, 'firstSeen'>[] = [];
+    for await (const line of lines(path)) {
+      if (!firstSeen) firstSeen = /"timestamp":"([^"]+)"/.exec(line)?.[1] ?? '';
       if (!line.includes('"bridge_status"')) continue;
       const entry = parse(line);
       if (
@@ -102,14 +196,61 @@ async function findLinkedTranscript(
         typeof entry.sessionId === 'string' &&
         UUID.test(entry.sessionId)
       ) {
-        return {
+        matches.push({
+          link: entry.url,
+          path,
           id: sessionId(entry.sessionId),
           cwd: typeof entry.cwd === 'string' ? entry.cwd : null,
-        };
+        });
       }
     }
+    for (const match of matches) found.push({ ...match, firstSeen });
   }
-  return null;
+  return found;
+}
+
+type Summary = {
+  branches: Set<string>;
+  cwds: Set<string>;
+  lastCwd: string | null;
+  contextTokens: number | null;
+};
+
+/** What a transcript says about where it worked, and how big its context got. */
+async function summarize(path: string): Promise<Summary> {
+  const summary: Summary = {
+    branches: new Set(),
+    cwds: new Set(),
+    lastCwd: null,
+    contextTokens: null,
+  };
+  for await (const line of lines(path)) {
+    const entry = parse(line);
+    if (!entry) continue;
+    if (typeof entry.gitBranch === 'string') summary.branches.add(entry.gitBranch);
+    if (typeof entry.cwd === 'string') {
+      summary.cwds.add(entry.cwd);
+      summary.lastCwd = entry.cwd;
+    }
+    const usage = (entry.message as { usage?: Record<string, unknown> } | undefined)?.usage;
+    if (entry.type === 'assistant' && usage) {
+      const n = (key: string) => (typeof usage[key] === 'number' ? (usage[key] as number) : 0);
+      summary.contextTokens =
+        n('input_tokens') + n('cache_read_input_tokens') + n('cache_creation_input_tokens');
+    }
+  }
+  return summary;
+}
+
+async function* lines(path: string): AsyncGenerator<string> {
+  const stream = createReadStream(path, { encoding: 'utf8' });
+  try {
+    yield* createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+  } catch {
+    // Unreadable transcripts are skipped, like missing ones.
+  } finally {
+    stream.destroy();
+  }
 }
 
 function parse(line: string): Record<string, unknown> | null {
@@ -121,20 +262,52 @@ function parse(line: string): Record<string, unknown> | null {
   }
 }
 
+/** The GitHub `owner/repo` of a local checkout's origin, or null. */
+async function originRepo(dir: string): Promise<string | null> {
+  if (!existsSync(dir)) return null;
+  const { stdout } = await git(dir, ['remote', 'get-url', 'origin']);
+  const match = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(stdout.trim());
+  return match ? `${match[1]}/${match[2]}` : null;
+}
+
+/** The author's session is busy: too many questions are already waiting for it. */
+export class Busy extends Error {}
+
+/** How many questions may wait for one session, besides the one being answered. */
+export const MAX_WAITING = 3;
+
+const queues = new Map<SessionId, { tail: Promise<unknown>; waiting: number }>();
+
 /**
  * One question at a time per author session. Forks of one session don't share state, but the
  * reviewer reads answers in order, and a queue keeps a burst of questions from forking a large
- * transcript many times at once. Shared across reviews in this process.
+ * transcript many times at once. A full queue refuses, and a question whose reviewer has gone
+ * is dropped before it forks. Shared across reviews in this process.
  */
-const queues = new Map<SessionId, Promise<unknown>>();
-
-export function oneAtATime<T>(id: SessionId, work: () => Promise<T>): Promise<T> {
-  const previous = queues.get(id) ?? Promise.resolve();
-  const next = previous.then(work);
+export function oneAtATime<T>(
+  id: SessionId,
+  work: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  const queue = queues.get(id) ?? { tail: Promise.resolve(), waiting: 0 };
+  if (queue.waiting >= MAX_WAITING) {
+    return Promise.reject(
+      new Busy(
+        `${MAX_WAITING} questions are already waiting for the author's session. Ask again once one is answered.`,
+      ),
+    );
+  }
+  queue.waiting++;
+  queues.set(id, queue);
+  const next = queue.tail.then(() => {
+    queue.waiting--;
+    signal?.throwIfAborted();
+    return work();
+  });
   const settled = next.catch(() => undefined);
-  queues.set(id, settled);
+  queue.tail = settled;
   void settled.then(() => {
-    if (queues.get(id) === settled) queues.delete(id);
+    if (queue.tail === settled) queues.delete(id);
   });
   return next;
 }

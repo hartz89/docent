@@ -105,41 +105,74 @@ export const sdkRunner: AgentRunner = async (request) => {
     | { ok: false; failure: string; usage: Usage }
     | undefined;
   let denials: string[] = [];
+  // Each API call's usage as its assistant frames report it, for when no result message arrives.
+  // Input and cache tokens are exact there; output tokens are undercounted (see `costRecord`).
+  const calls = new Map<string, Usage>();
+  const partialCost = () => {
+    if (calls.size === 0) return null;
+    const sum = (key: 'input_tokens' | 'output_tokens' | 'cache_read_input_tokens') =>
+      [...calls.values()].reduce((total, u) => total + (u[key] ?? 0), 0);
+    const usage: Usage = {
+      input_tokens: sum('input_tokens'),
+      output_tokens: sum('output_tokens'),
+      cache_read_input_tokens: sum('cache_read_input_tokens'),
+      cache_creation_input_tokens: [...calls.values()].reduce(
+        (total, u) => total + (u.cache_creation_input_tokens ?? 0),
+        0,
+      ),
+    };
+    return costRecord(request.job, model, usage, Date.now() - started);
+  };
 
-  for await (const message of query({
-    prompt: request.prompt,
-    options: { ...readOnlyOptions(request), abortController },
-  })) {
-    if (message.type === 'assistant' && message.parent_tool_use_id === null) {
-      model = message.message.model || model;
-      for (const block of message.message.content) {
-        if (block.type === 'tool_use') {
-          request.onActivity?.(describeTool(block.name, block.input, request.cwd));
+  try {
+    for await (const message of query({
+      prompt: request.prompt,
+      options: { ...readOnlyOptions(request), abortController },
+    })) {
+      if (message.type === 'assistant' && message.parent_tool_use_id === null) {
+        model = message.message.model || model;
+        if (message.message.id && message.message.usage) {
+          calls.set(message.message.id, message.message.usage as Usage);
+        }
+        for (const block of message.message.content) {
+          if (block.type === 'tool_use') {
+            request.onActivity?.(describeTool(block.name, block.input, request.cwd));
+          }
+        }
+      } else if (message.type === 'result') {
+        denials = message.permission_denials.map((d) => d.tool_name);
+        if (message.subtype === 'success' && !message.is_error) {
+          ended = {
+            ok: true,
+            sessionId: message.session_id,
+            text: message.result,
+            structured: message.structured_output,
+            usage: message.usage,
+          };
+        } else {
+          // Error results (max turns, max budget) still spent tokens: record them too.
+          const errors = 'errors' in message ? message.errors.join('; ') : '';
+          ended = {
+            ok: false,
+            failure: `${message.subtype}${errors ? `: ${errors}` : ''}`,
+            usage: message.usage,
+          };
         }
       }
-    } else if (message.type === 'result') {
-      denials = message.permission_denials.map((d) => d.tool_name);
-      if (message.subtype === 'success' && !message.is_error) {
-        ended = {
-          ok: true,
-          sessionId: message.session_id,
-          text: message.result,
-          structured: message.structured_output,
-          usage: message.usage,
-        };
-      } else {
-        // Error results (max turns, max budget) still spent tokens: record them too.
-        const errors = 'errors' in message ? message.errors.join('; ') : '';
-        ended = {
-          ok: false,
-          failure: `${message.subtype}${errors ? `: ${errors}` : ''}`,
-          usage: message.usage,
-        };
-      }
     }
+  } catch (error) {
+    // Thrown mid-stream (an abort, a crash): record what the calls so far cost, when known.
+    const cost = partialCost();
+    const reason = error instanceof Error ? error.message : String(error);
+    if (cost) throw new AgentError(`The agent stopped without an answer (${reason})`, cost);
+    throw error;
   }
 
-  if (!ended) throw new Error('The agent stopped without a result.');
+  if (!ended) {
+    const cost = partialCost();
+    if (cost) throw new AgentError('The agent stopped without a result.', cost);
+    throw new Error('The agent stopped without a result.');
+  }
   const cost = costRecord(request.job, model, ended.usage, Date.now() - started);
   if (!ended.ok)
     throw new AgentError(`The agent stopped without an answer (${ended.failure})`, cost);
@@ -196,6 +229,15 @@ export function costRecord(job: Job, model: string, usage: Usage, latencyMs: num
     : 0;
   const costMicroUsd = microUsd(Math.max(0, Math.round(usd * 1e6))) ?? (0 as MicroUsd);
   return { job, model, tokens, costMicroUsd, latencyMs };
+}
+
+/**
+ * What a fork's first call costs, before it runs: it writes the parent's whole context to the
+ * prompt cache, at 1.25x input. Null for a model with no known price.
+ */
+export function forkCostEstimateUsd(model: string, contextTokens: number): number | null {
+  const price = priceFor(model);
+  return price ? (contextTokens * price.input * 1.25) / 1e6 : null;
 }
 
 /** Longest matching id prefix, so `claude-opus-5-5-…` doesn't price as `claude-opus-5`. */

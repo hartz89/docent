@@ -97,7 +97,13 @@ describe.skipIf(!process.env.DOCENT_LIVE)('live: a question forks the author ses
     const before = await readFile(transcript);
     const filesBefore = (await readdir(dirname(transcript))).sort();
 
-    const located = await localSessions({ explicit: author })({ body: '', commitMessages: [] });
+    const located = await localSessions({ explicit: author })({
+      repo: 'acme/web',
+      headRef: 'main',
+      headInBaseRepo: true,
+      body: '',
+      commitMessages: [],
+    });
     expect(located).toMatchObject({ found: true, id: author });
 
     const reply = await sdkRunner({

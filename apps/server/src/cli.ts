@@ -20,7 +20,10 @@ Options:
   --model <id>      Model for the guide (default: $DOCENT_MODEL or ${DEFAULT_MODEL})
   --session <id>    The author's Claude Code session, to answer questions. By default it's
                     found from the Claude-Session link in the PR, if it's on this machine
-  --no-open        Don't open the browser (also off when CI is set)
+                    and worked on this PR's branch in this repo
+  --fork-budget <usd>  Ask the guide instead when asking the author's session is estimated to
+                    cost more than this per question (default: 2)
+  --no-open         Don't open the browser (also off when CI is set)
   --no-cache        Ignore the cached tour and write a fresh one
   --prepare         Generate and cache the tour, print its cost, and exit (no browser)
   --record <dir>    Save the PR, files and guide replies as a fixture
@@ -31,6 +34,7 @@ const { values, positionals } = parseArgs({
   options: {
     model: { type: 'string' },
     session: { type: 'string' },
+    'fork-budget': { type: 'string' },
     'no-open': { type: 'boolean', default: false },
     'no-cache': { type: 'boolean', default: false },
     prepare: { type: 'boolean', default: false },
@@ -47,6 +51,13 @@ if (values.help || command !== 'review' || (!url && !values.fixture)) {
 }
 if (url && !values.fixture && !parsePrUrl(url)) {
   console.error(`Not a GitHub pull request URL: ${url}\n\n${usage}`);
+  process.exit(1);
+}
+
+const forkBudgetUsd =
+  values['fork-budget'] === undefined ? undefined : Number(values['fork-budget']);
+if (forkBudgetUsd !== undefined && !(Number.isFinite(forkBudgetUsd) && forkBudgetUsd >= 0)) {
+  console.error(`--fork-budget takes a number of US dollars, like 0.50`);
   process.exit(1);
 }
 
@@ -75,7 +86,13 @@ if (values.fixture) {
   // Replies are replayed, so a replay trusts --session without looking for it on this machine.
   locator = fixedSession(
     values.session
-      ? { found: true, id: sessionId(values.session), cwd: null, via: 'the --session flag' }
+      ? {
+          found: true,
+          id: sessionId(values.session),
+          cwd: null,
+          via: 'the --session flag',
+          contextTokens: null,
+        }
       : { found: false, reason: 'This recorded review names no author session' },
   );
 } else {
@@ -90,6 +107,7 @@ const review = new Review({
   runner,
   locator,
   model,
+  ...(forkBudgetUsd !== undefined ? { forkBudgetUsd } : {}),
   // Fixtures and recordings always run the job, since a cached tour would skip it. Preparing
   // always caches: that is its whole point. (`--fixture --prepare` writes a replayed tour to
   // the cache, so point DOCENT_CACHE_DIR somewhere else for that.)
