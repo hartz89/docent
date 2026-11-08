@@ -21,7 +21,7 @@ The prompt's examples are deliberately not taken from any eval fixture, so the A
 
 ## Results
 
-Round 2 is the final v3. Round 1 was the first draft, kept for honesty. Its v3 text is in commit `828d26d`. Full tables: [round 1](evals/2026-11-08-tours-v2-v3-round1.md), [round 2](evals/2026-11-08-tours-v2-v3-round2.md).
+Round 2 is the final v3. Round 1 was the first draft, kept for honesty. Its v3 text is in commit `e786fd5`. Full tables: [round 1](evals/2026-11-08-tours-v2-v3-round1.md), [round 2](evals/2026-11-08-tours-v2-v3-round2.md).
 
 | | v2 (r1) | v3 (r1) | v2 (r2) | v3 (r2, final) |
 |---|---|---|---|---|
