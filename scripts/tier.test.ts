@@ -1,8 +1,17 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { assignTier, ownedBy, parseCodeowners, report, type Tier } from './tier.ts';
+import {
+  assignTier,
+  ownedBy,
+  parseCodeowners,
+  parsePathList,
+  report,
+  type Tier,
+  tierForPull,
+} from './tier.ts';
 
 const SCRIPT = join(import.meta.dirname, 'tier.ts');
 // The real file, so these tests also catch CODEOWNERS drifting away from the tier rules.
@@ -215,6 +224,9 @@ describe('assignTier rules', () => {
     ['tests in an unowned package', ['apps/web/src/api.test.ts', 'e2e/tour.spec.ts'], '0'],
     ['server tests, which CODEOWNERS leaves unowned', ['apps/server/src/app.test.ts'], '0'],
     ['eval fixtures', ['packages/evals/fixtures/public/new-case.json'], '0'],
+    ['e2e fixtures', ['e2e/fixtures/hono-4813/pr.json'], '0'],
+    ['core code in a folder named fixtures', ['packages/core/src/fixtures/scrub.ts'], '2a'],
+    ['web code in a folder named fixtures', ['apps/web/src/fixtures/app.ts'], '1'],
     [
       'feature work in one package',
       ['apps/web/src/tour-screen.tsx', 'apps/web/src/x.test.ts'],
@@ -294,7 +306,7 @@ describe('ownedBy', () => {
 
 describe('the command line', () => {
   const run = (args: string[], input: string) =>
-    execFileSync('node', [SCRIPT, ...args], { input, encoding: 'utf8' });
+    execFileSync('node', [SCRIPT, ...args], { input, encoding: 'utf8', stdio: 'pipe' });
 
   test('--tier prints just the tier', () => {
     expect(run(['--tier'], 'apps/web/src/a.ts\n\napps/web/src/b.ts\n')).toBe('1\n');
@@ -310,5 +322,56 @@ describe('the command line', () => {
   test("a hostile path can't break the table or inject markup", () => {
     const out = report(assignTier(['docs/a|b<img src=x>.md'], CODEOWNERS));
     expect(out).toContain('| docs/a&#124;b&#60;img src=x&#62;.md | 0 | docs |');
+  });
+
+  test('reads NUL-separated paths from git diff -z, names with newlines included', () => {
+    expect(run(['--tier'], 'docs/process/café.md\0apps/web/src/a\nb.ts\0')).toBe('2b\n');
+  });
+
+  test('refuses a path git quoted, instead of letting it dodge the rules', () => {
+    expect(() => parsePathList('"docs/process/caf\\303\\251.md"\n')).toThrow(/git diff -z/);
+    expect(() => run(['--tier'], '"docs/process/caf\\303\\251.md"\n')).toThrow();
+  });
+
+  test('reads the pull request files API, as CI does', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tier-'));
+    try {
+      const file = join(dir, 'files.json');
+      // `gh api --paginate --slurp` gives one array per page.
+      writeFileSync(file, JSON.stringify([[{ filename: 'apps/web/src/a.ts' }]]));
+      expect(run(['--tier', '--pull-files', file, '--changed-files', '1'], '')).toBe('1\n');
+      expect(() => run(['--tier', '--pull-files', file], '')).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('tierForPull', () => {
+  const web = (n: number) => ({ filename: `apps/web/src/f${n}.ts` });
+
+  test('a rename counts under its old name too', () => {
+    const pages = [[{ filename: 'docs/moved.md', previous_filename: 'docs/process/moved.md' }]];
+    expect(tierForPull(pages, 1, CODEOWNERS).tier).toBe('2b');
+  });
+
+  test('a complete list is tiered by its paths', () => {
+    expect(tierForPull([[web(1), web(2)], [web(3)]], 3, CODEOWNERS).tier).toBe('1');
+  });
+
+  test('a list shorter than the PR is 2b, and says why', () => {
+    const result = tierForPull([[web(1)]], 2, CODEOWNERS);
+    expect(result.tier).toBe('2b');
+    expect(result.reasons[0]?.why).toMatch(/listed 1 of 2 changed files/);
+  });
+
+  test('a list that hit GitHub’s 3,000-file limit is 2b', () => {
+    const pages = [Array.from({ length: 3000 }, (_, i) => web(i))];
+    expect(tierForPull(pages, 3000, CODEOWNERS).tier).toBe('2b');
+  });
+
+  test('refuses JSON that is not the files API', () => {
+    expect(() => tierForPull({ message: 'Bad credentials' }, 0, CODEOWNERS)).toThrow();
+    expect(() => tierForPull([[{ name: 'x' }]], 1, CODEOWNERS)).toThrow();
   });
 });

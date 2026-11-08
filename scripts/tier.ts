@@ -1,9 +1,10 @@
 // Assigns a PR's risk tier (0, 1, 2a or 2b) from the paths it changes.
 // The rules are the tier table in docs/process/pull-requests.md, plus one floor: a path that
 // .github/CODEOWNERS gives an owner is 2b, because GitHub makes it wait for the maintainer anyway.
-// Run: git diff --name-only --no-renames origin/main...HEAD | node scripts/tier.ts [--tier]
+// Run: git diff -z --name-only --no-renames origin/main...HEAD | node scripts/tier.ts [--tier]
 // It prints a markdown report, or with --tier just the tier. CI runs it on every PR
-// (.github/workflows/tier.yml) and labels the PR with the result.
+// (.github/workflows/tier.yml) with --pull-files <file> --changed-files <n> instead of stdin,
+// and labels the PR with the result.
 //
 // Paths can't show a comments-only or formatting-only change, or a contract change that touches
 // scrubbing, so the result is a floor: people and agents may raise it, never lower it.
@@ -11,6 +12,7 @@
 
 import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { parseArgs } from 'node:util';
 
 const TIERS = ['0', '1', '2a', '2b'] as const;
 export type Tier = (typeof TIERS)[number];
@@ -27,10 +29,11 @@ function packageOf(path: string): string | undefined {
   return /^((?:apps|packages)\/[^/]+)\//.exec(path)?.[1];
 }
 
+/** Test files, plus the two folders that hold only test data. Any other `fixtures/` is code. */
 const isTest = (path: string) =>
   /\.(test|spec|testing)\.tsx?$/.test(path) ||
   path.startsWith('e2e/') ||
-  path.includes('/fixtures/');
+  path.startsWith('packages/evals/fixtures/');
 
 /**
  * The tier table from docs/process/pull-requests.md, as path rules. The first rule that matches
@@ -152,6 +155,61 @@ export function assignTier(paths: readonly string[], codeowners: string): TierRe
   return { tier: spanned.map((r) => r.tier).reduce(higher, '0'), reasons: spanned };
 }
 
+/** GitHub's list of a PR's files stops here, even when paginated. */
+const LIST_LIMIT = 3000;
+
+type PullFile = { filename: string; previous_filename?: string };
+
+/**
+ * The tier for a PR, from GitHub's list of its files (`gh api --paginate --slurp
+ * repos/<repo>/pulls/<n>/files`) and its `changed_files` count. A renamed file counts under both
+ * names: moving a file out of a 2b folder is 2b. If the list is incomplete, the files it left out
+ * could be anything, so the PR is 2b.
+ */
+export function tierForPull(pages: unknown, changedFiles: number, codeowners: string): TierResult {
+  const files: unknown[] = Array.isArray(pages) ? pages.flat() : [];
+  if (!Array.isArray(pages) || !files.every(isPullFile)) {
+    throw new Error('expected the JSON from the pull request files API');
+  }
+  const paths = files.flatMap((f) =>
+    f.previous_filename === undefined ? [f.filename] : [f.filename, f.previous_filename],
+  );
+  const result = assignTier(paths, codeowners);
+  if (files.length === changedFiles && files.length < LIST_LIMIT) return result;
+  const unlisted: Reason = {
+    path: '(files GitHub did not list)',
+    tier: '2b',
+    why: `GitHub listed ${files.length} of ${changedFiles} changed files (its list stops at ${LIST_LIMIT}), so the rest can't be checked`,
+  };
+  return { tier: '2b', reasons: [unlisted, ...result.reasons] };
+}
+
+function isPullFile(value: unknown): value is PullFile {
+  if (typeof value !== 'object' || value === null) return false;
+  const { filename, previous_filename } = value as Record<string, unknown>;
+  return (
+    typeof filename === 'string' &&
+    (previous_filename === undefined || typeof previous_filename === 'string')
+  );
+}
+
+/**
+ * Paths from `git diff --name-only`, one per line or NUL-separated (`-z`). Without `-z`, git
+ * wraps unusual names in quotes and escapes them, which would dodge every rule, so those are
+ * refused rather than guessed at.
+ */
+export function parsePathList(text: string): string[] {
+  const paths = text
+    .split(text.includes('\0') ? '\0' : '\n')
+    .map((line) => line.replace(/\r$/, ''))
+    .filter((line) => line !== '');
+  const quoted = paths.find((path) => path.startsWith('"'));
+  if (quoted !== undefined) {
+    throw new Error(`${quoted} looks quoted by git. Use git diff -z, so names arrive as they are.`);
+  }
+  return paths;
+}
+
 /** Keeps a path from breaking the markdown table, or injecting markup into the CI summary. */
 const escapeCell = (text: string) => text.replace(/[|<>&`\\]/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -174,11 +232,29 @@ export function report({ tier, reasons }: TierResult): string {
 }
 
 if (import.meta.main) {
+  const { values } = parseArgs({
+    options: {
+      tier: { type: 'boolean', default: false },
+      'pull-files': { type: 'string' },
+      'changed-files': { type: 'string' },
+    },
+  });
   const codeowners = readFileSync(join(import.meta.dirname, '..', '.github', 'CODEOWNERS'), 'utf8');
-  const paths = readFileSync(0, 'utf8')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line !== '');
-  const result = assignTier(paths, codeowners);
-  process.stdout.write(process.argv.includes('--tier') ? `${result.tier}\n` : report(result));
+  try {
+    let result: TierResult;
+    if (values['pull-files'] === undefined) {
+      result = assignTier(parsePathList(readFileSync(0, 'utf8')), codeowners);
+    } else {
+      const changed = Number(values['changed-files']);
+      if (!Number.isInteger(changed) || changed < 0) {
+        throw new Error('--pull-files needs --changed-files <n>, the PR changed_files count');
+      }
+      const pages: unknown = JSON.parse(readFileSync(values['pull-files'], 'utf8'));
+      result = tierForPull(pages, changed, codeowners);
+    }
+    process.stdout.write(values.tier ? `${result.tier}\n` : report(result));
+  } catch (error) {
+    console.error(`tier: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
 }
