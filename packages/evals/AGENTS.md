@@ -38,3 +38,18 @@ A negative control has no findings. Its evidence is the PR's own diff, with a no
 **Dogfood fixtures** come from the maintainer's `Docent feedback:` comments on this repo's own PRs ([`docs/process/pull-requests.md`](../../docs/process/pull-requests.md), "Dogfooding Docent"). They follow the same steps, with one change: `head` is the commit the tour was prepared at, named in the tour-ready comment, not the PR's final head. Later pushes may have fixed the miss or moved its lines. The id is `docent-<pr>-<short-slug>`, the license is `Apache-2.0`, and the feedback comment is the evidence.
 
 Prefer small and medium PRs, since every fixture costs model calls on every run. Keep the job mix spread: mostly tour, plus skip-decision noise (lockfiles, generated code, moved code), danger flags, and negative controls.
+
+## Running the tour eval
+
+```bash
+pnpm eval:tours --prompt v2 --prompt v3          # A/B two prompt versions over the public tour fixtures
+pnpm eval:tours --fixture ky-122-timeout-abort   # one fixture, current prompt
+```
+
+It costs real money (about $0.20 to $0.40 per fixture and prompt) and needs an authenticated `gh` and Claude Code login. It's never part of `pnpm verify`. `--budget <usd>` (default 12) stops starting new fixtures once spend reaches it.
+
+- **What runs:** the server's real tour job (`generateTour` from `@docent/server/evals`), on every public fixture whose `jobs` include `"tour"`, once per prompt version. Old prompt versions stay in `TOUR_PROMPTS` in `apps/server/src/tour.ts` so an A/B stays reproducible. A shipped prompt is frozen by a hash test; change it by adding a version.
+- **Defects:** *cited* is the manifest's scoring (a stop's new-side range overlaps the finding, within `toleranceLines`). Coverage rules make nearly every changed line cited, so it's a floor, not the headline. *Surfaced* is the headline: the judge says a stop states the defect or points the reviewer at it. Findings with `externalKnowledge` are counted apart.
+- **Stop quality:** scripts check that a stop's first sentence names no code (no backticks, nothing call-shaped like `f(`) and that the body is at most 5 sentences and 100 words (`src/stop-quality.ts`). A model judge (`src/judge.ts`, sonnet by default, a fixed rubric) answers what scripts can't: does the first sentence state the behavior change, and does the stop name what's worth checking, or say nothing is? Every stop but the `verdict_prompt` is graded. The judge never sees the prompt version. Bump `JUDGE_RUBRIC_VERSION` when the rubric changes.
+- **Output:** a summary in `docs/research/evals/<date>-tours-<label>.md` and `.json` (commit these), and the raw tours and judgments in Docent's cache folder under `evals/` (don't commit them; the path is printed).
+- **Tests** replay the recorded hono#4813 review in `e2e/fixtures/` with a scripted judge, so they make no calls.
