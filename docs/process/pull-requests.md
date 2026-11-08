@@ -13,6 +13,8 @@ The tier comes from the paths a PR changes. If paths span several tiers, the hig
 
 **Changing the rules is tier 2b.** Any change to tier definitions, the autonomy dial or merge rules is 2b, wherever it lives, so agents can't loosen their own gates.
 
+**Reviews live on the PR.** Post the fresh-context agent review as its own PR comment before anything merges. Posting it is a separate step from the merge, never folded into the same command. That way the review is on record, and the merge can point to it.
+
 **Trust metric:** escaped defects per tier, meaning defects found later (by sampled review or a later fix) that trace back to a merged PR. Track it once there's volume.
 
 ## The autonomy dial
