@@ -29,7 +29,9 @@ Two files turn the tiers in [`pull-requests.md`](pull-requests.md) into GitHub r
 - [`.github/CODEOWNERS`](../../.github/CODEOWNERS) lists the tier-2 paths, owned by the maintainer.
 - [`.github/rulesets/main.json`](../../.github/rulesets/main.json) protects `main`: every change goes through a PR, CI's `check` job must pass, and code-owner review is required. No other approvals are required.
 
-So a PR that touches no tier-2 path merges on green CI. A PR that touches one waits for the maintainer's approval. Bot approvals are never relied on, because they don't reliably count toward required approvals. The repository admin role can bypass the ruleset, so the maintainer is never locked out.
+So a PR that touches no tier-2 path merges on green CI. A PR that touches one waits for the maintainer's approval.
+
+**Agents queue, GitHub merges.** After the review is posted, an agent queues every PR with `gh pr merge <number> --squash --auto`. GitHub lands it the moment those rules are met. For a tier-2 PR, the maintainer's only action is approving it on GitHub. This needs the repo's "Allow auto-merge" setting on (`gh repo edit hartz89/docent --enable-auto-merge`). Bot approvals are never relied on, because they don't reliably count toward required approvals. The repository admin role can bypass the ruleset, so the maintainer is never locked out.
 
 ## Using it
 
@@ -38,7 +40,7 @@ Wrap the GitHub-facing command in `scripts/as-agent.ts`:
 ```bash
 node scripts/as-agent.ts builder -- git push -u origin <branch>
 node scripts/as-agent.ts builder -- gh pr create --body-file <path>
-node scripts/as-agent.ts builder -- gh pr merge <number> --squash
+node scripts/as-agent.ts builder -- gh pr merge <number> --squash --auto
 node scripts/as-agent.ts reviewer -- gh pr review <number> --comment --body-file <path>
 ```
 
@@ -54,7 +56,7 @@ These guards keep honest mistakes from leaking the token:
 - **No reshaped output.** `gh --jq`/`--template` could print the token in a form the scrubber can't catch, so they're refused. So are `--web`/`--editor`.
 
 **Only a short list of commands can run this way.** Each role has an allowlist in the runner.
-- The builder can push a plain branch name (not `main`) without force, use most `gh pr` commands, squash-merge without `--admin`, and make read-only `gh api` calls.
+- The builder can push a plain branch name (not `main`) without force, use most `gh pr` commands, squash-merge (`--squash`, optionally `--auto`, nothing else, so never `--admin`), and make read-only `gh api` calls.
 - The reviewer can read PRs, review, comment, and make read-only `gh api` calls.
 
 Anything else is refused before a token exists. `scripts/` is code-owned, so widening the list needs the maintainer's approval. Agents are only *forced* through the runner once settings also deny plain `gh` and `git push`, which comes after the apps work.

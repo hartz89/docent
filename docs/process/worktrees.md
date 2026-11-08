@@ -8,9 +8,13 @@ Every agent works in its own git worktree. The main checkout is never touched, a
 2. **Work and verify** inside the worktree. Commit as you go.
 3. **Land it:** `git push -u origin <branch>`, then `gh pr create`. Write the description as described in [`pull-requests.md`](pull-requests.md). Run both as the `builder` app (`node scripts/as-agent.ts builder -- …`) once it exists; see [`agent-identities.md`](agent-identities.md).
 4. **Wait for CI:** `gh pr checks --watch`.
-5. **Post the review** as its own PR comment (`gh pr comment --body-file <path>`), when the tier needs one. Do this before merging, and never in the same command as the merge. See "Reviews live on the PR" in [`pull-requests.md`](pull-requests.md).
-6. **Merge by tier.** Agents merge tier 0 and tier 1 PRs themselves once CI passes; tier 1 also needs a fresh-context agent review first. Tier 2a merges after a fresh-context review with no open blockers; tier 2b waits for the maintainer. Until a script assigns tiers, state the tier in the description and take the higher one when in doubt. This autonomy is meant to grow fast and to be dialed back on evidence: see "The autonomy dial" in [`pull-requests.md`](pull-requests.md).
-7. **Clean up** after the merge: remove the worktree and delete the branch.
+5. **Post the review** as its own PR comment (`gh pr comment --body-file <path>`), when the tier needs one. Do this before queueing the merge, and never in the same command. See "Reviews live on the PR" in [`pull-requests.md`](pull-requests.md).
+6. **Queue the merge, then let GitHub decide when it lands.** Once the review is posted, queue every PR with `gh pr merge <number> --squash --auto`, as the `builder`. GitHub merges it the moment the ruleset is satisfied: CI's `check` passes, and a PR touching code-owned paths has the maintainer's approval. Tier 1 needs its fresh-context review posted first. Tier 2a needs a review with no open blockers, and a log entry in `backlog/decisions.md`. Tier 2b gets queued the same way; the maintainer's approval on GitHub is then the only thing it needs, so nobody runs a merge command. Until a script assigns tiers, state the tier in the description and take the higher one when in doubt. This autonomy is meant to grow fast and to be dialed back on evidence: see "The autonomy dial" in [`pull-requests.md`](pull-requests.md).
+7. **Clean up your own worktree** once `gh pr view <number> --json state` says `MERGED`. With `--auto` that's usually later, so do it the next time you see the PR merged, or leave it for a later sweep. Use explicit absolute paths, one git command per call (the worktree guard refuses loops and compound git commands):
+   - `git worktree remove <absolute-path>`. Never `--force`: a refusal means uncommitted work, so stop and report.
+   - `git branch -D <branch>`. A squash merge makes `-d` say "not fully merged", so `-D` is right once the PR shows `MERGED`.
+
+   Never glob over `.claude/worktrees/`. That catches other agents' live worktrees, and `locked` ones belong to agents still running.
 
 ## Gotchas
 

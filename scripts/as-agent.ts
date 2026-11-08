@@ -79,7 +79,7 @@ const ALLOWED: Record<Role, string[]> = {
   builder: [
     'git push [-u] origin <branch>   (a plain branch name: not main, HEAD or refs/...; no flags but -u)',
     'gh pr create|view|checks|diff|comment|edit ...',
-    'gh pr merge <number> --squash',
+    'gh pr merge <number> --squash [--auto]',
     'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
     'Never with gh --jq/-q or --template/-t, or --web/--editor.',
   ],
@@ -160,7 +160,12 @@ function checkMerge(args: string[], refuse: (reason: string) => never): void {
   const [number, ...extra] = args.filter((arg) => !arg.startsWith('-'));
   const options = args.filter((arg) => arg.startsWith('-'));
   if (!number || !/^\d+$/.test(number) || extra.length > 0) refuse('merge takes one PR number');
-  if (options.length !== 1 || options[0] !== '--squash') refuse('merge only with --squash');
+  // --auto queues the merge; GitHub lands it once the ruleset is satisfied (green CI, and the
+  // maintainer's approval on code-owned paths). The builder isn't an admin, so it can't bypass that.
+  const form = options.join(' ');
+  if (form !== '--squash' && form !== '--squash --auto') {
+    refuse('merge only with --squash, optionally followed by --auto');
+  }
 }
 
 /** gh api flags that take a value, so the value isn't mistaken for a flag. */
