@@ -18,6 +18,8 @@ export function fixtureSource(dir: string): PrSource {
     return {
       pr,
       diffText: await readFile(join(dir, 'diff.patch'), 'utf8'),
+      // Not recorded: a replay names its author session with --session, or has none.
+      commitMessages: [],
       dir: join(dir, 'files', 'head'),
       readFile: async (side, path) => {
         const file = fileAt(dir, side, path);

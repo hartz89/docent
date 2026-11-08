@@ -4,7 +4,9 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { sessionId } from '@docent/core';
 import { type AgentRunner, sdkRunner } from './agent.ts';
+import { fixedSession, localSessions, type SessionLocator } from './author-session.ts';
 import { fixtureRunner, fixtureSource, recording } from './fixture.ts';
 import { defaultCacheDir, githubSource, type PrSource, parsePrUrl } from './github.ts';
 import { Review } from './review.ts';
@@ -16,7 +18,9 @@ const usage = `Usage: docent review <github-pr-url> [options]
 
 Options:
   --model <id>      Model for the guide (default: $DOCENT_MODEL or ${DEFAULT_MODEL})
-  --no-open         Don't open the browser (also off when CI is set)
+  --session <id>    The author's Claude Code session, to answer questions. By default it's
+                    found from the Claude-Session link in the PR, if it's on this machine
+  --no-open        Don't open the browser (also off when CI is set)
   --no-cache        Ignore the cached tour and write a fresh one
   --prepare         Generate and cache the tour, print its cost, and exit (no browser)
   --record <dir>    Save the PR, files and guide replies as a fixture
@@ -26,6 +30,7 @@ const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     model: { type: 'string' },
+    session: { type: 'string' },
     'no-open': { type: 'boolean', default: false },
     'no-cache': { type: 'boolean', default: false },
     prepare: { type: 'boolean', default: false },
@@ -63,18 +68,27 @@ const model = values.model ?? process.env.DOCENT_MODEL ?? DEFAULT_MODEL;
 const cacheDir = defaultCacheDir();
 let source: PrSource;
 let runner: AgentRunner;
+let locator: SessionLocator;
 if (values.fixture) {
   source = fixtureSource(values.fixture);
   runner = fixtureRunner(values.fixture);
+  // Replies are replayed, so a replay trusts --session without looking for it on this machine.
+  locator = fixedSession(
+    values.session
+      ? { found: true, id: sessionId(values.session), cwd: null, via: 'the --session flag' }
+      : { found: false, reason: 'This recorded review names no author session' },
+  );
 } else {
   source = githubSource(url ?? '', cacheDir);
   runner = sdkRunner;
+  locator = localSessions(values.session !== undefined ? { explicit: values.session } : {});
   if (values.record) ({ source, runner } = recording(values.record, source, runner));
 }
 
 const review = new Review({
   source,
   runner,
+  locator,
   model,
   // Fixtures and recordings always run the job, since a cached tour would skip it. Preparing
   // always caches: that is its whole point. (`--fixture --prepare` writes a replayed tour to
@@ -125,6 +139,12 @@ function report(review: Review) {
           : `Tour ready in ${seconds}s: ${tour.tour.stops.length} stops, ${tour.attempts} attempt(s), $${cost.toFixed(4)} on ${tour.model}.`,
       );
       if (tour.problems.length) console.log(`Unresolved checks:\n- ${tour.problems.join('\n- ')}`);
+      const author = review.snapshot().author;
+      if (author?.found) {
+        console.log(`Questions go to the author's session ${author.session} (${author.via}).`);
+      } else if (author) {
+        console.log(`Questions go to the guide: ${author.reason}.`);
+      }
     } else if (tour.state === 'failed') {
       console.error(`Tour failed: ${tour.reason}`);
     }

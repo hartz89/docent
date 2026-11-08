@@ -1,11 +1,12 @@
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type CostRecord, commitSha, type Job, type MicroUsd } from '@docent/core';
+import { type CostRecord, commitSha, type Job, type MicroUsd, sessionId } from '@docent/core';
 import { hc } from 'hono/client';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { AgentError, type AgentReply, type AgentRequest, type AgentRunner } from './agent.ts';
 import { type AppType, createApp } from './app.ts';
+import { fixedSession, type SessionLocator } from './author-session.ts';
 import type { PrSource } from './github.ts';
 import { Review, type TourState } from './review.ts';
 
@@ -52,6 +53,7 @@ const source: PrSource = async (onStep) => {
       headRef: 'fix',
     },
     diffText,
+    commitMessages: ['Reflect the origin\n\nClaude-Session: https://claude.ai/code/session_01Abc'],
     dir: '/nowhere',
     readFile: async (side, path) => (side === 'new' ? head : base)[path] ?? null,
   };
@@ -122,10 +124,18 @@ function scripted(...tours: unknown[]) {
 const origin = 'http://127.0.0.1:4123';
 const token = 'test-token';
 
-async function open(runner: AgentRunner, cacheDir?: string, model = 'claude-test') {
+const noAuthor = fixedSession({ found: false, reason: 'The PR names no author session' });
+
+async function open(
+  runner: AgentRunner,
+  cacheDir?: string,
+  model = 'claude-test',
+  locator: SessionLocator = noAuthor,
+) {
   const review = new Review({
     source,
     runner,
+    locator,
     model,
     ...(cacheDir ? { cacheDir } : {}),
   });
@@ -319,8 +329,44 @@ describe('GET /api/file', () => {
   });
 });
 
+const AUTHOR = sessionId('11111111-2222-4333-8444-555555555555');
+const authorFound = fixedSession({
+  found: true,
+  id: AUTHOR,
+  cwd: '/Users/someone/web',
+  via: 'the session link in the PR',
+});
+
+/**
+ * The scripted runner, plus the author's session: a fork answers with the author's reasoning, or
+ * fails like a session that couldn't be resumed. `hold` keeps each fork waiting until released.
+ */
+function withAuthor(options: { fail?: boolean; hold?: boolean } = {}) {
+  const guide = scripted(goodTour);
+  const forks: AgentRequest[] = [];
+  const releases: (() => void)[] = [];
+  const runner: AgentRunner = async (request) => {
+    if (!request.fork) return guide.runner(request);
+    forks.push(request);
+    if (options.hold) await new Promise<void>((resolve) => releases.push(resolve));
+    if (options.fail)
+      throw new AgentError(
+        'The agent stopped without an answer (error_during_execution)',
+        cost('question', 700),
+      );
+    return {
+      sessionId: `fork-${forks.length}`,
+      text: 'We reflect the origin because the dashboard sends credentials.',
+      structured: undefined,
+      denials: [],
+      cost: cost('question', 2500),
+    };
+  };
+  return { runner, forks, releases, guide: guide.requests };
+}
+
 describe('POST /api/questions', () => {
-  test('the guide answers from the code, with the stop as context', async () => {
+  test('the guide answers from the code when there is no author session, and says why', async () => {
     const { runner, requests } = scripted(goodTour);
     const { api } = await open(runner);
 
@@ -329,11 +375,91 @@ describe('POST /api/questions', () => {
     });
 
     expect(await res.json()).toMatchObject({
-      answer: { source: 'guide', text: 'It calls `reflect()` on line 2.' },
+      answer: {
+        source: 'guide',
+        text: 'It calls `reflect()` on line 2.',
+        whyNotAuthor: 'The PR names no author session',
+        costs: [{ costMicroUsd: 1500 }],
+      },
     });
     const asked = requests.at(-1);
     expect(asked?.job).toBe('question');
+    expect(asked?.fork).toBeUndefined();
     expect(asked?.prompt).toContain('src/cors.ts (head) lines 2-2:\n  const origin = reflect();');
+  });
+
+  test('a fork of the author session answers, read-only, with the stop as context', async () => {
+    const author = withAuthor();
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound);
+
+    const res = await api.questions.$post({
+      json: { stopId: 'stop-2', question: 'Why reflect the origin?' },
+    });
+
+    expect(await res.json()).toEqual({
+      answer: {
+        source: 'author_session',
+        session: AUTHOR,
+        text: 'We reflect the origin because the dashboard sends credentials.',
+        askedAt: 'h'.repeat(40),
+        costs: [cost('question', 2500)],
+      },
+    });
+    const [fork] = author.forks;
+    expect(fork).toMatchObject({ job: 'question', fork: AUTHOR, cwd: '/nowhere' });
+    expect(fork?.resume).toBeUndefined();
+    expect(fork?.prompt).toContain('read-only copy of your session');
+    expect(fork?.prompt).toContain('You worked in /Users/someone/web before');
+    expect(fork?.prompt).toContain('src/cors.ts (head) lines 2-2:\n  const origin = reflect();');
+    expect(author.guide.filter((r) => r.job === 'question')).toEqual([]);
+  });
+
+  test('the review shows who answers questions', async () => {
+    const { api } = await open(withAuthor().runner, undefined, 'claude-test', authorFound);
+
+    expect((await snapshot(api)).author).toEqual({
+      found: true,
+      session: AUTHOR,
+      via: 'the session link in the PR',
+    });
+  });
+
+  test('when the fork fails, the guide answers, and both calls are paid for', async () => {
+    const author = withAuthor({ fail: true });
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound);
+
+    const res = await api.questions.$post({ json: { stopId: 'stop-2', question: 'Why?' } });
+
+    expect(await res.json()).toMatchObject({
+      answer: {
+        source: 'guide',
+        whyNotAuthor:
+          "The author's session couldn't answer: The agent stopped without an answer (error_during_execution)",
+        costs: [{ costMicroUsd: 700 }, { costMicroUsd: 1500 }],
+      },
+    });
+  });
+
+  test('one question at a time per author session', async () => {
+    const author = withAuthor({ hold: true });
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound);
+
+    const first = api.questions.$post({ json: { stopId: 'stop-2', question: 'First?' } });
+    const second = api.questions.$post({ json: { stopId: 'stop-2', question: 'Second?' } });
+    await vi.waitFor(() => expect(author.forks).toHaveLength(1));
+    // The second question waits for the first fork to finish before forking.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(author.forks).toHaveLength(1);
+
+    author.releases[0]?.();
+    await first;
+    await vi.waitFor(() => expect(author.forks).toHaveLength(2));
+    author.releases[1]?.();
+
+    expect((await (await second).json()) as object).toMatchObject({
+      answer: { source: 'author_session' },
+    });
+    expect(author.forks.map((f) => f.prompt.split('Question: ')[1])).toEqual(['First?', 'Second?']);
   });
 
   test('rejects an empty question', async () => {

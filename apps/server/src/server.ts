@@ -9,7 +9,7 @@ import type { Review } from './review.ts';
 export type { CostRecord } from '@docent/core';
 export type { AppType } from './app.ts';
 export type { PrInfo } from './github.ts';
-export type { ReviewSnapshot, Step, TourState } from './review.ts';
+export type { AnswerView, AuthorView, ReviewSnapshot, Step, TourState } from './review.ts';
 export type { AnchorView, SkipView, StopView, TourOutcome, TourView } from './tour.ts';
 
 // Resolves from both src/ and dist/, which sit at the same depth.

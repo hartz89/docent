@@ -33,6 +33,16 @@ describe('the guide session is read-only', () => {
       permissionMode: 'dontAsk',
     });
   });
+
+  test("forks the author's session with the same sandbox, and saves no copy", () => {
+    // Fork, never resume in place: a resume would append to the author's own transcript.
+    expect(readOnlyOptions({ cwd: '/checkout', model: 'claude-test', fork: 'author-1' })).toEqual({
+      ...readOnlyOptions({ cwd: '/checkout', model: 'claude-test' }),
+      resume: 'author-1',
+      forkSession: true,
+      persistSession: false,
+    });
+  });
 });
 
 describe('costRecord', () => {

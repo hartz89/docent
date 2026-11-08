@@ -28,6 +28,8 @@ export type PrInfo = {
 export type Workspace = {
   pr: PrInfo;
   diffText: string;
+  /** Full commit messages, oldest first: where agents leave their session links. */
+  commitMessages: string[];
   /** The checkout at head, where the guide runs. */
   dir: string;
   /** A file's text at the base or head commit, or null if it doesn't exist there. */
@@ -65,9 +67,10 @@ export function githubSource(url: string, cacheDir: string): PrSource {
         'view',
         url,
         '--json',
-        'number,title,body,author,baseRefOid,headRefOid,baseRefName,headRefName,url',
+        'number,title,body,author,baseRefOid,headRefOid,baseRefName,headRefName,url,commits',
       ]),
     ) as {
+      commits: { messageHeadline: string; messageBody: string }[];
       number: number;
       title: string;
       body: string;
@@ -119,6 +122,7 @@ export function githubSource(url: string, cacheDir: string): PrSource {
     return {
       pr,
       diffText,
+      commitMessages: view.commits.map((c) => `${c.messageHeadline}\n\n${c.messageBody}`),
       dir,
       readFile: (side, path) => show(side === 'new' ? pr.head : pr.base, path),
     };

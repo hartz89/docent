@@ -11,12 +11,24 @@ export type AgentRequest = {
   model: string;
   /** JSON Schema for structured output. Leave out for a plain-text answer. */
   schema?: Record<string, unknown>;
-  /** Continue an earlier session, as the checker loop does when it sends back problems. */
-  resume?: string;
   /** Called with short descriptions of what the agent is doing, like "Reading src/cors.ts". */
   onActivity?: (activity: string) => void;
   signal?: AbortSignal;
-};
+} & (
+  | {
+      /** Continue Docent's own earlier session, as the checker loop does with its problems. */
+      resume?: string;
+      fork?: never;
+    }
+  | {
+      /**
+       * Fork someone else's session, the PR author's: the agent sees its whole history, and the
+       * original transcript is never written to. The fork itself isn't saved either.
+       */
+      fork: string;
+      resume?: never;
+    }
+);
 
 export type AgentReply = {
   sessionId: string;
@@ -53,11 +65,15 @@ const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
  * - `strictMcpConfig` with no servers, and `settingSources: []`: the checkout's own `.claude/`
  *   settings, hooks, permissions, MCP config and CLAUDE.md never load. The code under review is
  *   data, not configuration.
+ * A fork of the author's session gets exactly the same options. The author's own tools,
+ * permissions and settings live in their settings files, not the transcript, so none of them
+ * carry over. `forkSession` keeps the original transcript untouched, and `persistSession: false`
+ * leaves no copy of it behind.
  * `src/agent.test.ts` pins these options; `src/agent.live.test.ts` proves them against a hostile
- * checkout with a real session.
+ * checkout with a real session, and proves a fork leaves the author's transcript unchanged.
  */
 export function readOnlyOptions(
-  request: Pick<AgentRequest, 'cwd' | 'model' | 'schema' | 'resume'>,
+  request: Pick<AgentRequest, 'cwd' | 'model' | 'schema' | 'resume' | 'fork'>,
 ) {
   return {
     cwd: request.cwd,
@@ -70,6 +86,7 @@ export function readOnlyOptions(
     maxTurns: 60,
     maxBudgetUsd: 2,
     ...(request.resume ? { resume: request.resume } : {}),
+    ...(request.fork ? { resume: request.fork, forkSession: true, persistSession: false } : {}),
     ...(request.schema
       ? { outputFormat: { type: 'json_schema' as const, schema: request.schema } }
       : {}),

@@ -1,4 +1,4 @@
-import type { AnchorView, CostRecord, ReviewSnapshot, StopView } from '@docent/server';
+import type { AnchorView, AnswerView, AuthorView, ReviewSnapshot, StopView } from '@docent/server';
 import { useMutation } from '@tanstack/react-query';
 import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api.ts';
@@ -107,6 +107,7 @@ export function TourScreen({ snapshot, tour }: Props) {
           <Narration
             key={stop.id}
             stop={stop}
+            author={snapshot.author}
             activeAnchor={viewing ? -1 : anchorIndex}
             onAnchor={(i) => {
               setAnchorIndex(i);
@@ -324,18 +325,30 @@ function Overview({
 
 type Exchange = {
   question: string;
-  answer: { text: string; cost: CostRecord } | null;
+  answer: AnswerView | null;
   error: string | null;
 };
 
+/** Who answered, and what it cost: the author's session, or the guide and why. */
+function answerSource(answer: AnswerView): string {
+  const cost = formatUsd(answer.costs.reduce((sum, c) => sum + c.costMicroUsd, 0));
+  return answer.source === 'author_session'
+    ? `Answered by the author's session, in a read-only copy · ${cost}`
+    : `Answered by the guide, not the author (${lowerFirst(answer.whyNotAuthor)}) · ${cost}`;
+}
+
+const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
+
 function Narration({
   stop,
+  author,
   activeAnchor,
   onAnchor,
   isLast,
   onNext,
 }: {
   stop: StopView;
+  author: AuthorView;
   activeAnchor: number;
   onAnchor: (index: number) => void;
   isLast: boolean;
@@ -423,7 +436,7 @@ function Narration({
               onClick={submit}
               disabled={!draft.trim() || ask.isPending}
             >
-              {ask.isPending ? 'Asking…' : 'Ask the guide'}
+              {ask.isPending ? 'Asking…' : author?.found ? 'Ask the author' : 'Ask the guide'}
             </button>
           </div>
           {exchanges.map((exchange, i) => (
@@ -435,10 +448,7 @@ function Narration({
                   <div className="exchange-answer">
                     <Markdown text={exchange.answer.text} />
                   </div>
-                  <div className="exchange-source">
-                    Answered by the guide, not the author ·{' '}
-                    {formatUsd(exchange.answer.cost.costMicroUsd)}
-                  </div>
+                  <div className="exchange-source">{answerSource(exchange.answer)}</div>
                 </>
               ) : exchange.error ? (
                 <div className="exchange-source" role="alert">
@@ -446,7 +456,9 @@ function Narration({
                 </div>
               ) : (
                 <div className="exchange-source" aria-live="polite">
-                  The guide is reading the code…
+                  {author?.found
+                    ? "The author's session is thinking it over…"
+                    : 'The guide is reading the code…'}
                 </div>
               )}
             </div>
