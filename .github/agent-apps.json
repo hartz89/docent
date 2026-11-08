@@ -1,4 +1,4 @@
 {
-  "builder": { "slug": "REPLACE_ME" },
-  "reviewer": { "slug": "REPLACE_ME" }
+  "builder": { "slug": "docent-builder-hartz89", "appId": 5663795 },
+  "reviewer": { "slug": "docent-reviewer-hartz89", "appId": 5663835 }
 }
