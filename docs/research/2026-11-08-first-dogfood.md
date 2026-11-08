@@ -49,3 +49,7 @@ Defect-finding must not get worse. A clearer tour that misses more problems is a
 - **A process-doc change was labeled "edge"** when it was half the PR. The prompt's stop kinds treat docs as peripheral.
 - **`--prepare` rebuilds the whole web app,** and the build output is noisy.
 - **The cache only hits when everything matches.** A different prompt version or `DOCENT_MODEL` setting in the reviewer's checkout misses it and pays for a fresh tour.
+
+## Result
+
+Tour prompt v3 follows the principle above. On the public fixtures, the judge says 83% of v3's first sentences state the behavior change, against 17% for v2, and defect-finding didn't drop. Numbers and caveats: [`2026-11-08-tour-prompt-v3.md`](2026-11-08-tour-prompt-v3.md).
