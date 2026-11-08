@@ -96,7 +96,14 @@ importers:
 
   packages/core: {}
 
-  packages/evals: {}
+  packages/evals:
+    dependencies:
+      '@docent/core':
+        specifier: workspace:*
+        version: link:../core
+      '@docent/server':
+        specifier: workspace:*
+        version: link:../../apps/server
 
 packages:
 

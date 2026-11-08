@@ -15,6 +15,8 @@ export const JOBS = [
   'scrub',
   'question',
   'revision',
+  // Grades another job's output in an eval run (packages/evals). Never part of a review.
+  'eval_judge',
 ] as const;
 export type Job = (typeof JOBS)[number];
 
