@@ -27,7 +27,8 @@
       "Bash(gh pr diff:*)",
       "Bash(gh run list:*)",
       "Bash(gh run view:*)",
-      "Bash(gh run watch:*)"
+      "Bash(gh run watch:*)",
+      "Bash(node scripts/as-agent.ts:*)"
     ],
     "deny": [
       "Read(./.env*)",
@@ -39,7 +40,11 @@
       "Bash(git push origin main*)",
       "Bash(git push -u origin main*)",
       "Bash(git push origin *:main*)",
-      "Bash(git push -u origin *:main*)"
+      "Bash(git push -u origin *:main*)",
+      "Bash(node scripts/as-agent.ts * --force*)",
+      "Bash(node scripts/as-agent.ts * -f *)",
+      "Bash(node scripts/as-agent.ts * +*)",
+      "Bash(node scripts/as-agent.ts * --admin*)"
     ]
   },
   "worktree": {
@@ -54,6 +59,17 @@
             "type": "command",
             "command": "pnpm install --frozen-lockfile --prefer-offline",
             "timeout": 300
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/sync-main-checkout.sh",
+            "timeout": 30
           }
         ]
       }
