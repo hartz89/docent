@@ -1,0 +1,30 @@
+{
+  "id": "ky-571-jsdoc-typo",
+  "visibility": "public",
+  "source": {
+    "repo": "sindresorhus/ky",
+    "pr": 571,
+    "base": "d042b0575fbdea681031ab39d33b9512e1c4d559",
+    "head": "54f1121bbb5920c4bcad159819a01715251f6fde"
+  },
+  "license": "MIT",
+  "title": "fix a small typo in a JSDoc comment",
+  "size": "small",
+  "jobs": ["tour", "skip", "danger"],
+  "negativeControl": true,
+  "expectedFindings": [],
+  "mustNotSkip": [],
+  "shouldSkip": [
+    {
+      "file": "source/types/hooks.ts",
+      "reason": "Comment-only typo fix."
+    }
+  ],
+  "expectDangerFlag": false,
+  "evidence": [
+    {
+      "url": "https://github.com/sindresorhus/ky/pull/571/files",
+      "note": "Negative control. The whole diff is one JSDoc line in source/types/hooks.ts fixing \"forf\" and \"modiy\". No code changes, so it should be skipped and never flagged."
+    }
+  ]
+}
