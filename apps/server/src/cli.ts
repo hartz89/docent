@@ -1,4 +1,5 @@
 // `docent review <github-pr-url>`: opens a PR for review in the local app.
+// With `--prepare`, it only writes the tour to the cache and exits, so a later open is instant.
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +18,7 @@ Options:
   --model <id>      Model for the guide (default: $DOCENT_MODEL or ${DEFAULT_MODEL})
   --no-open         Don't open the browser (also off when CI is set)
   --no-cache        Ignore the cached tour and write a fresh one
+  --prepare         Generate and cache the tour, print its cost, and exit (no browser)
   --record <dir>    Save the PR, files and guide replies as a fixture
   --fixture <dir>   Replay a recorded fixture: no GitHub or model calls`;
 
@@ -26,6 +28,7 @@ const { values, positionals } = parseArgs({
     model: { type: 'string' },
     'no-open': { type: 'boolean', default: false },
     'no-cache': { type: 'boolean', default: false },
+    prepare: { type: 'boolean', default: false },
     record: { type: 'string' },
     fixture: { type: 'string' },
     help: { type: 'boolean', short: 'h', default: false },
@@ -42,9 +45,16 @@ if (url && !values.fixture && !parsePrUrl(url)) {
   process.exit(1);
 }
 
+if (values.prepare && (values['no-cache'] || values.record)) {
+  // A cache hit would skip the job, leaving a recording with no replies.
+  const other = values.record ? '--record' : '--no-cache';
+  console.error(`--prepare writes the tour to the cache, so it cannot be used with ${other}.`);
+  process.exit(1);
+}
+
 // Resolves from both src/ and dist/, which sit at the same depth.
 const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url));
-if (!existsSync(webRoot)) {
+if (!values.prepare && !existsSync(webRoot)) {
   console.error(`Web app not built (missing ${webRoot}). Run: pnpm build`);
   process.exit(1);
 }
@@ -66,34 +76,59 @@ const review = new Review({
   source,
   runner,
   model,
-  // Fixtures and recordings always run the job; a cached tour would skip it.
-  ...(values.fixture || values.record || values['no-cache'] ? {} : { cacheDir }),
+  // Fixtures and recordings always run the job, since a cached tour would skip it. Preparing
+  // always caches: that is its whole point. (`--fixture --prepare` writes a replayed tour to
+  // the cache, so point DOCENT_CACHE_DIR somewhere else for that.)
+  ...(values.prepare || !(values.fixture || values.record || values['no-cache'])
+    ? { cacheDir }
+    : {}),
 });
-const server = await startServer({ webRoot, review });
 
-// The token rides in the URL fragment, which browsers never send to servers.
-const link = `${server.origin}/#token=${server.token}`;
-console.log(`Docent is running at ${link}`);
-if (!values['no-open'] && !process.env.CI) openBrowser(link);
+if (values.prepare) await prepare(review);
+else await serve(review);
 
-const started = Date.now();
-review.subscribe((tour) => {
-  if (tour.state === 'ready') {
-    const cost = tour.costs.reduce((sum, c) => sum + c.costMicroUsd, 0) / 1e6;
-    const seconds = ((Date.now() - started) / 1000).toFixed(1);
-    console.log(
-      tour.cached
-        ? 'Tour loaded from cache: no model calls.'
-        : `Tour ready in ${seconds}s: ${tour.tour.stops.length} stops, ${tour.attempts} attempt(s), $${cost.toFixed(4)} on ${tour.model}.`,
-    );
-    if (tour.problems.length) console.log(`Unresolved checks:\n- ${tour.problems.join('\n- ')}`);
-  } else if (tour.state === 'failed') {
-    console.error(`Tour failed: ${tour.reason}`);
+/** Writes the tour to the cache, then exits: 0 if it's ready, 1 if it failed. */
+async function prepare(review: Review) {
+  report(review);
+  await review.done;
+  const ready = review.snapshot().tour.state === 'ready';
+  if (ready && url) console.log(`Open it with: pnpm docent review ${url}`);
+  // Exit outright, so a lingering agent subprocess can't hang an unattended run. Flush first.
+  process.stdout.write('', () => process.exit(ready ? 0 : 1));
+}
+
+async function serve(review: Review) {
+  const server = await startServer({ webRoot, review });
+
+  // The token rides in the URL fragment, which browsers never send to servers.
+  const link = `${server.origin}/#token=${server.token}`;
+  console.log(`Docent is running at ${link}`);
+  if (!values['no-open'] && !process.env.CI) openBrowser(link);
+
+  report(review);
+
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.once(signal, () => void server.close().then(() => process.exit(0)));
   }
-});
+}
 
-for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.once(signal, () => void server.close().then(() => process.exit(0)));
+/** Prints the tour's outcome: its cost, or why it failed. */
+function report(review: Review) {
+  const started = Date.now();
+  review.subscribe((tour) => {
+    if (tour.state === 'ready') {
+      const cost = tour.costs.reduce((sum, c) => sum + c.costMicroUsd, 0) / 1e6;
+      const seconds = ((Date.now() - started) / 1000).toFixed(1);
+      console.log(
+        tour.cached
+          ? 'Tour loaded from cache: no model calls.'
+          : `Tour ready in ${seconds}s: ${tour.tour.stops.length} stops, ${tour.attempts} attempt(s), $${cost.toFixed(4)} on ${tour.model}.`,
+      );
+      if (tour.problems.length) console.log(`Unresolved checks:\n- ${tour.problems.join('\n- ')}`);
+    } else if (tour.state === 'failed') {
+      console.error(`Tour failed: ${tour.reason}`);
+    }
+  });
 }
 
 function openBrowser(target: string) {
