@@ -52,4 +52,4 @@ Defect-finding must not get worse. A clearer tour that misses more problems is a
 
 ## Result
 
-Tour prompt v3 follows the principle above. On the public fixtures, the judge says 83% of v3's first sentences state the behavior change, against 17% for v2, and defect-finding didn't drop. Numbers and caveats: [`2026-11-08-tour-prompt-v3.md`](2026-11-08-tour-prompt-v3.md).
+Tour prompt v3 follows the principle above. On the public fixtures, the judge says 81% of v3's first sentences state the behavior change, against 12 to 17% for v2. The judge's rubric echoes v3's own wording, so a neutral, blind check ran too: 81% against 28%. No drop in defect-finding was detected, but with 7 defects the eval can't resolve a drop smaller than one. Numbers and caveats: [`2026-11-08-tour-prompt-v3.md`](2026-11-08-tour-prompt-v3.md).
