@@ -17,6 +17,8 @@ Calls that are the maintainer's, batched so they don't block work. The rules are
 - **2026-11-07 · The tour's default model is `claude-opus-5-5`.** One real run on a 78-line PR cost $0.06 to $0.13. Override with `--model` or `DOCENT_MODEL`.
 - **2026-11-07 · Tour cost comes from the result message's `usage`, priced with a list-price table in `apps/server/src/agent.ts`.** Assistant frames carry a start-of-stream usage snapshot (output tokens near zero), and `total_cost_usd` includes the parent session on resumes. The table needs updating when prices change.
 
+- **2026-11-08 · How `scripts/tier.ts` reads the tier table where it's open.** (1) A path that CODEOWNERS owns is 2b, even where the table says 2a (`package.json`, the lockfile) or 0 (tests under `scripts/`), because GitHub makes it wait for the maintainer anyway. (2) Feature work across more than one package is 2a, since tier 1 is "inside one package". (3) All of `packages/core` outside its tests is 2a: it is the core model and tour schema. (4) A file outside every package that no rule names, like `.gitignore`, is 2a. Each takes the higher tier when in doubt. Undo any of them in `scripts/tier.ts` and its tests.
+
 ## Decided by the maintainer
 
 - **2026-11-06 · Stack:** Hono server, Vite + React + TanStack Router/Query web app, TypeScript 7, pnpm. Chosen on agentic legibility, performance and product fit; familiarity didn't count.
