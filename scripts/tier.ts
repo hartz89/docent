@@ -211,7 +211,7 @@ export function parsePathList(text: string): string[] {
 }
 
 /** Keeps a path from breaking the markdown table, or injecting markup into the CI summary. */
-const escapeCell = (text: string) => text.replace(/[|<>&`\\]/g, (c) => `&#${c.charCodeAt(0)};`);
+const escapeCell = (text: string) => text.replace(/[|<>&`\\\r\n]/g, (c) => `&#${c.charCodeAt(0)};`);
 
 export function report({ tier, reasons }: TierResult): string {
   const rows = [...reasons]
@@ -245,8 +245,9 @@ if (import.meta.main) {
     if (values['pull-files'] === undefined) {
       result = assignTier(parsePathList(readFileSync(0, 'utf8')), codeowners);
     } else {
-      const changed = Number(values['changed-files']);
-      if (!Number.isInteger(changed) || changed < 0) {
+      const count = values['changed-files'] ?? '';
+      const changed = Number(count);
+      if (!/^\d+$/.test(count) || !Number.isSafeInteger(changed)) {
         throw new Error('--pull-files needs --changed-files <n>, the PR changed_files count');
       }
       const pages: unknown = JSON.parse(readFileSync(values['pull-files'], 'utf8'));

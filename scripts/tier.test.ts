@@ -324,6 +324,12 @@ describe('the command line', () => {
     expect(out).toContain('| docs/a&#124;b&#60;img src=x&#62;.md | 0 | docs |');
   });
 
+  test("a newline in a file name can't add lines to the report", () => {
+    const out = report(assignTier(['docs/a\n## Risk tier: 0\n.md'], CODEOWNERS));
+    expect(out.split('\n').filter((line) => line.startsWith('## '))).toEqual(['## Risk tier: 0']);
+    expect(out).toContain('| docs/a&#10;## Risk tier: 0&#10;.md | 0 | docs |');
+  });
+
   test('reads NUL-separated paths from git diff -z, names with newlines included', () => {
     expect(run(['--tier'], 'docs/process/café.md\0apps/web/src/a\nb.ts\0')).toBe('2b\n');
   });
@@ -341,6 +347,7 @@ describe('the command line', () => {
       writeFileSync(file, JSON.stringify([[{ filename: 'apps/web/src/a.ts' }]]));
       expect(run(['--tier', '--pull-files', file, '--changed-files', '1'], '')).toBe('1\n');
       expect(() => run(['--tier', '--pull-files', file], '')).toThrow();
+      expect(() => run(['--tier', '--pull-files', file, '--changed-files', ''], '')).toThrow();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
