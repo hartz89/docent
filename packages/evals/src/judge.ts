@@ -2,7 +2,7 @@
 // comparable and the judge costs a fraction of the tours it grades. The judge never learns which
 // prompt version wrote a tour.
 import type { CostRecord } from '@docent/core';
-import type { AgentRunner, TourView } from '@docent/server/evals';
+import { AgentError, type AgentRunner, type TourView } from '@docent/server/evals';
 import type { ExpectedFinding } from './manifest.ts';
 
 export const DEFAULT_JUDGE_MODEL = 'claude-sonnet-5';
@@ -129,7 +129,10 @@ ${defects}
 ${stops}`;
 }
 
-/** Grades one tour. Throws if the judge's answer doesn't cover every graded stop and defect. */
+/**
+ * Grades one tour. Throws an AgentError, carrying what the call cost, if the judge's answer isn't
+ * JSON or doesn't cover every graded stop and defect.
+ */
 export async function judgeTour(input: {
   runner: AgentRunner;
   model: string;
@@ -145,20 +148,23 @@ export async function judgeTour(input: {
     model: input.model,
     schema,
   });
-  const answer = (reply.structured ?? JSON.parse(reply.text)) as {
-    stops: StopGrade[];
-    findings: FindingGrade[];
-  };
+  const reject = (message: string) => new AgentError(message, reply.cost);
+  let answer: { stops: StopGrade[]; findings: FindingGrade[] };
+  try {
+    answer = (reply.structured ?? JSON.parse(reply.text)) as typeof answer;
+  } catch {
+    throw reject('The judge did not answer in JSON.');
+  }
   const graded = input.tour.stops.flatMap((s, i) => (isGradedStop(s) ? [i + 1] : []));
   const stops = graded.map((n) => {
     const grade = answer.stops.find((g) => g.stop === n);
-    if (!grade) throw new Error(`The judge skipped stop ${n}.`);
+    if (!grade) throw reject(`The judge skipped stop ${n}.`);
     const { behaviorFirst, namesCheck, why } = grade;
     return { stop: n, behaviorFirst, namesCheck, why };
   });
   const findings = input.findings.map((_, i) => {
     const grade = answer.findings.find((g) => g.finding === i + 1);
-    if (!grade) throw new Error(`The judge skipped defect ${i + 1}.`);
+    if (!grade) throw reject(`The judge skipped defect ${i + 1}.`);
     const { surfaced, why } = grade;
     return { finding: i, surfaced, stop: surfaced ? grade.stop : null, why };
   });

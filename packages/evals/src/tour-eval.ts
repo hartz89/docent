@@ -40,7 +40,14 @@ export type GradedStop = {
   judged: Pick<StopGrade, 'behaviorFirst' | 'namesCheck' | 'why'>;
 };
 
-type RunBase = { fixture: string; prompt: TourPromptVersion; tourUsd: number; judgeUsd: number };
+type RunBase = {
+  fixture: string;
+  prompt: TourPromptVersion;
+  tourUsd: number;
+  judgeUsd: number;
+  /** Every expected finding. A failed run keeps them all, as not found, so totals never shrink. */
+  findings: FindingResult[];
+};
 
 export type FixtureRun =
   | (RunBase & {
@@ -50,7 +57,6 @@ export type FixtureRun =
       /** Checker problems left after the last retry. Zero means the tour passed every check. */
       problemsLeft: number;
       attempts: number;
-      findings: FindingResult[];
       /** Only for fixtures that exercise the danger job. */
       danger: { expected: boolean; raised: boolean } | null;
       stops: GradedStop[];
@@ -73,10 +79,44 @@ export type RunOptions = {
   judgeCwd: string;
 };
 
+/** Every expected finding, none found yet. */
+const notFound = (manifest: FixtureManifest): FindingResult[] =>
+  manifest.expectedFindings.map((finding) => ({
+    file: finding.file,
+    lines: finding.lines,
+    externalKnowledge: finding.externalKnowledge !== undefined,
+    cited: false,
+    surfaced: false,
+  }));
+
+/** A run that produced nothing to score. Its findings all count as not found. */
+export function failedRun(
+  manifest: FixtureManifest,
+  prompt: TourPromptVersion,
+  error: string,
+): FixtureRun {
+  const findings = notFound(manifest);
+  return {
+    fixture: manifest.id,
+    prompt,
+    tourUsd: 0,
+    judgeUsd: 0,
+    findings,
+    status: 'failed',
+    error,
+  };
+}
+
 /** One tour, one judgment, one scored result. Never throws: a failure is a result too. */
 export async function runFixture(options: RunOptions): Promise<FixtureRun> {
   const { manifest, workspace, prompt, runner } = options;
-  const base = { fixture: manifest.id, prompt, tourUsd: 0, judgeUsd: 0 };
+  const base = {
+    fixture: manifest.id,
+    prompt,
+    tourUsd: 0,
+    judgeUsd: 0,
+    findings: notFound(manifest),
+  };
   const diff = parseUnifiedDiff(workspace.diffText, workspace.pr.base, workspace.pr.head);
 
   let outcome: Awaited<ReturnType<typeof generateTour>>;
@@ -112,7 +152,7 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
   }
 
   const scoring = scoringFor(manifest);
-  const findings = manifest.expectedFindings.map((finding, i) => {
+  const findings = manifest.expectedFindings.map((finding, i): FindingResult => {
     const from = finding.lines.start - scoring.toleranceLines;
     const to = finding.lines.end + scoring.toleranceLines;
     const cited = tour.stops.some((stop) =>
@@ -197,7 +237,8 @@ const share = (count: number, total: number) => (total === 0 ? 0 : count / total
 export function totals(runs: readonly FixtureRun[], prompt: TourPromptVersion): PromptTotals {
   const mine = runs.filter((r) => r.prompt === prompt);
   const ok = mine.flatMap((r) => (r.status === 'ok' ? [r] : []));
-  const findings = ok.flatMap((r) => r.findings);
+  // Failed runs count too: their findings are all "not found".
+  const findings = mine.flatMap((r) => r.findings);
   const count = (list: FindingResult[]) => ({
     expected: list.length,
     cited: list.filter((f) => f.cited).length,
@@ -237,6 +278,9 @@ export function summaryRuns(runs: readonly FixtureRun[]) {
   });
 }
 
+/** Marks a headline count that includes failed runs, whose defects count as missed. */
+const failedMark = (t: PromptTotals) =>
+  t.failed ? ` (${t.failed} failed run${t.failed === 1 ? '' : 's'}, counted as missed)` : '';
 const pct = (n: number) => `${Math.round(n * 100)}%`;
 const money = (n: number) => `$${n.toFixed(2)}`;
 
@@ -258,7 +302,12 @@ export function renderMarkdown(input: {
     const cells = input.prompts.map((p) => {
       const run = input.runs.find((r) => r.fixture === id && r.prompt === p);
       if (!run) return 'not run';
-      if (run.status === 'failed') return `failed (${money(run.tourUsd)})`;
+      if (run.status === 'failed') {
+        const defects = run.findings.length
+          ? `, ${run.findings.length} defect(s) counted as missed`
+          : '';
+        return `**failed**${defects}: ${run.error.slice(0, 80)}; ${money(run.tourUsd + run.judgeUsd)}`;
+      }
       const found = run.findings.length
         ? `${run.findings.filter((f) => f.surfaced).length}/${run.findings.length} surfaced, ${run.findings.filter((f) => f.cited).length}/${run.findings.length} cited`
         : 'no defects';
@@ -276,8 +325,8 @@ Tour model \`${input.model}\`, judge \`${input.judgeModel}\` (rubric v${input.ju
 ## Totals
 
 ${head}
-${row('Defects surfaced (judge)', (t) => `${t.findings.surfaced}/${t.findings.expected}`)}
-${row('Defects cited (line overlap)', (t) => `${t.findings.cited}/${t.findings.expected}`)}
+${row('Defects surfaced (judge)', (t) => `${t.findings.surfaced}/${t.findings.expected}${failedMark(t)}`)}
+${row('Defects cited (line overlap)', (t) => `${t.findings.cited}/${t.findings.expected}${failedMark(t)}`)}
 ${row('External-knowledge defects surfaced', (t) => `${t.externalFindings.surfaced}/${t.externalFindings.expected}`)}
 ${row('Danger flags: false alarms / missed', (t) => `${t.danger.falseAlarms} / ${t.danger.missed}`)}
 ${row('Graded stops', (t) => `${t.stops}`)}

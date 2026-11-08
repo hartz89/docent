@@ -15,7 +15,14 @@ import {
 } from '@docent/server/evals';
 import { loadFixtures, PUBLIC_FIXTURES_DIR } from './fixtures.ts';
 import { DEFAULT_JUDGE_MODEL, JUDGE_RUBRIC_VERSION } from './judge.ts';
-import { type FixtureRun, renderMarkdown, runFixture, summaryRuns, totals } from './tour-eval.ts';
+import {
+  type FixtureRun,
+  failedRun,
+  renderMarkdown,
+  runFixture,
+  summaryRuns,
+  totals,
+} from './tour-eval.ts';
 
 const usage = `Usage: pnpm eval:tours [options]
 
@@ -24,7 +31,8 @@ Options:
   --fixture <id>      Only this fixture. Repeat for several. (default: every public tour fixture)
   --model <id>        Tour model (default: $DOCENT_MODEL or claude-opus-5-5)
   --judge-model <id>  Judge model (default: ${DEFAULT_JUDGE_MODEL})
-  --budget <usd>      Start no new fixture once spend reaches this (default: 12)
+  --budget <usd>      Start no new fixture unless spend so far, plus $0.75 held back per
+                      running or new tour, stays within this (default: 12)
   --label <name>      Report name suffix (default: the prompt versions, like v2-v3)`;
 
 const { values } = parseArgs({
@@ -43,7 +51,8 @@ if (values.help) {
   process.exit(0);
 }
 
-const prompts = (values.prompt ?? [`v${TOUR_PROMPT_VERSION}`]).map((raw) => {
+const asked = [...new Set(values.prompt ?? [`v${TOUR_PROMPT_VERSION}`])];
+const prompts = asked.map((raw) => {
   const n = Number(raw.replace(/^v/, ''));
   if (!(n in TOUR_PROMPTS)) {
     console.error(
@@ -56,6 +65,10 @@ const prompts = (values.prompt ?? [`v${TOUR_PROMPT_VERSION}`]).map((raw) => {
   return n as TourPromptVersion;
 });
 const budget = Number(values.budget);
+if (!Number.isFinite(budget) || budget <= 0) {
+  console.error(`--budget must be a positive number of US dollars, like 12. Got: ${values.budget}`);
+  process.exit(1);
+}
 const model = values.model ?? process.env.DOCENT_MODEL ?? 'claude-opus-5-5';
 const judgeModel = values['judge-model'] ?? DEFAULT_JUDGE_MODEL;
 
@@ -85,10 +98,19 @@ const spent = () => runs.reduce((sum, r) => sum + r.tourUsd + r.judgeUsd, 0);
 const skipped: string[] = [];
 
 // Fixtures run three at a time; the prompts for one fixture share its checkout.
+/**
+ * What one tour plus its judgment might cost, held back from the budget while it runs. Observed
+ * runs cost $0.05 to $0.71; a tour that retries can cost more, so this bounds overshoot, it
+ * doesn't forbid it.
+ */
+const RESERVE_PER_RUN_USD = 0.75;
+let inFlight = 0;
 const queue = [...fixtures];
 async function worker() {
   for (let manifest = queue.shift(); manifest; manifest = queue.shift()) {
-    if (spent() >= budget) {
+    // Reserve an estimate for every tour still running, so parallel workers can't all start on
+    // the same stale total and overshoot together.
+    if (spent() + (inFlight + prompts.length) * RESERVE_PER_RUN_USD > budget) {
       skipped.push(manifest.id);
       continue;
     }
@@ -97,16 +119,7 @@ async function worker() {
     try {
       workspace = await githubSource(`https://github.com/${repo}/pull/${pr}`, cacheDir)(() => {});
     } catch (error) {
-      for (const prompt of prompts) {
-        runs.push({
-          fixture: manifest.id,
-          prompt,
-          tourUsd: 0,
-          judgeUsd: 0,
-          status: 'failed',
-          error: String(error),
-        });
-      }
+      for (const prompt of prompts) runs.push(failedRun(manifest, prompt, String(error)));
       continue;
     }
     if (workspace.pr.head !== manifest.source.head) {
@@ -114,6 +127,7 @@ async function worker() {
       skipped.push(manifest.id);
       continue;
     }
+    inFlight += prompts.length;
     await Promise.all(
       prompts.map(async (prompt) => {
         const run = await runFixture({
@@ -126,6 +140,7 @@ async function worker() {
           judgeCwd,
         });
         runs.push(run);
+        inFlight--;
         await writeFile(
           join(rawDir, `${manifest.id}-v${prompt}.json`),
           JSON.stringify(run, null, 2),

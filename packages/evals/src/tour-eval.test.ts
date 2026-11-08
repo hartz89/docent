@@ -111,19 +111,39 @@ describe('the tour eval', () => {
     expect(markdown).toContain('| First sentence states the behavior change (judge) | 60% |');
   });
 
-  test('a judge that skips a stop fails the run rather than scoring it short', async () => {
+  test('a judge that skips a stop fails the run, and its paid call still counts', async () => {
     const { runner } = scripted({ ...judgment, stops: judgment.stops.slice(1) });
     const result = await run(runner);
 
-    expect(result).toMatchObject({ status: 'failed', error: expect.stringContaining('stop 1') });
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: expect.stringContaining('stop 1'),
+      judgeUsd: 0.02,
+    });
   });
 
-  test('a tour that never arrives is a failed run that still reports its cost', async () => {
+  test('a failed run keeps its defects in the totals, as missed, and the report says so', async () => {
     const result = await run(async () => {
       throw new Error('model unavailable');
     });
 
     expect(result).toMatchObject({ status: 'failed', tourUsd: 0, judgeUsd: 0 });
-    expect(totals([result], 2)).toMatchObject({ fixtures: 1, failed: 1 });
+    expect(totals([result], 2)).toMatchObject({
+      fixtures: 1,
+      failed: 1,
+      findings: { expected: 1, cited: 0, surfaced: 0 },
+    });
+    const markdown = renderMarkdown({
+      date: '2026-11-08',
+      model: 'm',
+      judgeModel: 'j',
+      judgeRubric: 1,
+      runs: [result],
+      prompts: [2],
+    });
+    expect(markdown).toContain(
+      '| Defects surfaced (judge) | 0/1 (1 failed run, counted as missed) |',
+    );
+    expect(markdown).toContain('**failed**, 1 defect(s) counted as missed');
   });
 });

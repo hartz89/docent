@@ -18,7 +18,8 @@ describe('tour prompt versions', () => {
   test('a shipped prompt never changes, so old A/B runs stay reproducible', async () => {
     const { workspace, diff } = await recorded();
     const sha = (text: string) => createHash('sha256').update(text).digest('hex');
-    // To change a shipped prompt, add a new version instead.
+    // To change a shipped prompt, add a new version instead. The hash also covers the shared
+    // coverage rules and diff rendering: changing those changes v2 too, so fork them first.
     expect(sha(TOUR_PROMPTS[2](workspace.pr, diff))).toBe(
       '420dcd0b8449c4f76bf860aaf2c2bc5fb40ab74da91e2a91f20d71c99a96a8c6',
     );
