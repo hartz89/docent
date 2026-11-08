@@ -51,6 +51,26 @@ test('the CLI opens a recorded PR, and the reviewer walks the tour by keyboard',
         titles[1] ?? '',
       );
     });
+
+    await test.step('Next stop opens at the top of the guide; going back returns to where it was left', async () => {
+      // A short window, so the guide has room to scroll.
+      await page.setViewportSize({ width: 1280, height: 420 });
+      const guide = page.getByRole('complementary', { name: 'The guide' });
+      const scrollTop = () => guide.evaluate((el) => el.scrollTop);
+      await guide.evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+      });
+      const left = await scrollTop();
+      expect(left).toBeGreaterThan(0);
+
+      await page.getByRole('button', { name: /Next stop/ }).click();
+      await expect(page.locator('.narration-title')).toHaveText(titles[2] ?? '');
+      await expect.poll(scrollTop).toBe(0);
+
+      await page.keyboard.press('ArrowLeft');
+      await expect(page.locator('.narration-title')).toHaveText(titles[1] ?? '');
+      await expect.poll(scrollTop).toBe(left);
+    });
   } finally {
     await docent.stop();
   }
