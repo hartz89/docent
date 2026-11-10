@@ -3,9 +3,16 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { type CostRecord, type Diff, parseUnifiedDiff } from '@docent/core';
+import { type CommitSha, type CostRecord, type Diff, parseUnifiedDiff } from '@docent/core';
 import type { AgentRunner } from './agent.ts';
-import type { PrInfo, PrSource, Workspace } from './github.ts';
+import {
+  GitHubRefusal,
+  type PrInfo,
+  type PrSource,
+  REVIEW_EVENTS,
+  type ReviewEvent,
+  type Workspace,
+} from './github.ts';
 import {
   generateTour,
   TOUR_PROMPT_VERSION,
@@ -26,7 +33,50 @@ export type ReviewSnapshot = {
   pr: PrInfo | null;
   diff: Diff | null;
   tour: TourState;
+  /** The review the reviewer posted to GitHub from here, once they have. */
+  posted: PostedReview | null;
 };
+
+/**
+ * The reviewer's verdict. Approve may go without a summary; Request changes and Comment need
+ * one, as on GitHub. `verdict()` checks that.
+ */
+export type Verdict = { event: ReviewEvent; body: string };
+
+/** GitHub's own limit on a review body. */
+const MAX_SUMMARY_CHARS = 65_536;
+
+/** A Verdict, or why the input isn't one. */
+export function verdict(event: unknown, body: unknown): Verdict | string {
+  if (!REVIEW_EVENTS.includes(event as ReviewEvent)) {
+    return `Send an event: ${REVIEW_EVENTS.join(', ')}`;
+  }
+  const summary = typeof body === 'string' ? body.trim() : '';
+  if (summary.length > MAX_SUMMARY_CHARS) return 'The summary is longer than GitHub allows.';
+  if (event !== 'APPROVE' && !summary) {
+    return event === 'COMMENT'
+      ? 'A comment needs a summary.'
+      : 'Requesting changes needs a summary saying what to change.';
+  }
+  return { event: event as ReviewEvent, body: summary };
+}
+
+/** A review posted on the PR, bound to the commit the tour was written for. */
+export type PostedReview = {
+  event: ReviewEvent;
+  body: string;
+  commitId: CommitSha;
+  url: string;
+};
+
+/** Why a review wasn't posted. `stale` and `conflict` are the reviewer's to resolve. */
+export class SubmitRefused extends Error {
+  readonly reason: 'not_ready' | 'conflict' | 'stale' | 'github';
+  constructor(reason: SubmitRefused['reason'], message: string) {
+    super(message);
+    this.reason = reason;
+  }
+}
 
 /** Q2, Q4: a guide answer, and the head commit it was asked at. */
 export type GuideAnswer = { text: string; source: 'guide'; askedAt: string; cost: CostRecord };
@@ -51,6 +101,8 @@ export class Review {
   #diff: Diff | null = null;
   #tour: TourState = working('reading', null, 1);
   #listeners = new Set<(tour: TourState) => void>();
+  #posted: PostedReview | null = null;
+  #posting = false;
   readonly done: Promise<void>;
 
   constructor(options: ReviewOptions) {
@@ -59,7 +111,12 @@ export class Review {
   }
 
   snapshot(): ReviewSnapshot {
-    return { pr: this.#workspace?.pr ?? null, diff: this.#diff, tour: this.#tour };
+    return {
+      pr: this.#workspace?.pr ?? null,
+      diff: this.#diff,
+      tour: this.#tour,
+      posted: this.#posted,
+    };
   }
 
   /** Calls back with the tour state now and on every change. Returns an unsubscribe function. */
@@ -104,6 +161,42 @@ Answer the reviewer's question from the code. Read what you need. Describe what 
 Question: ${question}`,
     });
     return { text: reply.text, source: 'guide', askedAt: workspace.pr.head, cost: reply.cost };
+  }
+
+  /**
+   * Posts the reviewer's verdict as one GitHub review on this PR, at the head the tour covered.
+   * Refuses if the PR has moved on since, so an approval never covers code the tour didn't see.
+   * Posts at most once per review.
+   */
+  async submit(verdict: Verdict): Promise<PostedReview> {
+    const workspace = this.#workspace;
+    if (!workspace || this.#tour.state !== 'ready') {
+      throw new SubmitRefused('not_ready', 'The tour is not ready yet.');
+    }
+    if (this.#posted) throw new SubmitRefused('conflict', 'This review is already on GitHub.');
+    if (this.#posting) throw new SubmitRefused('conflict', 'This review is already being posted.');
+    this.#posting = true;
+    try {
+      const head = workspace.pr.head;
+      if ((await workspace.currentHead()) !== head) {
+        throw new SubmitRefused(
+          'stale',
+          'The PR has new commits since this tour. Reopen it in Docent to review them.',
+        );
+      }
+      const { url } = await workspace.postReview({
+        commitId: head,
+        event: verdict.event,
+        body: verdict.body,
+      });
+      this.#posted = { event: verdict.event, body: verdict.body, commitId: head, url };
+      return this.#posted;
+    } catch (error) {
+      if (error instanceof GitHubRefusal) throw new SubmitRefused('github', error.message);
+      throw error;
+    } finally {
+      this.#posting = false;
+    }
   }
 
   #set(tour: TourState) {

@@ -1,4 +1,10 @@
-import type { AnchorView, CostRecord, ReviewSnapshot, StopView } from '@docent/server';
+import type {
+  AnchorView,
+  CostRecord,
+  PostedReview,
+  ReviewSnapshot,
+  StopView,
+} from '@docent/server';
 import {
   Fragment,
   type ReactNode,
@@ -13,6 +19,7 @@ import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
 import { Markdown } from './markdown.tsx';
 import type { Ready } from './review-page.tsx';
+import { postedLabel, VerdictForm } from './verdict.tsx';
 
 type Props = { snapshot: ReviewSnapshot; tour: Ready };
 type Diff = NonNullable<ReviewSnapshot['diff']>;
@@ -34,6 +41,8 @@ export function TourScreen({ snapshot, tour }: Props) {
   const [viewing, setViewing] = useState<Viewing | null>(null);
   // Each stop's questions and answers, kept here so they survive moving between stops.
   const [threads, setThreads] = useState<Record<string, Exchange[]>>({});
+  // The review posted to GitHub from here, if any. A reload gets it from the snapshot.
+  const [posted, setPosted] = useState<PostedReview | null>(snapshot.posted);
   const ask = useCallback(async (stopId: string, question: string) => {
     // Each exchange has its own id, so an answer always lands on the question it answers.
     const id = crypto.randomUUID();
@@ -105,7 +114,7 @@ export function TourScreen({ snapshot, tour }: Props) {
 
   return (
     <div className="app">
-      <TopBar snapshot={snapshot} diff={diff} index={index} total={stops.length} />
+      <TopBar snapshot={snapshot} diff={diff} index={index} total={stops.length} posted={posted} />
       <div className="columns">
         <nav className="column" aria-label="The route">
           <Route
@@ -156,6 +165,11 @@ export function TourScreen({ snapshot, tour }: Props) {
             }}
             isLast={index === stops.length - 1}
             onNext={() => go(index + 1)}
+            verdict={
+              stop.kind === 'verdict_prompt' ? (
+                <VerdictForm pr={snapshot.pr} posted={posted} onPosted={setPosted} />
+              ) : null
+            }
           />
         </aside>
       </div>
@@ -168,11 +182,13 @@ function TopBar({
   diff,
   index,
   total,
+  posted,
 }: {
   snapshot: ReviewSnapshot;
   diff: Diff;
   index: number;
   total: number;
+  posted: PostedReview | null;
 }) {
   const pr = snapshot.pr;
   const lines = diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
@@ -219,14 +235,20 @@ function TopBar({
           <div className="progress-fill" style={{ width: `${((index + 1) / total) * 100}%` }} />
         </div>
       </div>
-      <button
-        type="button"
-        className="verdict-button"
-        disabled
-        title="Comes at the end of the tour"
-      >
-        Verdict at the end
-      </button>
+      {posted ? (
+        <a className="verdict-button posted" href={posted.url} target="_blank" rel="noreferrer">
+          <span aria-hidden="true">✓</span> {postedLabel(posted)}
+        </a>
+      ) : (
+        <button
+          type="button"
+          className="verdict-button"
+          disabled
+          title="Comes at the end of the tour"
+        >
+          Verdict at the end
+        </button>
+      )}
     </header>
   );
 }
@@ -379,6 +401,7 @@ function Narration({
   onAnchor,
   isLast,
   onNext,
+  verdict,
 }: {
   stop: StopView;
   exchanges: readonly Exchange[];
@@ -387,6 +410,8 @@ function Narration({
   onAnchor: (index: number) => void;
   isLast: boolean;
   onNext: () => void;
+  /** The verdict form, on the verdict stop. */
+  verdict: ReactNode;
 }) {
   const [draft, setDraft] = useState('');
   const last = exchanges.at(-1);
@@ -441,6 +466,8 @@ function Narration({
             <p>{inline(note)}</p>
           </div>
         ))}
+
+        {verdict}
 
         <div className="question">
           {exchanges.map((exchange, i) => (
@@ -508,9 +535,11 @@ function Narration({
 
       <footer className="narration-footer">
         <span className="batch-note">Pending batch · no changes yet</span>
-        <button type="button" className="primary-button" onClick={onNext} disabled={isLast}>
-          {isLast ? 'End of the tour' : 'Next stop'} {!isLast && <span aria-hidden="true">→</span>}
-        </button>
+        {!isLast && (
+          <button type="button" className="primary-button" onClick={onNext}>
+            Next stop <span aria-hidden="true">→</span>
+          </button>
+        )}
       </footer>
     </div>
   );

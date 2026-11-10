@@ -1,17 +1,24 @@
 // Recorded reviews: a saved PR, its diff, the files read, and the guide's replies. `--record`
-// saves one from a real run; `--fixture` replays it with no GitHub or model calls.
+// saves one from a real run; `--fixture` replays it with no GitHub or model calls. A review
+// submitted in fixture mode is printed, never posted.
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { AgentReply, AgentRunner } from './agent.ts';
-import { isSafeRepoPath, type PrInfo, type PrSource } from './github.ts';
+import { isSafeRepoPath, type PrInfo, type PrSource, type ReviewPost } from './github.ts';
 
 type RecordedReplies = Partial<Record<'tour' | 'question', AgentReply[]>>;
 
 const fileAt = (dir: string, side: 'old' | 'new', path: string) =>
   join(dir, 'files', side === 'new' ? 'head' : 'base', path);
 
-export function fixtureSource(dir: string): PrSource {
+/** Where fixture mode sends a submitted review instead of GitHub. The CLI prints it. */
+export type ReviewRecorder = (review: ReviewPost) => void;
+
+export const printReview: ReviewRecorder = (review) =>
+  console.log(`Recorded a review, not sent to GitHub: ${JSON.stringify(review)}`);
+
+export function fixtureSource(dir: string, record: ReviewRecorder = printReview): PrSource {
   return async (onStep) => {
     onStep('Loading the recorded pull request');
     const pr = JSON.parse(await readFile(join(dir, 'pr.json'), 'utf8')) as PrInfo;
@@ -22,6 +29,11 @@ export function fixtureSource(dir: string): PrSource {
       readFile: async (side, path) => {
         const file = fileAt(dir, side, path);
         return isSafeRepoPath(path) && existsSync(file) ? readFile(file, 'utf8') : null;
+      },
+      currentHead: async () => pr.head,
+      postReview: async (review) => {
+        record(review);
+        return { url: `${pr.url}#pullrequestreview-0` };
       },
     };
   };

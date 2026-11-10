@@ -5,6 +5,7 @@ import { expect, launch, test } from './fixtures.ts';
 // A real review, recorded with `docent review <url> --record`: the PR, its diff, the files the
 // tour read, and the guide's replies. Replaying it makes no GitHub or model calls.
 const fixture = fileURLToPath(new URL('fixtures/hono-4813', import.meta.url));
+const pr = JSON.parse(readFileSync(`${fixture}/pr.json`, 'utf8')) as { url: string; head: string };
 const replies = JSON.parse(readFileSync(`${fixture}/replies.json`, 'utf8')) as {
   tour: { structured: { stops: { title: string }[] } }[];
 };
@@ -100,6 +101,37 @@ test('the CLI opens a recorded PR, and the reviewer walks the tour by keyboard',
       await expect(guide.locator('.exchange-question')).toHaveText([
         'What happens with no Origin header?',
         'And with credentials off?',
+      ]);
+    });
+
+    await test.step('at the last stop, the reviewer approves, and the review is posted once', async () => {
+      await page.locator('.stop-button').last().click();
+      await expect(page.getByText(`Stop ${titles.length} of ${titles.length}`)).toBeVisible();
+      const review = page.getByRole('region', { name: 'Your review' });
+
+      await review.getByRole('radio', { name: /Approve/ }).check();
+      await review.getByLabel(/Summary/).fill('Checked the credentials path.');
+      // Enter in the summary adds a line; it never posts.
+      await review.getByLabel(/Summary/).press('Enter');
+      await expect(review).toContainText(
+        `Approve honojs/hono#4813 at ${pr.head.slice(0, 7)} as you, with this summary:`,
+      );
+      await review.getByRole('button', { name: 'Approve on GitHub' }).click();
+
+      await expect(review.getByRole('heading', { name: 'Approved on GitHub' })).toBeVisible();
+      await expect(
+        review.getByRole('link', { name: /View your review on GitHub/ }),
+      ).toHaveAttribute('href', `${pr.url}#pullrequestreview-0`);
+      // Locked: nothing left to send.
+      await expect(review.getByRole('button')).toHaveCount(0);
+      // Fixture mode recorded the review instead of sending it to GitHub.
+      const recorded = docent.output.filter((line) => line.startsWith('Recorded a review'));
+      expect(recorded).toEqual([
+        `Recorded a review, not sent to GitHub: ${JSON.stringify({
+          commitId: pr.head,
+          event: 'APPROVE',
+          body: 'Checked the credentials path.',
+        })}`,
       ]);
     });
   } finally {

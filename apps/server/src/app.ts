@@ -5,7 +5,7 @@ import { createMiddleware } from 'hono/factory';
 import { streamSSE } from 'hono/streaming';
 import { validator } from 'hono/validator';
 import { isSafeRepoPath } from './github.ts';
-import type { Review, TourState } from './review.ts';
+import { type Review, SubmitRefused, type TourState, verdict } from './review.ts';
 
 /** The code view shows text files up to this size. */
 const MAX_FILE_CHARS = 2_000_000;
@@ -103,6 +103,25 @@ export function createApp({ token, origin, version, webRoot, review }: AppOption
           return c.json({ answer }, 200);
         } catch (error) {
           return c.json({ error: error instanceof Error ? error.message : String(error) }, 502);
+        }
+      },
+    )
+    // Posts the reviewer's verdict to GitHub as them. The PR, repo and commit come from the
+    // review this server holds; the client chooses only the event and the summary.
+    .post(
+      '/api/review/submit',
+      validator('json', (body: { event?: unknown; body?: unknown } | null, c) => {
+        const result = verdict(body?.event, body?.body);
+        return typeof result === 'string' ? c.json({ error: result }, 400) : result;
+      }),
+      async (c) => {
+        if (!review) return c.json(noReview, 404);
+        try {
+          const posted = await review.submit(c.req.valid('json'));
+          return c.json({ posted }, 200);
+        } catch (error) {
+          if (!(error instanceof SubmitRefused)) throw error;
+          return c.json({ error: error.message }, error.reason === 'github' ? 502 : 409);
         }
       },
     );

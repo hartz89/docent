@@ -24,6 +24,13 @@ export type PrInfo = {
   headRef: string;
 };
 
+/** The reviewer's verdict, in GitHub's terms. */
+export const REVIEW_EVENTS = ['APPROVE', 'REQUEST_CHANGES', 'COMMENT'] as const;
+export type ReviewEvent = (typeof REVIEW_EVENTS)[number];
+
+/** One review to post. The PR it goes on is fixed by the workspace, never by the caller. */
+export type ReviewPost = { commitId: CommitSha; event: ReviewEvent; body: string };
+
 /** A PR opened for review: its metadata, its diff, and a way to read its files. */
 export type Workspace = {
   pr: PrInfo;
@@ -32,7 +39,14 @@ export type Workspace = {
   dir: string;
   /** A file's text at the base or head commit, or null if it doesn't exist there. */
   readFile: (side: 'old' | 'new', path: string) => Promise<string | null>;
+  /** The PR's head commit right now, which moves when the author pushes. */
+  currentHead: () => Promise<CommitSha>;
+  /** Posts one review on this PR as the reviewer, and returns its link on GitHub. */
+  postReview: (review: ReviewPost) => Promise<{ url: string }>;
 };
+
+/** GitHub turned the review down, or couldn't be reached. The message is fit to show. */
+export class GitHubRefusal extends Error {}
 
 /** Opens a PR. Real ones come from GitHub; tests and the e2e flow use recorded fixtures. */
 export type PrSource = (onStep: (step: string) => void) => Promise<Workspace>;
@@ -116,11 +130,24 @@ export function githubSource(url: string, cacheDir: string): PrSource {
         return null;
       }
     };
+    const pull = `repos/${repo}/pulls/${pr.number}`;
     return {
       pr,
       diffText,
       dir,
       readFile: (side, path) => show(side === 'new' ? pr.head : pr.base, path),
+      currentHead: async () =>
+        commitSha((await ghForReview(['api', pull, '--jq', '.head.sha'])).trim()),
+      postReview: async ({ commitId, event, body }) => {
+        // The review goes in as JSON on stdin, so the reviewer's text is never an argument.
+        const out = await ghForReview(
+          ['api', '--method', 'POST', `${pull}/reviews`, '--input', '-'],
+          JSON.stringify({ commit_id: commitId, event, body }),
+        );
+        const { html_url: url } = JSON.parse(out) as { html_url?: unknown };
+        // The link is shown to the reviewer, so it must be GitHub's.
+        return { url: typeof url === 'string' && url.startsWith(`${pr.url}#`) ? url : pr.url };
+      },
     };
   };
 }
@@ -200,6 +227,52 @@ async function gh(args: string[]): Promise<string> {
   } catch (error) {
     const stderr = (error as { stderr?: string }).stderr?.trim();
     throw new Error(`gh ${args.slice(0, 2).join(' ')} failed: ${stderr || String(error)}`);
+  }
+}
+
+/** `gh` for posting a review: feeds `input` on stdin, and turns failures into GitHubRefusals. */
+async function ghForReview(args: string[], input?: string): Promise<string> {
+  try {
+    const pending = run('gh', args, { maxBuffer: 1 << 20 });
+    pending.child.stdin?.end(input ?? '');
+    const { stdout } = await pending;
+    return stdout;
+  } catch (error) {
+    throw new GitHubRefusal(explainGhFailure(error));
+  }
+}
+
+/** A plain-language reason for a failed `gh` call, with GitHub's own words when it gave some. */
+export function explainGhFailure(error: unknown): string {
+  const failure = error as { code?: unknown; stdout?: string; stderr?: string };
+  if (failure.code === 'ENOENT') {
+    return "The GitHub CLI (gh) isn't installed. Install it, run `gh auth login`, then try again.";
+  }
+  const output = `${failure.stdout ?? ''}\n${failure.stderr ?? ''}`;
+  if (/gh auth login|HTTP 401|Bad credentials/i.test(output)) {
+    return "The GitHub CLI isn't signed in. Run `gh auth login`, then try again.";
+  }
+  if (/can ?not approve your own pull request/i.test(output)) {
+    return "GitHub doesn't let you approve your own pull request. Choose Comment instead.";
+  }
+  if (/can ?not request changes on your own pull request/i.test(output)) {
+    return "GitHub doesn't let you request changes on your own pull request. Choose Comment instead.";
+  }
+  if (/HTTP 40[34]/.test(output)) {
+    return "GitHub refused: your gh login can't review this pull request. Check that it has access to the repository.";
+  }
+  const said =
+    githubErrors(failure.stdout).join('; ') || /^gh: (.+)$/m.exec(failure.stderr ?? '')?.[1];
+  return `GitHub didn't accept the review${said ? `: ${said.trim()}` : '.'}`;
+}
+
+/** The `errors` GitHub listed in a failed response body, when they're plain strings. */
+function githubErrors(body: string | undefined): string[] {
+  try {
+    const { errors } = JSON.parse(body ?? '') as { errors?: unknown };
+    return Array.isArray(errors) ? errors.filter((e) => typeof e === 'string') : [];
+  } catch {
+    return [];
   }
 }
 
