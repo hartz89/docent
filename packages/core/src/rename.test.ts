@@ -246,8 +246,8 @@ describe('P9: renames', () => {
       },
       {
         path: 'app.ts',
-        before: lines("import { pick } from './src/index.ts';", 'pick(o);'),
-        after: lines("import { choose } from './src/index.ts';", 'choose(o);'),
+        before: lines("import { pick } from './src/index.ts';", 'export const r = pick(o);'),
+        after: lines("import { choose } from './src/index.ts';", 'export const r = choose(o);'),
       },
     ]);
     expect(proofs).toHaveLength(3);
@@ -312,7 +312,7 @@ describe('P9: renames', () => {
 
   test('P9: multi-line import lists may carry a rename', () => {
     const block = (name: string) =>
-      lines('import {', `  ${name},`, '  other,', "} from './users.ts';", `${name}(1);`);
+      lines('import {', `  ${name},`, '  other,', "} from './users.ts';", `const u = ${name}(1);`);
     const proofs = rename([
       { path: 'src/users.ts', before: users('getUser'), after: users('fetchUser') },
       { path: 'src/main.ts', before: block('getUser'), after: block('fetchUser') },
@@ -334,15 +334,138 @@ describe('P9: renames', () => {
     expect([...yaml, ...template]).toEqual([]);
   });
 
-  test('P9: Python definitions rename too', () => {
-    const py = (name: string) => lines(`def ${name}(x):`, '    return x', '', `${name}(1)`);
-    expect(rename([{ path: 'a.py', before: py('old_name'), after: py('new_name') }])).toHaveLength(
-      1,
-    );
+  test('P9: a renamed word anywhere but a safe position is not proven', () => {
+    const file = (name: string, use: string) =>
+      lines(`function ${name}() { return 1; }`, use.replaceAll('NAME', name));
+    const prove = (use: string) =>
+      rename([{ path: 'a.ts', before: file('alpha', use), after: file('omega', use) }]).length;
+    // Safe: after an operator, a few keywords, or inside call arguments.
+    expect(prove('const x = NAME();')).toBe(1);
+    expect(prove('export default NAME;')).toBe(1);
+    expect(prove('run(a, NAME);')).toBe(1);
+    // Unsafe: a statement start, a method, a class field, a key, a list in braces, a decorator.
+    for (const use of [
+      'NAME();',
+      '  NAME(',
+      '  NAME = () => 1;',
+      'const o = { a, NAME };',
+      'const o = { NAME: 1 };',
+      '@NAME',
+      'const o = { NAME() {} };',
+    ]) {
+      expect(prove(use)).toBe(0);
+    }
+  });
+
+  test('P9: JSX, Python and Go files are never renames', () => {
+    const tsx = rename([
+      {
+        path: 'a.tsx',
+        before: lines('function admin() {}', 'const p = <p>(admin)</p>;'),
+        after: lines('function guest() {}', 'const p = <p>(guest)</p>;'),
+      },
+    ]);
+    const py = rename([
+      {
+        path: 'a.py',
+        before: lines('def old_name(x):', '    return x', 'y = old_name(1)'),
+        after: lines('def new_name(x):', '    return x', 'y = new_name(1)'),
+      },
+    ]);
+    expect([...tsx, ...py]).toEqual([]);
+  });
+
+  test('P9: a nested or commented-out definition licenses nothing', () => {
+    const nested = rename([
+      {
+        path: 'a.ts',
+        before: lines(
+          '// a',
+          'function test() {',
+          '  const setTimeout = (f) => f();',
+          '  return setTimeout(run);',
+          '}',
+          'const t = setTimeout(poll, 1000);',
+        ),
+        after: lines(
+          '// a',
+          'function test() {',
+          '  const queueMicrotask = (f) => f();',
+          '  return queueMicrotask(run);',
+          '}',
+          'const t = queueMicrotask(poll, 1000);',
+        ),
+      },
+    ]);
+    const commented = rename([
+      {
+        path: 'a.ts',
+        before: lines('/*', 'function setTimeout() {}', '*/', 'const t = setTimeout(poll, 1000);'),
+        after: lines(
+          '/*',
+          'function queueMicrotask() {}',
+          '*/',
+          'const t = queueMicrotask(poll, 1000);',
+        ),
+      },
+    ]);
+    expect([...nested, ...commented]).toEqual([]);
+  });
+
+  test('P9: an aliased or commented import item, or a source with export *, licenses nothing', () => {
+    const aliased = rename([
+      {
+        path: 'a.ts',
+        before: lines(
+          'import {',
+          '  pick as p, // lodash',
+          "} from 'lodash';",
+          '',
+          'function pick() { return p; }',
+          'const x = pick();',
+        ),
+        after: lines(
+          'import {',
+          '  omit as p, // lodash',
+          "} from 'lodash';",
+          '',
+          'function omit() { return p; }',
+          'const x = omit();',
+        ),
+      },
+    ]);
+    const starred = rename([
+      {
+        path: 'util.ts',
+        before: lines(
+          "export * from 'lodash';",
+          '',
+          'function pick() { return 1; }',
+          'const y = pick();',
+        ),
+        after: lines(
+          "export * from 'lodash';",
+          '',
+          'function omit() { return 1; }',
+          'const y = omit();',
+        ),
+      },
+      {
+        path: 'b.ts',
+        before: lines("import { pick } from './util';", '', 'export const x = pick(o, k);'),
+        after: lines("import { omit } from './util';", '', 'export const x = omit(o, k);'),
+      },
+    ]);
+    expect([...aliased, ...starred]).toEqual([]);
   });
 
   test('P9: any single-token change to a proven rename un-proves that hunk', () => {
-    const base = lines('function getUser(id) {', '  return db.find(id, 1);', '}', 'getUser(2);');
+    const base = lines(
+      'function getUser(id) {',
+      '  return db.find(id, 1);',
+      '}',
+      'const u = getUser(2);',
+    );
     const after = base.replaceAll('getUser', 'fetchUser');
     expect(rename([{ path: 'a.ts', before: base, after }])).toHaveLength(1);
     const positions = [...after.matchAll(/[a-z0-9(),;.]/gi)].map((m) => m.index);

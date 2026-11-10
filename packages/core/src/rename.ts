@@ -1,6 +1,11 @@
 // P9: renames, however sweeping. A hunk is a proven rename when one consistent mapping of old
 // identifiers to new ones, plus import paths that the diff's own file moves explain, turns every
-// removed line into its added line exactly. Conservative throughout: when unsure, no proof.
+// removed line into its added line exactly.
+//
+// It works by allowlist: JS and TS only (not JSX, whose text looks like code), top-level
+// definitions only, and each renamed word must
+// sit in a position known to be safe (a definition, a plain import item, or a reference after
+// an operator). Anything else, however harmless it looks, leaves the hunk unproven.
 import type { NonEmpty } from './basics.ts';
 import type { Diff, DiffFile, Hunk, HunkId } from './diff.ts';
 import {
@@ -34,42 +39,48 @@ export type RenameLookups = {
   readonly atHead: readonly string[];
 };
 
-/** Languages where a bare word outside a string is an identifier, not data. */
-const RENAMABLE: ReadonlySet<string> = new Set([
-  ...JS_LIKE,
-  'py',
-  'go',
-  'java',
-  'kt',
-  'cs',
-  'swift',
-]);
-
-/** Words that are syntax or built-in values in at least one of those languages. Never mapped. */
+/** JS and TS words that are syntax or built-in values. Never mapped. */
 const KEYWORDS: ReadonlySet<string> = new Set(
-  `abstract and any as assert async await base bool boolean break byte case catch char checked
-  class cls const continue debugger decimal declare def default defer del delete do double elif
-  else enum event except explicit export extends extern false fallthrough final finally fixed
-  float for foreach from fun func function get global go goto guard if implements implicit import
-  in infer init inout instanceof int interface internal is iota keyof lambda let lock long map
-  match module namespace native never new nil none None nonlocal not null number object of operator
-  or out override package params pass private protected public raise range readonly record ref
-  repeat require return satisfies sbyte sealed select self Self set short sizeof static string
-  struct super switch symbol synchronized this throw throws trait transient true True False try
-  type typeof uint ulong undefined unknown unsafe ushort using val var virtual void volatile when
-  where while with yield len cap make append panic recover copy close chan print`.split(/\s+/),
+  `abstract any as async await bigint boolean break case catch class const constructor continue
+  debugger declare default delete do else enum export extends false finally for from function get
+  global if implements import in infer instanceof interface is keyof let module namespace never new
+  null number object of override package private protected public readonly require return
+  satisfies set static string super switch symbol this throw true try type typeof undefined unique
+  unknown var void while with yield arguments eval`.split(/\s+/),
 );
 
-/** Keywords that introduce a definition of the name right after them. */
-const DEFINERS: ReadonlySet<string> = new Set(
-  'function const let var class interface type enum def fn fun func struct trait namespace val object'.split(
+/** Words after which a renamed name is a plain reference to a value or type. */
+const SAFE_AFTER_WORDS: ReadonlySet<string> = new Set(
+  'return new extends implements await typeof keyof instanceof in of yield throw void delete as satisfies default'.split(
     ' ',
   ),
 );
+/** Characters after which a renamed name is a plain reference (`,` is checked separately). */
+const SAFE_AFTER_CHARS: ReadonlySet<string> = new Set([
+  '=',
+  '(',
+  '[',
+  ':',
+  '?',
+  '!',
+  '<',
+  '>',
+  '|',
+  '&',
+  '+',
+  '-',
+  '%',
+  '^',
+  '~',
+]);
+
+/** A top-level definition: at column 0, optionally exported. */
+const DEFINITION =
+  /^(export\s+(?:default\s+)?)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function\s*\*?|class|const|let|var|type|interface|enum)\s+([A-Za-z_$][\w$]*)\b/;
 
 /** Asks which repository-wide lookups `proveRenames` needs (P9). */
 export function renameLookups(diff: Diff, texts: FileTexts): RenameLookups {
-  const renames = solve(candidates(diff, texts), localWords(diff, texts), null).flatMap(
+  const renames = solve(diff, candidates(diff, texts), localWords(diff, texts), null).flatMap(
     (c) => c.idents,
   );
   const changed = renames.filter(([from, to]) => from !== to);
@@ -86,7 +97,8 @@ export function proveRenames(
   occurrences: RenameOccurrences,
 ): Proof[] {
   const proofs: Proof[] = [];
-  for (const candidate of solve(candidates(diff, texts), localWords(diff, texts), occurrences)) {
+  const live = solve(diff, candidates(diff, texts), localWords(diff, texts), occurrences);
+  for (const candidate of live) {
     const identifiers = new Map<string, RenameChange>();
     for (const [from, to] of candidate.idents) {
       if (from !== to) identifiers.set(from, { kind: 'identifier', from, to });
@@ -101,32 +113,35 @@ export function proveRenames(
   return proofs;
 }
 
+/** A renamed name imported or re-exported by a relative path: `import { a } from './x'`. */
+type Import = { readonly pair: string; readonly from: string; readonly to: string };
+
 /** One hunk that a mapping could explain, and what the mapping would need to hold. */
 type Candidate = {
   readonly hunk: HunkId;
   readonly file: DiffFile;
+  /** The file has an `export *` at base or head, so what it exports can't be read off its lines. */
+  readonly starExports: boolean;
   /** Every identifier pair the hunk lines up, identity pairs included. */
   readonly idents: readonly (readonly [string, string])[];
   readonly paths: readonly RenameChange[];
-  /** Renamed pairs whose definition (`function a` → `function b`) this hunk renames. */
-  readonly defines: readonly string[];
-  /** Renamed pairs on an import or re-export line, with its relative path at base and head. */
+  /** Renamed pairs whose top-level definition this hunk renames, and whether it's exported. */
+  readonly defines: readonly { readonly pair: string; readonly exported: boolean }[];
   readonly imports: readonly Import[];
-  /** Old names this hunk renames where a property or object key sits, which a rename can't prove. */
-  readonly risky: readonly string[];
+  /** Old names this hunk renames somewhere outside the safe positions. */
+  readonly unsafe: readonly string[];
 };
-
-type Import = { readonly pair: string; readonly from: string; readonly to: string };
 
 /**
  * Keeps the candidates whose mapping holds across the whole PR. The mapping must be one to one,
- * map no name both to itself and to another, and for each real rename: never sit in a property
- * position; be licensed in every file that uses it (see `licensed`); and (when occurrences are
- * given) leave the old name nowhere at head and find the new name nowhere at base. Dropping a
- * hunk can break another's proof (its definition was there), so this repeats until nothing
- * changes.
+ * map no name both to itself and to another, and for each real rename: sit only in safe
+ * positions; be licensed in every file that uses it (see `licensed`); and leave the old name
+ * nowhere at head and find the new name nowhere at base, in the diff's files and (when given)
+ * the whole repository. Dropping a hunk can break another's license, so this repeats until
+ * nothing changes.
  */
 function solve(
+  diff: Diff,
   all: readonly Candidate[],
   words: LocalWords,
   occurrences: RenameOccurrences | null,
@@ -139,8 +154,8 @@ function solve(
       targets.set(from, (targets.get(from) ?? new Set()).add(to));
       sources.set(to, (sources.get(to) ?? new Set()).add(from));
     }
-    const provides = licensed(live);
-    const risky = new Set(live.flatMap((c) => c.risky));
+    const { local } = licensed(diff, live);
+    const unsafe = new Set(live.flatMap((c) => c.unsafe));
     const bad = new Set<string>();
     for (const [from, to] of targets) {
       if (to.size > 1) bad.add(from);
@@ -150,19 +165,17 @@ function solve(
     }
     for (const c of live) {
       for (const [from, to] of c.idents) {
-        if (from !== to && !provides.get(c.file.path)?.has(pairKey(from, to))) bad.add(from);
+        if (from === to) continue;
+        // The diff's own files are checked here too, so a wrong answer from the caller can't
+        // prove a swap (a → b, b → a) or a merge into a name that already exists.
+        const fresh =
+          !words.base.has(to) &&
+          !words.head.has(from) &&
+          (occurrences === null ||
+            (occurrences.base.get(to)?.length === 0 && occurrences.head.get(from)?.length === 0));
+        const allowed = local.get(c.file.path)?.has(pairKey(from, to)) ?? false;
+        if (!fresh || !allowed || unsafe.has(from)) bad.add(from);
       }
-    }
-    for (const [from, to] of live.flatMap((c) => c.idents)) {
-      if (from === to) continue;
-      // The diff's own files are checked here too, so a wrong answer from the caller can't
-      // prove a swap (a → b, b → a) or a merge into a name that already exists.
-      const fresh =
-        !words.base.has(to) &&
-        !words.head.has(from) &&
-        (occurrences === null ||
-          (occurrences.base.get(to)?.length === 0 && occurrences.head.get(from)?.length === 0));
-      if (!fresh || risky.has(from)) bad.add(from);
     }
     const next = live.filter((c) => c.idents.every(([from]) => !bad.has(from)));
     if (next.length === live.length) return next;
@@ -171,41 +184,51 @@ function solve(
 }
 
 /**
- * Which renamed pairs each file may use: those whose definition it renames itself, and those it
- * imports (or re-exports) by a relative path from a diff file that may use them in turn. So a
- * rename in one file never licenses renaming a global, a built-in or another package's export
- * somewhere else.
+ * Which renamed pairs each file may use (`local`) and offer to importers (`exported`). A file may
+ * use a pair whose top-level definition it renames, or one it imports by a relative path from a
+ * diff file that exports it. It exports a pair whose definition it renames with `export`, or one
+ * it re-exports by name, and only when it has no `export *`, which could supply the name instead.
+ * So a rename never reaches a global, a built-in, or another package's export.
  */
-function licensed(live: readonly Candidate[]): Map<string, Set<string>> {
-  const provides = new Map<string, Set<string>>();
-  const add = (path: string, pair: string) =>
-    provides.set(path, (provides.get(path) ?? new Set()).add(pair));
-  for (const c of live) for (const pair of c.defines) add(c.file.path, pair);
-  const files = [...new Map(live.map((c) => [c.file.path, c.file])).values()];
+function licensed(
+  diff: Diff,
+  live: readonly Candidate[],
+): { local: Map<string, Set<string>>; exported: Map<string, Set<string>> } {
+  const local = new Map<string, Set<string>>();
+  const exported = new Map<string, Set<string>>();
+  const add = (map: Map<string, Set<string>>, path: string, pair: string) =>
+    map.set(path, (map.get(path) ?? new Set()).add(pair));
+  const starred = new Set(live.filter((c) => c.starExports).map((c) => c.file.path));
+  for (const c of live) {
+    for (const { pair, exported: isExported } of c.defines) {
+      add(local, c.file.path, pair);
+      if (isExported && !starred.has(c.file.path)) add(exported, c.file.path, pair);
+    }
+  }
   for (let changed = true; changed; ) {
     changed = false;
-    for (const file of files) {
+    for (const file of new Set(live.map((c) => c.file))) {
       const imports = live.filter((c) => c.file === file).flatMap((c) => c.imports);
       for (const pair of new Set(imports.map((i) => i.pair))) {
-        if (provides.get(file.path)?.has(pair)) continue;
+        if (local.get(file.path)?.has(pair)) continue;
         const resolved = imports
           .filter((i) => i.pair === pair)
           .every((i) =>
-            files.some(
+            diff.files.some(
               (source) =>
-                provides.get(source.path)?.has(pair) &&
+                exported.get(source.path)?.has(pair) &&
                 reaches(file.oldPath, i.from, source.oldPath) &&
                 reaches(file.path, i.to, source.path),
             ),
           );
-        if (resolved) {
-          add(file.path, pair);
-          changed = true;
-        }
+        if (!resolved) continue;
+        add(local, file.path, pair);
+        if (!starred.has(file.path)) add(exported, file.path, pair);
+        changed = true;
       }
     }
   }
-  return provides;
+  return { local, exported };
 }
 
 type LocalWords = { readonly base: ReadonlySet<string>; readonly head: ReadonlySet<string> };
@@ -225,6 +248,11 @@ const WORDS = /[A-Za-z_$][\w$]*/g;
 
 const pairKey = (from: string, to: string): string => JSON.stringify([from, to]);
 
+/** JS and TS without JSX. */
+const RENAMABLE: ReadonlySet<string> = new Set([...JS_LIKE].filter((ext) => !ext.endsWith('x')));
+
+const STAR_EXPORT = /^\s*export\s+(?:type\s+)?\*\s*from/;
+
 function candidates(diff: Diff, texts: FileTexts): Candidate[] {
   const found: Candidate[] = [];
   for (const file of diff.files) {
@@ -232,9 +260,12 @@ function candidates(diff: Diff, texts: FileTexts): Candidate[] {
     const sides = sidesOf(file, texts);
     if (sides?.base == null || sides.head === null) continue; // A new or deleted file isn't a rename.
     if (mayHaveMultilineStrings(sides.base) || mayHaveMultilineStrings(sides.head)) continue;
+    const starExports = [...sides.base, ...sides.head].some((line) => STAR_EXPORT.test(line));
     for (const hunk of file.hunks) {
       if (!hasChanges(hunk)) continue;
-      const candidate = readHunk(diff, file, hunk, sides.base, sides.head);
+      const before = { lines: sides.base, comments: blockCommentLines(sides.base) };
+      const after = { lines: sides.head, comments: blockCommentLines(sides.head) };
+      const candidate = readHunk(diff, file, hunk, before, after, starExports);
       if (candidate) found.push(candidate);
     }
   }
@@ -248,15 +279,15 @@ function readHunk(
   diff: Diff,
   file: DiffFile,
   hunk: Hunk,
-  base: readonly string[],
-  head: readonly string[],
+  base: Source,
+  head: Source,
+  starExports: boolean,
 ): Candidate | null {
   const idents: (readonly [string, string])[] = [];
   const paths: RenameChange[] = [];
-  const defines: string[] = [];
+  const defines: { pair: string; exported: boolean }[] = [];
   const imports: Import[] = [];
-  const risky: string[] = [];
-  const jsx = ['jsx', 'tsx'].includes(extension(file.path));
+  const unsafe: string[] = [];
   const blocks: { removed: Numbered[]; added: Numbered[] }[] = [];
   let open = false;
   for (const line of hunk.lines) {
@@ -275,11 +306,9 @@ function readHunk(
     for (const [i, before] of removed.entries()) {
       const after = added[i];
       if (after === undefined) return null;
-      const a = tokenize(before.text, jsx);
-      const b = tokenize(after.text, jsx);
+      const a = tokenize(before.text);
+      const b = tokenize(after.text);
       if (a === null || b === null || a.length !== b.length) return null;
-      const oldLine: Line = { tokens: a, lines: base, at: before.at, jsx };
-      const newLine: Line = { tokens: b, lines: head, at: after.at, jsx };
       for (const [k, x] of a.entries()) {
         const y = b[k];
         if (y === undefined) return null;
@@ -287,19 +316,22 @@ function readHunk(
           idents.push([x.text, y.text]);
           if (x.text === y.text) continue;
           if (KEYWORDS.has(x.text) || KEYWORDS.has(y.text)) return null;
-          // Case can carry meaning (Go exports and serializes capitalized names).
           if (isUpper(x.text) !== isUpper(y.text)) return null;
           const pair = pairKey(x.text, y.text);
-          if (definesAt(a, k) && definesAt(b, k)) defines.push(pair);
-          if (propertyAt(oldLine, k) || propertyAt(newLine, k)) risky.push(x.text);
-          const from = importedFrom(base, before.at);
-          const to = importedFrom(head, after.at);
-          if (from === 'local' && to === 'local') continue;
-          // An import from a package, or one this can't read, may name anything: never renamed.
-          if (from === 'local' || to === 'local' || from === null || to === null) {
-            risky.push(x.text);
-          } else {
-            imports.push({ pair, from, to });
+          const was = role(base, before.at, a, k);
+          const is = role(head, after.at, b, k);
+          if (was.kind !== is.kind) {
+            unsafe.push(x.text);
+          } else if (was.kind === 'definition' && is.kind === 'definition') {
+            defines.push({ pair, exported: was.exported && is.exported });
+          } else if (was.kind === 'import' && is.kind === 'import') {
+            // A local export list (`export { a }`) is a plain use; one from a path is an import.
+            if ((was.from === null) !== (is.from === null)) unsafe.push(x.text);
+            else if (was.from !== null && is.from !== null) {
+              imports.push({ pair, from: was.from, to: is.from });
+            }
+          } else if (was.kind === 'unsafe') {
+            unsafe.push(x.text);
           }
         } else if (x.kind === 'string' && y.kind === 'string' && x.quote === y.quote) {
           if (x.body === y.body) continue;
@@ -311,7 +343,137 @@ function readHunk(
       }
     }
   }
-  return { hunk: hunk.id, file, idents, paths, defines, imports, risky };
+  return { hunk: hunk.id, file, starExports, idents, paths, defines, imports, unsafe };
+}
+
+type Role =
+  | { readonly kind: 'definition'; readonly exported: boolean }
+  /** `from` is the relative path it comes from, or null for a local export list. */
+  | { readonly kind: 'import'; readonly from: string | null }
+  | { readonly kind: 'reference' }
+  | { readonly kind: 'unsafe' };
+
+/**
+ * What the renamed word at token k of line `at` (0-based) is doing. Only three roles are safe:
+ * the name of a top-level definition; a plain item (no `as`) in an import or export list, read
+ * as a whole statement; and a reference right after an operator or a few keywords. Everything
+ * else, including any word at the start of a line, is unsafe.
+ */
+function role({ lines, comments }: Source, at: number, tokens: readonly Token[], k: number): Role {
+  // Nothing in a block comment counts, so a commented-out definition licenses nothing.
+  if (comments.has(at)) return { kind: 'unsafe' };
+  const line = lines[at] ?? '';
+  const name = tokens[k]?.text ?? '';
+  const definition = DEFINITION.exec(line);
+  const before = neighbor(tokens, k, -1);
+  const prevToken = tokens[before];
+  if (definition && definition[2] === name && prevToken?.kind === 'ident') {
+    // The name right after the defining keyword, not a later word on the line.
+    if (
+      ['function', 'class', 'const', 'let', 'var', 'type', 'interface', 'enum'].includes(
+        prevToken.text,
+      )
+    ) {
+      return { kind: 'definition', exported: definition[1] !== undefined };
+    }
+  }
+  const statement = importStatement(lines, at, comments);
+  if (statement !== null) {
+    if (!statement.items.includes(name)) return { kind: 'unsafe' };
+    if (statement.from === null) return { kind: 'import', from: null };
+    const relative = statement.from.startsWith('./') || statement.from.startsWith('../');
+    return relative ? { kind: 'import', from: statement.from } : { kind: 'unsafe' };
+  }
+  const after = neighbor(tokens, k, 1);
+  const prev = prevToken?.text ?? '';
+  const next = tokens[after]?.text ?? '';
+  const nextNext = tokens[neighbor(tokens, after, 1)]?.text ?? '';
+  // Never a key, a parameter default, a keyword argument or an attribute.
+  if (next === ':' || (next === '?' && nextNext === ':')) return { kind: 'unsafe' };
+  if (next === '=' && tokens[after + 1]?.text !== '=' && tokens[after + 1]?.text !== '>') {
+    return { kind: 'unsafe' };
+  }
+  if (prevToken?.kind === 'ident' && SAFE_AFTER_WORDS.has(prev)) return { kind: 'reference' };
+  if (prevToken?.kind === 'other' && SAFE_AFTER_CHARS.has(prev)) return { kind: 'reference' };
+  if (prev === ',' && enclosing(tokens, before) !== '{') return { kind: 'reference' };
+  return { kind: 'unsafe' };
+}
+
+/** The nearest unclosed bracket left of token j on the same line, or '' if there is none. */
+function enclosing(tokens: readonly Token[], j: number): string {
+  let depth = 0;
+  for (let i = j - 1; i >= 0; i--) {
+    const text = tokens[i]?.text ?? '';
+    if (')]}'.includes(text) && text !== '') depth++;
+    else if ('([{'.includes(text) && text !== '') {
+      if (depth === 0) return text;
+      depth--;
+    }
+  }
+  return '';
+}
+
+const NAME = String.raw`[A-Za-z_$][\w$]*`;
+const ITEM = String.raw`(?:type\s+)?${NAME}(?:\s+as\s+${NAME})?`;
+const LIST_STATEMENT = new RegExp(
+  String.raw`^(import|export)\s+(?:type\s+)?\{\s*(${ITEM}(?:\s*,\s*${ITEM})*)\s*,?\s*\}\s*(?:from\s*(?:'([^'\\]*)'|"([^"\\]*)"))?\s*;?$`,
+);
+
+/**
+ * The import or export list statement that line `at` belongs to, read whole from its first
+ * line (`import` or `export` at column 0) to its last. Its items are the plain names in it;
+ * an aliased item (`a as b`) is not plain. Null when the line isn't part of such a statement,
+ * or the statement holds anything else, a comment included.
+ */
+function importStatement(
+  lines: readonly string[],
+  at: number,
+  comments: ReadonlySet<number>,
+): { items: readonly string[]; from: string | null } | null {
+  let start = at;
+  while (start > 0 && start > at - 200 && !/^(?:import|export)\b/.test(lines[start] ?? '')) start--;
+  if (!/^(?:import|export)\s+(?:type\s+)?\{/.test(lines[start] ?? '')) return null;
+  const end = lines.findIndex((line, i) => i >= start && line.includes('}'));
+  if (end < at) return null;
+  for (let i = start; i <= end; i++) if (comments.has(i)) return null;
+  const text = lines
+    .slice(start, end + 1)
+    .map((l) => l.trim())
+    .join(' ');
+  const match = LIST_STATEMENT.exec(text);
+  if (!match) return null;
+  const [, keyword, list = '', single, double] = match;
+  const from = single ?? double ?? null;
+  if (keyword === 'import' && from === null) return null;
+  const items = list
+    .split(',')
+    .map((item) => item.trim().replace(/^type\s+/, ''))
+    .filter((item) => /^[A-Za-z_$][\w$]*$/.test(item));
+  return { items, from };
+}
+
+/** A file's lines, and which of them a block comment touches. */
+type Source = { readonly lines: readonly string[]; readonly comments: ReadonlySet<number> };
+
+/**
+ * The 0-based lines that a `/* … *\/` comment touches. Any `/*` opens one, even inside a string,
+ * so a real comment is never mistaken for code; the cost is treating some code as a comment.
+ */
+function blockCommentLines(lines: readonly string[]): Set<number> {
+  const touched = new Set<number>();
+  let inside = false;
+  for (const [n, line] of lines.entries()) {
+    let i = 0;
+    if (inside) touched.add(n);
+    while (i < line.length) {
+      const next = line.indexOf(inside ? '*/' : '/*', i);
+      if (next === -1) break;
+      touched.add(n);
+      inside = !inside;
+      i = next + 2;
+    }
+  }
+  return touched;
 }
 
 type Token =
@@ -329,9 +491,9 @@ type Token =
  * (spaces included, so spacing must match exactly). Numbers are one token, never an identifier.
  * A `//` comment is one token, so it must match exactly. Null for anything it can't read
  * safely: a quote left open, any non-ASCII character, or any other `/`, which could start a
- * regex whose body would look like code (in JSX files, `</` and `/>` are tags).
+ * regex whose body would look like code.
  */
-export function tokenize(line: string, jsx = false): Token[] | null {
+export function tokenize(line: string): Token[] | null {
   if (/[^\x20-\x7e\t]/.test(line)) return null;
   const tokens: Token[] = [];
   let i = 0;
@@ -357,7 +519,7 @@ export function tokenize(line: string, jsx = false): Token[] | null {
     } else if (char === '/' && line[i + 1] === '/') {
       tokens.push({ kind: 'other', text: line.slice(i) });
       i = line.length;
-    } else if (char === '/' && !(jsx && (line[i - 1] === '<' || line[i + 1] === '>'))) {
+    } else if (char === '/') {
       return null;
     } else {
       tokens.push({ kind: 'other', text: char });
@@ -375,100 +537,6 @@ function neighbor(tokens: readonly Token[], k: number, step: 1 | -1): number {
   let j = k + step;
   while (isSpace(tokens[j])) j += step;
   return j;
-}
-
-const textAt = (tokens: readonly Token[], j: number): string | undefined => tokens[j]?.text;
-
-/** The identifier at k is being defined: `const k`, `function* k`, or a Go method `func (r T) k`. */
-function definesAt(tokens: readonly Token[], k: number): boolean {
-  let j = neighbor(tokens, k, -1);
-  if (textAt(tokens, j) === '*') j = neighbor(tokens, j, -1); // function* name
-  const before = tokens[j];
-  if (before?.kind === 'ident' && DEFINERS.has(before.text)) return true;
-  if (before?.text !== ')') return false;
-  let depth = 0;
-  for (; j >= 0; j--) {
-    const text = textAt(tokens, j);
-    if (text === ')') depth++;
-    if (text === '(' && --depth === 0) break;
-  }
-  return textAt(tokens, neighbor(tokens, j, -1)) === 'func';
-}
-
-type Line = {
-  readonly tokens: readonly Token[];
-  readonly lines: readonly string[];
-  readonly at: number;
-  readonly jsx: boolean;
-};
-
-/** Words that may come before a method name in a class or object literal. */
-const MODIFIERS: ReadonlySet<string> = new Set(
-  'get set async static public private protected override readonly abstract *'.split(' '),
-);
-
-/**
- * The identifier at k sits where a rename could change data or what outside code calls, not
- * just a name. Unless it's being defined (`const k: T = …`), that's: after `.` (a property);
- * before `:` (an object key); before a single `=` after `{`, `,`, `(` or a word (a destructuring
- * default, keyword argument or JSX attribute); a method (`k() {` at the start of a line, after
- * `{`, `,` or a modifier like `get`); alone between `{`/`,` and `,`/`}` (shorthand, so a key),
- * except in an import or export list; and in JSX, right after a word or string (an attribute).
- */
-function propertyAt({ tokens, lines, at, jsx }: Line, k: number): boolean {
-  const before = neighbor(tokens, k, -1);
-  let after = neighbor(tokens, k, 1);
-  const prev = textAt(tokens, before) ?? '';
-  if (prev === '.') return true;
-  if (definesAt(tokens, k)) return false;
-  if (textAt(tokens, after) === '?') after = neighbor(tokens, after, 1);
-  const next = textAt(tokens, after) ?? '';
-  const prevIsWord = tokens[before]?.kind === 'ident';
-  if (next === ':' && textAt(tokens, after + 1) !== ':') return true;
-  const assigns = next === '=' && !['=', '>'].includes(textAt(tokens, after + 1) ?? '');
-  if (assigns && (['{', ',', '('].includes(prev) || prevIsWord)) return true;
-  if (next === '(' || next === '<') {
-    if (['{', ','].includes(prev) || MODIFIERS.has(prev)) return true;
-    if (before < 0 && (lines[at] ?? '').trimEnd().endsWith('{')) return true;
-  }
-  if (jsx && ((prevIsWord && !KEYWORDS.has(prev)) || tokens[before]?.kind === 'string')) {
-    return true;
-  }
-  const opens = before < 0 || ['{', ','].includes(prev);
-  const closes = after >= tokens.length || ['}', ','].includes(next);
-  return opens && closes && !inImportList(lines, at);
-}
-
-/**
- * Where line `at` (0-based) imports its names from: `'local'` if it isn't an import or export
- * list at all, the path for a relative JS or TS import (`from './x'`, single or multi-line), and
- * null for anything else (a package, a Python `from x import`, or a shape this can't read).
- */
-function importedFrom(lines: readonly string[], at: number): string | 'local' | null {
-  if (!inImportList(lines, at)) return 'local';
-  for (let j = at; j < Math.min(lines.length, at + 100); j++) {
-    const line = lines[j] ?? '';
-    const from = /\bfrom\s*(['"])([^'"]*)\1\s*;?\s*$/.exec(line);
-    if (from) {
-      const path = from[2] ?? '';
-      return path.startsWith('./') || path.startsWith('../') ? path : null;
-    }
-    if (j > at && !LIST_ITEM.test(line) && !/^\s*\}/.test(line)) break;
-  }
-  // An export list with no `from` re-exports local names.
-  return /^\s*export\s+(?:type\s+)?\{[^}]*\}\s*;?\s*$/.test(lines[at] ?? '') ? 'local' : null;
-}
-
-const LIST_ITEM = /^\s*(?:type\s+)?[A-Za-z_$][\w$]*(?:\s+as\s+[A-Za-z_$][\w$]*)?\s*,?\s*$/;
-
-/** Line `at` (0-based) is part of an import or export statement's name list. */
-function inImportList(lines: readonly string[], at: number): boolean {
-  const line = lines[at] ?? '';
-  if (/^\s*(?:import\s|export\s+(?:type\s+)?\{|from\s+\S+\s+import\s)/.test(line)) return true;
-  if (!LIST_ITEM.test(line)) return false;
-  let j = at - 1;
-  while (j >= 0 && LIST_ITEM.test(lines[j] ?? '')) j--;
-  return /^\s*(?:import|export)\s+(?:type\s+)?\{\s*$/.test(lines[j] ?? '');
 }
 
 /**

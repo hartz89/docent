@@ -131,7 +131,18 @@ describe('P3: whitespace only', () => {
       before: lines('package main', "var t = string('`') + `", 'hello', "` + string('`')"),
       after: lines('package main', "var t = string('`') + `", '    hello', "` + string('`')"),
     });
-    expect([...ts, ...go]).toEqual([]);
+    const open = '} const s = `$' + '{`hello'; // Opens a template inside a template.
+    const nested = whitespace({
+      path: 'a.ts',
+      before: lines('if (a) {', open, 'world', '`}`; if (b) {', '}'),
+      after: lines('if (a) {', open, '    world', '`}`; if (b) {', '}'),
+    });
+    const jsxText = whitespace({
+      path: 'a.tsx',
+      before: lines('const el = <p>{a', '}` {`hello', 'world', 'x`}`{b', '}</p>;'),
+      after: lines('const el = <p>{a', '}` {`hello', '    world', 'x`}`{b', '}</p>;'),
+    });
+    expect([...ts, ...go, ...nested, ...jsxText]).toEqual([]);
     const { diff, texts } = changes([
       {
         path: 'a.ts',
