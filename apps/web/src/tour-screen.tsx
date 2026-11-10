@@ -35,17 +35,16 @@ export function TourScreen({ snapshot, tour }: Props) {
   // Each stop's questions and answers, kept here so they survive moving between stops.
   const [threads, setThreads] = useState<Record<string, Exchange[]>>({});
   const ask = useCallback(async (stopId: string, question: string) => {
+    // Each exchange has its own id, so an answer always lands on the question it answers.
+    const id = crypto.randomUUID();
     const settle = (patch: Partial<Exchange>) =>
-      setThreads((all) => {
-        const list = all[stopId] ?? [];
-        return {
-          ...all,
-          [stopId]: list.map((e, i) => (i === list.length - 1 ? { ...e, ...patch } : e)),
-        };
-      });
+      setThreads((all) => ({
+        ...all,
+        [stopId]: (all[stopId] ?? []).map((e) => (e.id === id ? { ...e, ...patch } : e)),
+      }));
     setThreads((all) => ({
       ...all,
-      [stopId]: [...(all[stopId] ?? []), { question, answer: null, error: null }],
+      [stopId]: [...(all[stopId] ?? []), { id, question, answer: null, error: null }],
     }));
     try {
       const res = await api.questions.$post({ json: { stopId, question } });
@@ -366,6 +365,7 @@ function Overview({
 }
 
 type Exchange = {
+  id: string;
   question: string;
   answer: { text: string; cost: CostRecord } | null;
   error: string | null;
@@ -444,8 +444,7 @@ function Narration({
 
         <div className="question">
           {exchanges.map((exchange, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: exchanges only ever append.
-            <div className="exchange fade-in" key={i}>
+            <div className="exchange fade-in" key={exchange.id}>
               <p
                 className="exchange-question"
                 ref={i === exchanges.length - 1 ? newest : undefined}

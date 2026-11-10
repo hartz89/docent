@@ -83,7 +83,8 @@ test('the CLI opens a recorded PR, and the reviewer walks the tour by keyboard',
 
       // The box now sits below the answer, ready for a follow-up.
       const followUp = guide.getByLabel('Ask a follow-up');
-      const answerBottom = (await answers.first().boundingBox())?.y ?? 0;
+      const answerBox = await answers.first().boundingBox();
+      const answerBottom = (answerBox?.y ?? 0) + (answerBox?.height ?? 0);
       const boxTop = (await followUp.boundingBox())?.y ?? 0;
       expect(boxTop).toBeGreaterThan(answerBottom);
 
