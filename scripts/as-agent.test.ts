@@ -435,6 +435,8 @@ describe('as-agent allowlist', () => {
     // Round two: gh gives -l to --title, then applies --label backlog.
     ['builder', 'gh issue create --title -l --label backlog'],
     ['builder', 'gh issue edit 4 --body x --add-label bug --title backlog'],
+    ['builder', 'gh issue create --recover draft.json'],
+    ['builder', 'gh pr create --recover=draft.json'],
   ];
 
   test.each(refused)('%s refuses: %s', async (role, command) => {

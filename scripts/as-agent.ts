@@ -172,6 +172,8 @@ function checkLabels(args: string[], refuse: (reason: string) => never): void {
   const LABEL_FLAGS = /^(-l|--label|--add-label|--remove-label)(=(.*))?$/;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? '';
+    // --recover loads labels from a JSON file, out of this scan's sight.
+    if (/^--recover(=|$)/.test(arg)) refuse('--recover reads labels from a file');
     // A short flag with anything glued on (-lbacklog) or bundled with others (-wl) parses in gh
     // as a flag plus a value we'd otherwise miss, so only a bare -x or -x=value is accepted.
     if (/^-[^-]/.test(arg) && arg.length > 2 && arg[2] !== '=') {
