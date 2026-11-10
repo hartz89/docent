@@ -70,6 +70,17 @@ export function TourScreen({ snapshot, tour }: Props) {
     },
     [stop, stops.length],
   );
+  // ↑ ↓ in the code view move between this stop's citations once one is read through.
+  const anchorCount = stop?.anchors.length ?? 0;
+  const stepAnchor = useCallback(
+    (delta: 1 | -1) => {
+      const next = anchorIndex + delta;
+      if (next < 0 || next >= anchorCount) return false;
+      setAnchorIndex(next);
+      return true;
+    },
+    [anchorIndex, anchorCount],
+  );
   const stopId = stop?.id;
   useLayoutEffect(() => {
     if (guide.current && stopId) guide.current.scrollTop = scrollByStop.current.get(stopId) ?? 0;
@@ -137,6 +148,7 @@ export function TourScreen({ snapshot, tour }: Props) {
                 cited={viewing ? [] : cited}
                 focus={viewing ? null : anchor}
                 changed={changes.get(`${shown.side}:${shown.path}`) ?? new Set()}
+                onStep={viewing ? undefined : stepAnchor}
               />
             </>
           ) : (
