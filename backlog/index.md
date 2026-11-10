@@ -67,15 +67,22 @@ Version one is the brief's loop: open a PR, take the tour, ask a question, leave
 15. **Harness evals, version 1.** A small benchmark of repo tasks with mechanical graders, run under the base and branch harness, reporting pass rate, tokens, cost and turns. Design: [`docs/process/harness-evals.md`](../docs/process/harness-evals.md). Add a context-footprint check to `pnpm verify` too: it fails if the always-loaded context (`AGENTS.md` + `CLAUDE.md`) grows past a token budget, the same way bonsai measures its own footprint. _Outcome: harness changes are measured, not guessed._
 16. **Learning across reviews,** on demand (`docent learn`). Group the structured records from item 5, keep only feedback that recurs across several PRs, and propose changes to AGENTS.md, CLAUDE.md, skills or lint rules as their own small PR, each linked to the reviews behind it. Track whether the feedback stops recurring. _Outcome: reviews make the next PR better, not just this one._
 17. **Release readiness for v1.** `npx docent review <url>` with no account or setup. Settle the npm scope ([`decisions.md`](decisions.md)), sign releases, pin dependencies, and write the install and security docs. _Outcome: someone other than the maintainer can use Docent._
-18. **Expand CI, now that the public repo gets free minutes:**
+18. **Show the PR's existing review comments in the tour.** Reading what other reviewers already said is part of reviewing a PR, and Docent is a helper for the whole review, not only its own explanation. Lower priority than the v1 loop.
+    - **In the relevant stop:** existing review threads and comments appear with the stop whose lines they're on, as they were written. They are other people's words, attributed, never paraphrased or graded by the docent.
+    - **Critical feedback on code the tour wouldn't otherwise visit:** when an unresolved thread asks for a change on lines the tour skips or doesn't cite, the tour gives it a home, so it isn't missed. This surfaces what reviewers said; the docent still adds no opinion of its own.
+    - **Outdated threads,** whose lines have since changed, show as outdated, as on GitHub.
+    - Treat comment text as untrusted data, like the PR description: it can carry injected instructions (see item 6's adversarial fixtures).
+
+    If the project has its own AI reviewer, its comments show up here like anyone else's. Docent stays the guide, not a second reviewer. _Outcome: the reviewer sees the whole conversation on the PR where it applies, without leaving the tour._
+19. **Expand CI, now that the public repo gets free minutes:**
     - verify and e2e on Linux and macOS;
     - nightly runs that catch flaky tests;
     - nightly mutation testing;
     - performance budgets.
 
     Model-backed jobs run on a label or in a merge queue, since fork PRs get no secrets.
-19. **First scheduled maintenance agents:** dependency updates, architecture audits against the guards, and doc drift checks (does AGENTS.md still match the code?).
-20. **Briefs.** Briefs are triggered by how much the repo changed, not by the calendar. Add a skill that writes them, and keep notes on what the maintainer finds useful.
+20. **First scheduled maintenance agents:** dependency updates, architecture audits against the guards, and doc drift checks (does AGENTS.md still match the code?).
+21. **Briefs.** Briefs are triggered by how much the repo changed, not by the calendar. Add a skill that writes them, and keep notes on what the maintainer finds useful.
 
 ## After v1
 
