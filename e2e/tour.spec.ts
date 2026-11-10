@@ -21,6 +21,8 @@ test('the CLI opens a recorded PR, and the reviewer walks the tour by keyboard',
     await test.step('the tour loads for the PR', async () => {
       await page.goto(docent.url);
       await expect(page.getByRole('heading', { level: 1 })).toContainText('cors');
+      // The tab names the PR, then Docent.
+      await expect(page).toHaveTitle(/cors.* · Docent$/);
       await expect(page.getByText(`Stop 1 of ${titles.length}`)).toBeVisible();
       await expect(page.locator('.narration-title')).toHaveText(titles[0] ?? '');
     });
