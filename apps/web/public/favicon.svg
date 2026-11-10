@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>Docent</title>
+  <!-- The tour: three stops along a route, in the app's brass on its dark ground. -->
+  <rect width="32" height="32" rx="7" fill="#12151a"/>
+  <path d="M8.5 23.5 C 8.5 15, 23.5 17, 23.5 8.5" fill="none" stroke="#d9b06a" stroke-width="2.4" stroke-linecap="round" opacity="0.55"/>
+  <circle cx="8.5" cy="23.5" r="3.6" fill="#d9b06a"/>
+  <circle cx="16" cy="16" r="2.6" fill="#d9b06a"/>
+  <circle cx="23.5" cy="8.5" r="3.6" fill="#d9b06a"/>
+</svg>
