@@ -1,4 +1,4 @@
-> Snapshot of the living doc at https://claude.ai/artifact/2cSekJHpTWZHqauuiHWCXH, taken 2026-11-06. The doc is the source of truth; refresh this copy when it changes.
+> Snapshot of the living doc at https://claude.ai/artifact/2cSekJHpTWZHqauuiHWCXH, taken 2026-11-06, with the skip rule updated 2026-11-09. The doc is the source of truth; refresh this copy when it changes.
 
 # Docent — Design Brief
 
@@ -43,7 +43,7 @@ The tension: a smooth explanation makes code feel correct. These rules keep the 
 - **Surface mismatches between intent and behavior.** "The description says it adds caching; it also changes retry behavior." Any place the handoff and the code disagree becomes a tour stop. This is how it stays independent without giving opinions.
 - **Describe, don't judge.** "This now runs before the auth middleware," not "this looks fine." The only exception is obvious, dangerous problems.
 - **Every claim cites lines.** Each tour stop points to the exact code so the reviewer checks it rather than trusting the narration. Anchors heal themselves: each stop stores the code it refers to, re-checks it against the current revision, and follows it when it moves. If that code is gone, the stop is flagged as out of date instead of pointing at the wrong lines (v1).
-- **Show what it skipped, and why.** Lockfiles, generated types, renames: collapsed but visible, each with a one-line reason. Reviewers can open any of them, and occasional random checks of skipped sections test the docent's judgment.
+- **Show what it skipped.** Every changed line is visible: on the tour's route, collapsed as a proven skip (a script confirms lockfiles, generated files, renames and whitespace, and labels them), or listed as "not on the route". The checker builds that list, not the docent, so a skip can't be talked into hiding a change. The docent may add a one-line note, shown as its word, not proof. Reviewers can open any of them, and occasional random checks of what's off the route test the docent's judgment.
 - **Order the tour by how the change works.** Intent first, then a map of what it touches, then the core change, then the edges, ending with the reviewer's verdict.
 
 ## Questions vs. feedback
@@ -179,7 +179,7 @@ Every agent job gets a cost meter and a regression-tested eval, so changing a pr
 | Job           | What the eval checks                                               | Key metric                                              |
 | ------------- | ------------------------------------------------------------------ | ------------------------------------------------------- |
 | Tour          | Planted behavior changes and intent/code mismatches get surfaced   | Planted problems found                                  |
-| Skip decision | Important code is never collapsed                                  | Important code wrongly skipped (target: zero)           |
+| Skip decision | Important code is never left off the route                         | Important code not on the route (target: zero)          |
 | Danger flag   | Obvious dangerous patterns are flagged; ordinary code isn't        | Hits and false alarms                                   |
 | Answer check  | Clearly wrong author answers get flagged; sound ones pass silently | Wrong answers caught, and false alarms (both low noise) |
 | Scrubber      | Planted fake secrets and sensitive details are removed             | Leaks (any miss is a serious failure)                   |
@@ -220,7 +220,7 @@ Version one is one polished loop, for one reviewer using Claude Code: open a PR,
 
 The biggest risks are a fluent guide hiding problems and transcripts leaking secrets; both are covered by evals rather than by approval prompts.
 
-- **Persuasive narration.** A good tour can talk a reviewer past a bug. Mitigated by the docent's rules and the "important code wrongly skipped" eval.
+- **Persuasive narration.** A good tour can talk a reviewer past a bug. Mitigated by the docent's rules and the "important code not on the route" eval.
 - **Transcript leaks.** Scrubbing will miss things sometimes. Mitigated by layered scrubbing, the redaction log, private storage that follows repo permissions, and clear docs on securing transcripts.
 - **Channels is a research preview.** It needs the `--channels` flag, only works while the session is open, and on Team and Enterprise plans an admin must enable it. The protocol may change.
 - **Session portability (spike first).** Claude Code ties sessions to a project path. Resuming on another machine may need the repo at the matching commit plus path remapping.
