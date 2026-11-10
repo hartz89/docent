@@ -71,6 +71,35 @@ test('the CLI opens a recorded PR, and the reviewer walks the tour by keyboard',
       await expect(page.locator('.narration-title')).toHaveText(titles[1] ?? '');
       await expect.poll(scrollTop).toBe(left);
     });
+
+    await test.step('questions read like a chat: the box follows the latest answer, and the thread survives leaving the stop', async () => {
+      await page.setViewportSize({ width: 1280, height: 900 });
+      const guide = page.getByRole('complementary', { name: 'The guide' });
+      const answers = guide.locator('.exchange-answer');
+
+      await guide.getByLabel('Your question').fill('What happens with no Origin header?');
+      await guide.getByRole('button', { name: 'Ask the guide' }).click();
+      await expect(answers).toHaveCount(1);
+
+      // The box now sits below the answer, ready for a follow-up.
+      const followUp = guide.getByLabel('Ask a follow-up');
+      const answerBox = await answers.first().boundingBox();
+      const answerBottom = (answerBox?.y ?? 0) + (answerBox?.height ?? 0);
+      const boxTop = (await followUp.boundingBox())?.y ?? 0;
+      expect(boxTop).toBeGreaterThan(answerBottom);
+
+      await followUp.fill('And with credentials off?');
+      await followUp.press('ControlOrMeta+Enter');
+      await expect(answers).toHaveCount(2);
+
+      await page.getByRole('button', { name: /Next stop/ }).click();
+      await expect(guide.locator('.exchange')).toHaveCount(0);
+      await page.keyboard.press('ArrowLeft');
+      await expect(guide.locator('.exchange-question')).toHaveText([
+        'What happens with no Origin header?',
+        'And with credentials off?',
+      ]);
+    });
   } finally {
     await docent.stop();
   }
