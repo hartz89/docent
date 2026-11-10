@@ -466,8 +466,9 @@ code,
   padding-right: 32px;
 }
 
-/* Wrapped lines: no sideways scroll. Continuation rows hang 2ch past the line's own
-   indentation (--indent, set per line), so a wrapped line still reads as one line. */
+/* Wrapped lines: no sideways scroll. Continuation rows hang just past the line's own
+   indentation (--hang, set per line and kept to whole tab stops so tabs don't shift), so a
+   wrapped line still reads as one line. */
 .code.wrap {
   min-width: 0;
 }
@@ -475,8 +476,8 @@ code,
 .code.wrap .line-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  padding-left: calc(var(--indent, 0ch) + 2ch);
-  text-indent: calc(-1 * (var(--indent, 0ch) + 2ch));
+  padding-left: var(--hang, 4ch);
+  text-indent: calc(-1 * var(--hang, 4ch));
 }
 
 .legend {
