@@ -1095,7 +1095,7 @@ kbd {
   font-weight: 400;
   letter-spacing: 0.02em;
   text-transform: none;
-  color: var(--faint);
+  color: var(--muted);
 }
 
 .verdict-choices {
@@ -1197,7 +1197,7 @@ kbd {
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--faint);
+  color: var(--muted);
   margin-bottom: 6px;
 }
 
@@ -1240,7 +1240,7 @@ kbd {
   gap: 16px;
   margin-top: 14px;
   font-size: 12px;
-  color: var(--faint);
+  color: var(--muted);
 }
 
 .verdict-actions .primary-button {
