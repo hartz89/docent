@@ -398,6 +398,9 @@ code,
 }
 
 .code-scroll {
+  /* Positioned, so each line's offsetTop is measured from the scroller, which the centering and
+     the ↑ ↓ reading math rely on. Without it, offsets include the header above. */
+  position: relative;
   flex: 1;
   overflow: auto;
   min-height: 0;
@@ -753,7 +756,11 @@ code,
 }
 
 .exchange {
-  margin-top: 18px;
+  margin-bottom: 22px;
+}
+
+.question label.follow-up {
+  margin-top: 4px;
 }
 
 .exchange-question {

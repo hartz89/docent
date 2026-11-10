@@ -28,6 +28,10 @@ export type PrInfo = {
 export type Workspace = {
   pr: PrInfo;
   diffText: string;
+  /** Full commit messages, oldest first: where agents leave their session links. */
+  commitMessages: string[];
+  /** The head branch is in the PR's own repo, not a fork. */
+  headInBaseRepo: boolean;
   /** The checkout at head, where the guide runs. */
   dir: string;
   /** A file's text at the base or head commit, or null if it doesn't exist there. */
@@ -65,9 +69,10 @@ export function githubSource(url: string, cacheDir: string): PrSource {
         'view',
         url,
         '--json',
-        'number,title,body,author,baseRefOid,headRefOid,baseRefName,headRefName,url',
+        'number,title,body,author,baseRefOid,headRefOid,baseRefName,headRefName,url,isCrossRepository',
       ]),
     ) as {
+      isCrossRepository: boolean;
       number: number;
       title: string;
       body: string;
@@ -79,7 +84,7 @@ export function githubSource(url: string, cacheDir: string): PrSource {
       url: string;
     };
     // GitHub's PR diff is against the merge base, not the base branch's tip.
-    const [diffText, mergeBase] = await Promise.all([
+    const [diffText, mergeBase, commitPages] = await Promise.all([
       gh(['pr', 'diff', url]),
       gh([
         'api',
@@ -87,6 +92,10 @@ export function githubSource(url: string, cacheDir: string): PrSource {
         '--jq',
         '.merge_base_commit.sha',
       ]).then((out) => out.trim()),
+      // Every commit, not just the first 100 that `gh pr view` lists. Oldest first.
+      gh(['api', `repos/${repo}/pulls/${view.number}/commits`, '--paginate', '--slurp']).then(
+        (out) => JSON.parse(out) as { commit: { message: string } }[][],
+      ),
     ]);
     const pr: PrInfo = {
       url: view.url,
@@ -119,6 +128,8 @@ export function githubSource(url: string, cacheDir: string): PrSource {
     return {
       pr,
       diffText,
+      commitMessages: commitPages.flat().map((c) => c.commit.message),
+      headInBaseRepo: !view.isCrossRepository,
       dir,
       readFile: (side, path) => show(side === 'new' ? pr.head : pr.base, path),
     };

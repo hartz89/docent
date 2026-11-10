@@ -11,12 +11,26 @@ export type AgentRequest = {
   model: string;
   /** JSON Schema for structured output. Leave out for a plain-text answer. */
   schema?: Record<string, unknown>;
-  /** Continue an earlier session, as the checker loop does when it sends back problems. */
-  resume?: string;
   /** Called with short descriptions of what the agent is doing, like "Reading src/cors.ts". */
   onActivity?: (activity: string) => void;
   signal?: AbortSignal;
-};
+  /** The most the session may spend. Default $2. */
+  maxBudgetUsd?: number;
+} & (
+  | {
+      /** Continue Docent's own earlier session, as the checker loop does with its problems. */
+      resume?: string;
+      fork?: never;
+    }
+  | {
+      /**
+       * Fork someone else's session, the PR author's: the agent sees its whole history, and the
+       * original transcript is never written to. The fork itself isn't saved either.
+       */
+      fork: string;
+      resume?: never;
+    }
+);
 
 export type AgentReply = {
   sessionId: string;
@@ -53,11 +67,15 @@ const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
  * - `strictMcpConfig` with no servers, and `settingSources: []`: the checkout's own `.claude/`
  *   settings, hooks, permissions, MCP config and CLAUDE.md never load. The code under review is
  *   data, not configuration.
+ * A fork of the author's session gets exactly the same options. The author's own tools,
+ * permissions and settings live in their settings files, not the transcript, so none of them
+ * carry over. `forkSession` keeps the original transcript untouched, and `persistSession: false`
+ * leaves no copy of it behind.
  * `src/agent.test.ts` pins these options; `src/agent.live.test.ts` proves them against a hostile
- * checkout with a real session.
+ * checkout with a real session, and proves a fork leaves the author's transcript unchanged.
  */
 export function readOnlyOptions(
-  request: Pick<AgentRequest, 'cwd' | 'model' | 'schema' | 'resume'>,
+  request: Pick<AgentRequest, 'cwd' | 'model' | 'schema' | 'resume' | 'fork' | 'maxBudgetUsd'>,
 ) {
   return {
     cwd: request.cwd,
@@ -68,8 +86,9 @@ export function readOnlyOptions(
     mcpServers: {},
     settingSources: [],
     maxTurns: 60,
-    maxBudgetUsd: 2,
+    maxBudgetUsd: request.maxBudgetUsd ?? 2,
     ...(request.resume ? { resume: request.resume } : {}),
+    ...(request.fork ? { resume: request.fork, forkSession: true, persistSession: false } : {}),
     ...(request.schema
       ? { outputFormat: { type: 'json_schema' as const, schema: request.schema } }
       : {}),
@@ -78,6 +97,9 @@ export function readOnlyOptions(
 
 /** Runs Claude Code headlessly through the Agent SDK, read-only (see `readOnlyOptions`). */
 export const sdkRunner: AgentRunner = async (request) => {
+  // An abort listener never fires for a signal that's already aborted, so check first: an
+  // expired deadline must never start a call with no time limit.
+  request.signal?.throwIfAborted();
   const started = Date.now();
   const abortController = new AbortController();
   request.signal?.addEventListener('abort', () => abortController.abort());
@@ -88,41 +110,74 @@ export const sdkRunner: AgentRunner = async (request) => {
     | { ok: false; failure: string; usage: Usage }
     | undefined;
   let denials: string[] = [];
+  // Each API call's usage as its assistant frames report it, for when no result message arrives.
+  // Input and cache tokens are exact there; output tokens are undercounted (see `costRecord`).
+  const calls = new Map<string, Usage>();
+  const partialCost = () => {
+    if (calls.size === 0) return null;
+    const sum = (key: 'input_tokens' | 'output_tokens' | 'cache_read_input_tokens') =>
+      [...calls.values()].reduce((total, u) => total + (u[key] ?? 0), 0);
+    const usage: Usage = {
+      input_tokens: sum('input_tokens'),
+      output_tokens: sum('output_tokens'),
+      cache_read_input_tokens: sum('cache_read_input_tokens'),
+      cache_creation_input_tokens: [...calls.values()].reduce(
+        (total, u) => total + (u.cache_creation_input_tokens ?? 0),
+        0,
+      ),
+    };
+    return costRecord(request.job, model, usage, Date.now() - started);
+  };
 
-  for await (const message of query({
-    prompt: request.prompt,
-    options: { ...readOnlyOptions(request), abortController },
-  })) {
-    if (message.type === 'assistant' && message.parent_tool_use_id === null) {
-      model = message.message.model || model;
-      for (const block of message.message.content) {
-        if (block.type === 'tool_use') {
-          request.onActivity?.(describeTool(block.name, block.input, request.cwd));
+  try {
+    for await (const message of query({
+      prompt: request.prompt,
+      options: { ...readOnlyOptions(request), abortController },
+    })) {
+      if (message.type === 'assistant' && message.parent_tool_use_id === null) {
+        model = message.message.model || model;
+        if (message.message.id && message.message.usage) {
+          calls.set(message.message.id, message.message.usage as Usage);
+        }
+        for (const block of message.message.content) {
+          if (block.type === 'tool_use') {
+            request.onActivity?.(describeTool(block.name, block.input, request.cwd));
+          }
+        }
+      } else if (message.type === 'result') {
+        denials = message.permission_denials.map((d) => d.tool_name);
+        if (message.subtype === 'success' && !message.is_error) {
+          ended = {
+            ok: true,
+            sessionId: message.session_id,
+            text: message.result,
+            structured: message.structured_output,
+            usage: message.usage,
+          };
+        } else {
+          // Error results (max turns, max budget) still spent tokens: record them too.
+          const errors = 'errors' in message ? message.errors.join('; ') : '';
+          ended = {
+            ok: false,
+            failure: `${message.subtype}${errors ? `: ${errors}` : ''}`,
+            usage: message.usage,
+          };
         }
       }
-    } else if (message.type === 'result') {
-      denials = message.permission_denials.map((d) => d.tool_name);
-      if (message.subtype === 'success' && !message.is_error) {
-        ended = {
-          ok: true,
-          sessionId: message.session_id,
-          text: message.result,
-          structured: message.structured_output,
-          usage: message.usage,
-        };
-      } else {
-        // Error results (max turns, max budget) still spent tokens: record them too.
-        const errors = 'errors' in message ? message.errors.join('; ') : '';
-        ended = {
-          ok: false,
-          failure: `${message.subtype}${errors ? `: ${errors}` : ''}`,
-          usage: message.usage,
-        };
-      }
     }
+  } catch (error) {
+    // Thrown mid-stream (an abort, a crash): record what the calls so far cost, when known.
+    const cost = partialCost();
+    const reason = error instanceof Error ? error.message : String(error);
+    if (cost) throw new AgentError(`The agent stopped without an answer (${reason})`, cost);
+    throw error;
   }
 
-  if (!ended) throw new Error('The agent stopped without a result.');
+  if (!ended) {
+    const cost = partialCost();
+    if (cost) throw new AgentError('The agent stopped without a result.', cost);
+    throw new Error('The agent stopped without a result.');
+  }
   const cost = costRecord(request.job, model, ended.usage, Date.now() - started);
   if (!ended.ok)
     throw new AgentError(`The agent stopped without an answer (${ended.failure})`, cost);
@@ -179,6 +234,19 @@ export function costRecord(job: Job, model: string, usage: Usage, latencyMs: num
     : 0;
   const costMicroUsd = microUsd(Math.max(0, Math.round(usd * 1e6))) ?? (0 as MicroUsd);
   return { job, model, tokens, costMicroUsd, latencyMs };
+}
+
+/**
+ * What a fork's first call costs, before it runs: it writes the parent's whole context to the
+ * prompt cache. Priced as a 1-hour cache write (2x input), which is what Claude Code uses on a
+ * subscription by default (the SDK's `promptCacheTtl`: "1 hour on a Claude subscription"). The
+ * PR #17 live run agrees: 196k written tokens at 2x account for its $1.63. On an API key writes
+ * are 5-minute (1.25x), so this overestimates there, which is the safe direction.
+ * Null for a model with no known price.
+ */
+export function forkCostEstimateUsd(model: string, contextTokens: number): number | null {
+  const price = priceFor(model);
+  return price ? (contextTokens * price.input * 2) / 1e6 : null;
 }
 
 /** Longest matching id prefix, so `claude-opus-5-5-…` doesn't price as `claude-opus-5`. */
