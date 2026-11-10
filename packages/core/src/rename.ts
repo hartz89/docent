@@ -468,42 +468,52 @@ type Source = {
 };
 
 /**
- * Finds block comments and bracket depth. Any `/*` opens a comment, even inside a string, so a
- * real comment is never mistaken for code; the cost is treating some code as a comment. Depth
- * counts every bracket outside strings and comments, line by line with `tokenize`. If any line
- * can't be read that way (a regex, a division), no line counts as top level, since the PR
- * controls indentation and column 0 alone proves nothing.
+ * Finds block comments and bracket depth in one left-to-right scan that also steps over strings
+ * and `//` comments, so a `/*` or a bracket inside either never counts. If anything can't be read
+ * that way (a quote left open, any other `/`, which could be a regex or a division), or the
+ * brackets don't balance, no line counts as top level: the PR controls indentation, so column 0
+ * alone proves nothing.
  */
 function readSource(lines: readonly string[]): Source {
   const comments = new Set<number>();
   const topLevel = new Set<number>();
-  let inside = false;
+  let inComment = false;
   let depth = 0;
   let readable = true;
   for (const [n, line] of lines.entries()) {
-    let code = '';
+    if (depth === 0 && !inComment) topLevel.add(n);
+    if (inComment) comments.add(n);
     let i = 0;
-    if (inside) comments.add(n);
-    while (i <= line.length) {
-      const next = line.indexOf(inside ? '*/' : '/*', i);
-      const end = next === -1 ? line.length : next;
-      if (!inside) code += line.slice(i, end);
-      if (next === -1) break;
-      comments.add(n);
-      code += ' ';
-      inside = !inside;
-      i = next + 2;
-    }
-    if (depth === 0) topLevel.add(n);
-    const tokens = tokenize(code);
-    if (tokens === null) readable = false;
-    for (const token of tokens ?? []) {
-      if (token.kind !== 'other') continue;
-      if ('{(['.includes(token.text) && token.text.length === 1) depth++;
-      if ('})]'.includes(token.text) && token.text.length === 1) depth--;
+    while (i < line.length) {
+      const char = line[i] ?? '';
+      if (inComment) {
+        const end = line.indexOf('*/', i);
+        if (end === -1) break;
+        inComment = false;
+        i = end + 2;
+      } else if (char === '/' && line[i + 1] === '/') {
+        break;
+      } else if (char === '/' && line[i + 1] === '*') {
+        comments.add(n);
+        inComment = true;
+        i += 2;
+      } else if (char === '/') {
+        readable = false;
+        break;
+      } else if (char === '"' || char === "'" || char === '`') {
+        let end = i + 1;
+        while (end < line.length && line[end] !== char) end += line[end] === '\\' ? 2 : 1;
+        if (end >= line.length) readable = false;
+        i = end + 1;
+      } else {
+        if ('{(['.includes(char)) depth++;
+        if ('})]'.includes(char)) depth--;
+        i++;
+      }
     }
   }
-  return { lines, comments, topLevel: readable && depth === 0 ? topLevel : new Set() };
+  const balanced = readable && depth === 0 && !inComment;
+  return { lines, comments, topLevel: balanced ? topLevel : new Set() };
 }
 
 type Token =

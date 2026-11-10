@@ -514,6 +514,39 @@ describe('P9: renames', () => {
     expect([...unindented, ...declared, ...withStatement]).toEqual([]);
   });
 
+  test('P9: a /* inside a line comment or a string never hides brackets from the depth count', () => {
+    const body = (name: string) => [
+      'export function test() {',
+      `const ${name} = (f) => f();`,
+      `return ${name}(run);`,
+    ];
+    const inLineComments = (name: string) =>
+      lines(
+        '// /*',
+        ...body(name).slice(0, 1),
+        '// */',
+        ...body(name).slice(1),
+        '// /*',
+        '}',
+        '// */',
+        `export const t = () => ${name}(poll, 1000);`,
+      );
+    const inStrings = (name: string) =>
+      lines(
+        'const s = "/*"; export function test() { const u = "*/";',
+        `const ${name} = (f) => f();`,
+        `const r = ${name}(run);`,
+        'const v = "/*"; } const w = "*/";',
+        `export const t = () => ${name}(poll, 1000);`,
+      );
+    for (const file of [inLineComments, inStrings]) {
+      const proofs = rename([
+        { path: 'a.ts', before: file('setTimeout'), after: file('queueMicrotask') },
+      ]);
+      expect(proofs).toEqual([]);
+    }
+  });
+
   test('P9: an aliased or commented import item, or a source with export *, licenses nothing', () => {
     const aliased = rename([
       {
