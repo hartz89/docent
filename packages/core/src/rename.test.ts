@@ -412,6 +412,108 @@ describe('P9: renames', () => {
     expect([...nested, ...commented]).toEqual([]);
   });
 
+  test('P9: a comma in an object or destructuring opened on an earlier line is a key', () => {
+    const prove = (before: string, after: string) => rename([{ path: 'a.ts', before, after }]);
+    const keyed = prove(
+      lines('export const limit = 10;', 'export const config = {', '  retries: 3, limit,', '};'),
+      lines('export const quota = 10;', 'export const config = {', '  retries: 3, quota,', '};'),
+    );
+    const destructured = prove(
+      lines(
+        'export const limit = 10;',
+        'export function f(opts) {',
+        '  const {',
+        '    retries, limit,',
+        '  } = opts;',
+        '  return [retries, limit];',
+        '}',
+      ),
+      lines(
+        'export const quota = 10;',
+        'export function f(opts) {',
+        '  const {',
+        '    retries, quota,',
+        '  } = opts;',
+        '  return [retries, quota];',
+        '}',
+      ),
+    );
+    const method = prove(
+      lines(
+        'export function toJSON() { return 1; }',
+        'export const o = {',
+        '  a() {}, toJSON() { return 2; },',
+        '};',
+      ),
+      lines(
+        'export function toJson() { return 1; }',
+        'export const o = {',
+        '  a() {}, toJson() { return 2; },',
+        '};',
+      ),
+    );
+    expect([...keyed, ...destructured, ...method]).toEqual([]);
+  });
+
+  test('P9: only a real top-level definition licenses a rename: not column 0 in a body, not declare', () => {
+    const unindented = rename([
+      {
+        path: 'a.ts',
+        before: lines(
+          'export function test() {',
+          'const setTimeout = (f) => f();',
+          'return setTimeout(run);',
+          '}',
+          'export const t = () => setTimeout(poll, 1000);',
+        ),
+        after: lines(
+          'export function test() {',
+          'const queueMicrotask = (f) => f();',
+          'return queueMicrotask(run);',
+          '}',
+          'export const t = () => queueMicrotask(poll, 1000);',
+        ),
+      },
+    ]);
+    const declared = rename([
+      {
+        path: 'a.ts',
+        before: lines(
+          'declare const setTimeout: (f: () => void, ms: number) => void;',
+          '',
+          'export const start = () => setTimeout(poll, 1000);',
+        ),
+        after: lines(
+          'declare const queueMicrotask: (f: () => void, ms: number) => void;',
+          '',
+          'export const start = () => queueMicrotask(poll, 1000);',
+        ),
+      },
+    ]);
+    const withStatement = rename([
+      {
+        path: 'a.js',
+        before: lines(
+          'function limit() { return 1; }',
+          'function f(opts) {',
+          '  with (opts) {',
+          '    return (limit);',
+          '  }',
+          '}',
+        ),
+        after: lines(
+          'function quota() { return 1; }',
+          'function f(opts) {',
+          '  with (opts) {',
+          '    return (quota);',
+          '  }',
+          '}',
+        ),
+      },
+    ]);
+    expect([...unindented, ...declared, ...withStatement]).toEqual([]);
+  });
+
   test('P9: an aliased or commented import item, or a source with export *, licenses nothing', () => {
     const aliased = rename([
       {

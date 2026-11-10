@@ -74,9 +74,9 @@ const SAFE_AFTER_CHARS: ReadonlySet<string> = new Set([
   '~',
 ]);
 
-/** A top-level definition: at column 0, optionally exported. */
+/** A definition at column 0, optionally exported. `declare` binds nothing, so it never counts. */
 const DEFINITION =
-  /^(export\s+(?:default\s+)?)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function\s*\*?|class|const|let|var|type|interface|enum)\s+([A-Za-z_$][\w$]*)\b/;
+  /^(export\s+(?:default\s+)?)?(?:abstract\s+)?(?:async\s+)?(?:function\s*\*?|class|const|let|var|type|interface|enum)\s+([A-Za-z_$][\w$]*)\b/;
 
 /** Asks which repository-wide lookups `proveRenames` needs (P9). */
 export function renameLookups(diff: Diff, texts: FileTexts): RenameLookups {
@@ -261,10 +261,12 @@ function candidates(diff: Diff, texts: FileTexts): Candidate[] {
     if (sides?.base == null || sides.head === null) continue; // A new or deleted file isn't a rename.
     if (mayHaveMultilineStrings(sides.base) || mayHaveMultilineStrings(sides.head)) continue;
     const starExports = [...sides.base, ...sides.head].some((line) => STAR_EXPORT.test(line));
+    // `with` turns a plain reference into a property lookup.
+    if ([...sides.base, ...sides.head].some((line) => /\bwith\s*\(/.test(line))) continue;
     for (const hunk of file.hunks) {
       if (!hasChanges(hunk)) continue;
-      const before = { lines: sides.base, comments: blockCommentLines(sides.base) };
-      const after = { lines: sides.head, comments: blockCommentLines(sides.head) };
+      const before = readSource(sides.base);
+      const after = readSource(sides.head);
       const candidate = readHunk(diff, file, hunk, before, after, starExports);
       if (candidate) found.push(candidate);
     }
@@ -359,7 +361,12 @@ type Role =
  * as a whole statement; and a reference right after an operator or a few keywords. Everything
  * else, including any word at the start of a line, is unsafe.
  */
-function role({ lines, comments }: Source, at: number, tokens: readonly Token[], k: number): Role {
+function role(
+  { lines, comments, topLevel }: Source,
+  at: number,
+  tokens: readonly Token[],
+  k: number,
+): Role {
   // Nothing in a block comment counts, so a commented-out definition licenses nothing.
   if (comments.has(at)) return { kind: 'unsafe' };
   const line = lines[at] ?? '';
@@ -367,7 +374,7 @@ function role({ lines, comments }: Source, at: number, tokens: readonly Token[],
   const definition = DEFINITION.exec(line);
   const before = neighbor(tokens, k, -1);
   const prevToken = tokens[before];
-  if (definition && definition[2] === name && prevToken?.kind === 'ident') {
+  if (definition && definition[2] === name && topLevel.has(at) && prevToken?.kind === 'ident') {
     // The name right after the defining keyword, not a later word on the line.
     if (
       ['function', 'class', 'const', 'let', 'var', 'type', 'interface', 'enum'].includes(
@@ -395,7 +402,8 @@ function role({ lines, comments }: Source, at: number, tokens: readonly Token[],
   }
   if (prevToken?.kind === 'ident' && SAFE_AFTER_WORDS.has(prev)) return { kind: 'reference' };
   if (prevToken?.kind === 'other' && SAFE_AFTER_CHARS.has(prev)) return { kind: 'reference' };
-  if (prev === ',' && enclosing(tokens, before) !== '{') return { kind: 'reference' };
+  // A call's or array's comma, with its bracket on this line: an object's could be a key.
+  if (prev === ',' && ['(', '['].includes(enclosing(tokens, before))) return { kind: 'reference' };
   return { kind: 'unsafe' };
 }
 
@@ -452,28 +460,50 @@ function importStatement(
   return { items, from };
 }
 
-/** A file's lines, and which of them a block comment touches. */
-type Source = { readonly lines: readonly string[]; readonly comments: ReadonlySet<number> };
+/** A file's lines, which of them a block comment touches, and which start at the top level. */
+type Source = {
+  readonly lines: readonly string[];
+  readonly comments: ReadonlySet<number>;
+  readonly topLevel: ReadonlySet<number>;
+};
 
 /**
- * The 0-based lines that a `/* … *\/` comment touches. Any `/*` opens one, even inside a string,
- * so a real comment is never mistaken for code; the cost is treating some code as a comment.
+ * Finds block comments and bracket depth. Any `/*` opens a comment, even inside a string, so a
+ * real comment is never mistaken for code; the cost is treating some code as a comment. Depth
+ * counts every bracket outside strings and comments, line by line with `tokenize`. If any line
+ * can't be read that way (a regex, a division), no line counts as top level, since the PR
+ * controls indentation and column 0 alone proves nothing.
  */
-function blockCommentLines(lines: readonly string[]): Set<number> {
-  const touched = new Set<number>();
+function readSource(lines: readonly string[]): Source {
+  const comments = new Set<number>();
+  const topLevel = new Set<number>();
   let inside = false;
+  let depth = 0;
+  let readable = true;
   for (const [n, line] of lines.entries()) {
+    let code = '';
     let i = 0;
-    if (inside) touched.add(n);
-    while (i < line.length) {
+    if (inside) comments.add(n);
+    while (i <= line.length) {
       const next = line.indexOf(inside ? '*/' : '/*', i);
+      const end = next === -1 ? line.length : next;
+      if (!inside) code += line.slice(i, end);
       if (next === -1) break;
-      touched.add(n);
+      comments.add(n);
+      code += ' ';
       inside = !inside;
       i = next + 2;
     }
+    if (depth === 0) topLevel.add(n);
+    const tokens = tokenize(code);
+    if (tokens === null) readable = false;
+    for (const token of tokens ?? []) {
+      if (token.kind !== 'other') continue;
+      if ('{(['.includes(token.text) && token.text.length === 1) depth++;
+      if ('})]'.includes(token.text) && token.text.length === 1) depth--;
+    }
   }
-  return touched;
+  return { lines, comments, topLevel: readable && depth === 0 ? topLevel : new Set() };
 }
 
 type Token =
