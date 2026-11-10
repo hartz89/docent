@@ -20,6 +20,7 @@ import {
   failedRun,
   renderMarkdown,
   runFixture,
+  runNeutralCheck,
   summaryRuns,
   totals,
 } from './tour-eval.ts';
@@ -128,7 +129,7 @@ async function worker() {
       continue;
     }
     inFlight += prompts.length;
-    await Promise.all(
+    const mine = await Promise.all(
       prompts.map(async (prompt) => {
         const run = await runFixture({
           manifest,
@@ -141,18 +142,32 @@ async function worker() {
         });
         runs.push(run);
         inFlight--;
-        await writeFile(
-          join(rawDir, `${manifest.id}-v${prompt}.json`),
-          JSON.stringify(run, null, 2),
-        );
-        const cost = `$${(run.tourUsd + run.judgeUsd).toFixed(2)}`;
-        const what =
-          run.status === 'ok'
-            ? `${run.findings.filter((f) => f.surfaced).length}/${run.findings.length} surfaced`
-            : `failed: ${run.error}`;
-        console.error(`${manifest.id} v${prompt}: ${what}, ${cost} (total $${spent().toFixed(2)})`);
+        return run;
       }),
     );
+    // One blind list per fixture, mixing every prompt's first sentences.
+    const neutralError = await runNeutralCheck({
+      runs: mine,
+      prTitle: workspace.pr.title,
+      runner: sdkRunner,
+      judgeModel,
+      judgeCwd,
+    });
+    if (neutralError) console.error(`${manifest.id}: ${neutralError}`);
+    for (const run of mine) {
+      await writeFile(
+        join(rawDir, `${manifest.id}-v${run.prompt}.json`),
+        JSON.stringify(run, null, 2),
+      );
+      const cost = `$${(run.tourUsd + run.judgeUsd).toFixed(2)}`;
+      const what =
+        run.status === 'ok'
+          ? `${run.findings.filter((f) => f.explained).length}/${run.findings.length} explained, ${run.stops.filter((g) => g.judged.unfoundedOpinion).length} opinions`
+          : `failed: ${run.error}`;
+      console.error(
+        `${manifest.id} v${run.prompt}: ${what}, ${cost} (total $${spent().toFixed(2)})`,
+      );
+    }
   }
 }
 await Promise.all([worker(), worker(), worker()]);

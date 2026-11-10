@@ -8,15 +8,18 @@ import type { ExpectedFinding } from './manifest.ts';
 export const DEFAULT_JUDGE_MODEL = 'claude-sonnet-5';
 
 /** Bump when the rubric changes. Scores from different rubric versions don't compare. */
-export const JUDGE_RUBRIC_VERSION = 1;
+export const JUDGE_RUBRIC_VERSION = 2;
 
 export type StopGrade = {
   /** 1-based, matching the tour's stop numbers. */
   stop: number;
   /** The first sentence states the behavior change in plain terms. */
   behaviorFirst: boolean;
-  /** The stop names what's worth checking, or says nothing needs a judgment call. */
-  namesCheck: boolean;
+  /**
+   * The stop gives review advice ("check that…") or a speculative concern the cited code doesn't
+   * back up. Target zero: the docent explains, it doesn't advise.
+   */
+  unfoundedOpinion: boolean;
   /** The judge's one-sentence reason, kept for reading raw results. */
   why: string;
 };
@@ -24,9 +27,12 @@ export type StopGrade = {
 export type FindingGrade = {
   /** 0-based index into the fixture's expectedFindings. (The judge numbers them from 1.) */
   finding: number;
-  /** Some stop states the defective behavior, or points the reviewer at it. */
-  surfaced: boolean;
-  /** The stop that surfaces it, 1-based, or null. */
+  /**
+   * Some stop explains the behavior at the defect's lines accurately enough that a reader would
+   * see the problem. It needn't call it a problem. The scorer also checks that stop cites the lines.
+   */
+  explained: boolean;
+  /** The stop that explains it, 1-based, or null. */
   stop: number | null;
   why: string;
 };
@@ -46,11 +52,11 @@ const schema = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['stop', 'behaviorFirst', 'namesCheck', 'why'],
+        required: ['stop', 'behaviorFirst', 'unfoundedOpinion', 'why'],
         properties: {
           stop: { type: 'integer', minimum: 1 },
           behaviorFirst: { type: 'boolean' },
-          namesCheck: { type: 'boolean' },
+          unfoundedOpinion: { type: 'boolean' },
           why: { type: 'string' },
         },
       },
@@ -60,10 +66,10 @@ const schema = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['finding', 'surfaced', 'stop', 'why'],
+        required: ['finding', 'explained', 'stop', 'why'],
         properties: {
           finding: { type: 'integer', minimum: 1 },
-          surfaced: { type: 'boolean' },
+          explained: { type: 'boolean' },
           stop: { type: ['integer', 'null'] },
           why: { type: 'string' },
         },
@@ -108,11 +114,14 @@ behaviorFirst: Does the stop's first sentence state, in plain terms, what change
 - only gives purpose, background or the PR's motivation without the change itself,
 - or is too vague to tell what changed ("This updates the handler").
 
-namesCheck: Does the stop tell the reviewer what is worth checking? Answer true if it names something specific needing the reviewer's judgment (a risky assumption, an input or case the code may not handle, a caller that may rely on old behavior, a place where the description and code disagree, a deliberate tradeoff), or if it says plainly that nothing here needs a judgment call. A flag note counts as part of the stop. Answer false if the stop only describes what the code does.
+unfoundedOpinion: Does the stop give an opinion instead of an explanation? Answer true if any of its text, flag notes included:
+- gives review advice: tells the reader what to check, verify, make sure of, confirm or look at again ("check that…", "make sure…", "worth a second look"),
+- or raises a possible problem, risk or consequence that the stop doesn't establish as a fact from the code it describes and cites ("this could break…", "callers may rely on…", "this might be slow").
+Answer false if the stop only states what the code does and how it connects: callers, dependents, tests, and what now happens. A fact that makes a problem plain is not an opinion ("both callers still catch the old error, which is no longer thrown"). A flag note that states a difference between the PR description and the code, or a cited, concrete danger, is not an opinion.
 
 For every known defect, answer:
 
-surfaced: Does any stop state the defective behavior, or point the reviewer at it as worth checking, clearly enough that a reviewer reading the tour would notice the problem? The stop needn't call it a bug. Answer false if the tour only cites the lines, or describes the surrounding code without saying anything about the behavior the defect is about. Give the stop number that surfaces it, or null.
+explained: Does some stop accurately explain the behavior where the defect lives, clearly enough that a reader who knows the code would see the problem from the explanation alone? The stop needn't call it a problem, flag it, or suggest checking it; a plain, accurate description of the behavior counts. It must cite the defect's lines (or lines right next to them). Answer false if the tour only cites the lines, describes them too vaguely to see the problem, or describes the behavior wrongly. Give the stop number that explains it, or null.
 
 Keep each "why" to one short sentence. Number defects from 1, as listed.
 
@@ -159,14 +168,14 @@ export async function judgeTour(input: {
   const stops = graded.map((n) => {
     const grade = answer.stops.find((g) => g.stop === n);
     if (!grade) throw reject(`The judge skipped stop ${n}.`);
-    const { behaviorFirst, namesCheck, why } = grade;
-    return { stop: n, behaviorFirst, namesCheck, why };
+    const { behaviorFirst, unfoundedOpinion, why } = grade;
+    return { stop: n, behaviorFirst, unfoundedOpinion, why };
   });
   const findings = input.findings.map((_, i) => {
     const grade = answer.findings.find((g) => g.finding === i + 1);
     if (!grade) throw reject(`The judge skipped defect ${i + 1}.`);
-    const { surfaced, why } = grade;
-    return { finding: i, surfaced, stop: surfaced ? grade.stop : null, why };
+    const { explained, why } = grade;
+    return { finding: i, explained, stop: explained ? grade.stop : null, why };
   });
   return { stops, findings, cost: reply.cost };
 }

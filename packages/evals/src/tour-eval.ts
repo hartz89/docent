@@ -19,6 +19,7 @@ import {
   type StopGrade,
 } from './judge.ts';
 import { type FixtureManifest, scoringFor } from './manifest.ts';
+import { neutralCheck } from './neutral.ts';
 import { type StopQuality, stopQuality } from './stop-quality.ts';
 
 export type FindingResult = {
@@ -28,8 +29,12 @@ export type FindingResult = {
   externalKnowledge: boolean;
   /** Some stop cites lines overlapping the finding (the manifest's scoring, with tolerance). */
   cited: boolean;
-  /** The judge says a stop states the defect or points the reviewer at it. */
-  surfaced: boolean;
+  /**
+   * The judge says a stop explains the behavior where the defect lives, clearly enough to see the
+   * problem, and that stop cites the defect's lines (with tolerance). Calling it a problem isn't
+   * required.
+   */
+  explained: boolean;
 };
 
 export type GradedStop = {
@@ -37,7 +42,9 @@ export type GradedStop = {
   kind: string;
   title: string;
   mechanical: StopQuality;
-  judged: Pick<StopGrade, 'behaviorFirst' | 'namesCheck' | 'why'>;
+  judged: Pick<StopGrade, 'behaviorFirst' | 'unfoundedOpinion' | 'why'>;
+  /** The neutral check's answer for the first sentence, or null if it didn't run. */
+  neutralClear: boolean | null;
 };
 
 type RunBase = {
@@ -86,7 +93,7 @@ const notFound = (manifest: FixtureManifest): FindingResult[] =>
     lines: finding.lines,
     externalKnowledge: finding.externalKnowledge !== undefined,
     cited: false,
-    surfaced: false,
+    explained: false,
   }));
 
 /** A run that produced nothing to score. Its findings all count as not found. */
@@ -155,19 +162,19 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
   const findings = manifest.expectedFindings.map((finding, i): FindingResult => {
     const from = finding.lines.start - scoring.toleranceLines;
     const to = finding.lines.end + scoring.toleranceLines;
-    const cited = tour.stops.some((stop) =>
-      stop.anchors.some(
+    const citesIt = (stop: TourView['stops'][number] | undefined) =>
+      stop?.anchors.some(
         (a) =>
           a.side === 'new' && a.path === finding.file && a.startLine <= to && a.endLine >= from,
-      ),
-    );
+      ) ?? false;
     const grade: FindingGrade | undefined = judgment.findings[i];
+    const explainer = grade?.stop ? tour.stops[grade.stop - 1] : undefined;
     return {
       file: finding.file,
       lines: finding.lines,
       externalKnowledge: finding.externalKnowledge !== undefined,
-      cited,
-      surfaced: grade?.surfaced ?? false,
+      cited: tour.stops.some(citesIt),
+      explained: (grade?.explained ?? false) && citesIt(explainer),
     };
   });
 
@@ -175,14 +182,15 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
     if (!isGradedStop(stop)) return [];
     const grade = judgment.stops.find((g) => g.stop === i + 1);
     if (!grade) return [];
-    const { behaviorFirst, namesCheck, why } = grade;
+    const { behaviorFirst, unfoundedOpinion, why } = grade;
     return [
       {
         stop: i + 1,
         kind: stop.kind,
         title: stop.title,
         mechanical: stopQuality(stop.body),
-        judged: { behaviorFirst, namesCheck, why },
+        judged: { behaviorFirst, unfoundedOpinion, why },
+        neutralClear: null,
       },
     ];
   });
@@ -208,6 +216,48 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
   };
 }
 
+/**
+ * The neutral check for one fixture: every prompt's first sentences, mixed in one blind list.
+ * Fills in each graded stop's `neutralClear`, and splits the call's cost evenly over the runs.
+ * Never throws: on failure the answers stay null and the error comes back.
+ */
+export async function runNeutralCheck(input: {
+  runs: readonly FixtureRun[];
+  prTitle: string;
+  runner: AgentRunner;
+  judgeModel: string;
+  judgeCwd: string;
+}): Promise<string | null> {
+  const ok = input.runs.flatMap((r) => (r.status === 'ok' ? [r] : []));
+  const items = ok.flatMap((run) =>
+    run.stops.map((s) => ({
+      key: `${run.prompt}:${s.stop}`,
+      sentence: s.mechanical.firstSentence,
+    })),
+  );
+  if (!items.length) return null;
+  const charge = (total: number) => {
+    for (const run of ok) run.judgeUsd += total / ok.length;
+  };
+  try {
+    const { clear, cost } = await neutralCheck({
+      runner: input.runner,
+      model: input.judgeModel,
+      cwd: input.judgeCwd,
+      prTitle: input.prTitle,
+      items,
+    });
+    charge(usd([cost]));
+    for (const run of ok) {
+      for (const s of run.stops) s.neutralClear = clear.get(`${run.prompt}:${s.stop}`) ?? null;
+    }
+    return null;
+  } catch (error) {
+    if (error instanceof AgentError) charge(usd([error.cost]));
+    return `Neutral check: ${String(error)}`;
+  }
+}
+
 // ---- Totals and the report ----
 
 export type PromptTotals = {
@@ -215,19 +265,22 @@ export type PromptTotals = {
   fixtures: number;
   failed: number;
   /** Findings that need no outside knowledge. The headline defect numbers. */
-  findings: { expected: number; cited: number; surfaced: number };
-  externalFindings: { expected: number; cited: number; surfaced: number };
+  findings: { expected: number; cited: number; explained: number };
+  externalFindings: { expected: number; cited: number; explained: number };
   /** Danger flags on fixtures that expect none, and expected ones that were missed. */
   danger: { falseAlarms: number; missed: number };
   overLongTours: number;
   stops: number;
+  /** Graded stops with review advice or an unbacked concern. Target zero. */
+  unfoundedOpinions: number;
   /** Shares of graded stops, 0 to 1. */
   quality: {
     plainFirstSentence: number;
     withinLength: number;
     behaviorFirst: number;
-    namesCheck: number;
   };
+  /** The neutral check: first sentences a blind reader found clear, of those it read. */
+  neutral: { clear: number; read: number };
   tourUsd: number;
   judgeUsd: number;
 };
@@ -242,7 +295,7 @@ export function totals(runs: readonly FixtureRun[], prompt: TourPromptVersion): 
   const count = (list: FindingResult[]) => ({
     expected: list.length,
     cited: list.filter((f) => f.cited).length,
-    surfaced: list.filter((f) => f.surfaced).length,
+    explained: list.filter((f) => f.explained).length,
   });
   const stops = ok.flatMap((r) => r.stops);
   const rate = (pick: (s: GradedStop) => boolean) => share(stops.filter(pick).length, stops.length);
@@ -258,11 +311,15 @@ export function totals(runs: readonly FixtureRun[], prompt: TourPromptVersion): 
     },
     overLongTours: ok.filter((r) => r.stopCount > r.maxStops).length,
     stops: stops.length,
+    unfoundedOpinions: stops.filter((s) => s.judged.unfoundedOpinion).length,
     quality: {
       plainFirstSentence: rate((s) => !s.mechanical.codeInFirstSentence),
       withinLength: rate((s) => s.mechanical.withinLength),
       behaviorFirst: rate((s) => s.judged.behaviorFirst),
-      namesCheck: rate((s) => s.judged.namesCheck),
+    },
+    neutral: {
+      clear: stops.filter((s) => s.neutralClear === true).length,
+      read: stops.filter((s) => s.neutralClear !== null).length,
     },
     tourUsd: mine.reduce((sum, r) => sum + r.tourUsd, 0),
     judgeUsd: mine.reduce((sum, r) => sum + r.judgeUsd, 0),
@@ -309,11 +366,15 @@ export function renderMarkdown(input: {
         return `**failed**${defects}: ${run.error.slice(0, 80)}; ${money(run.tourUsd + run.judgeUsd)}`;
       }
       const found = run.findings.length
-        ? `${run.findings.filter((f) => f.surfaced).length}/${run.findings.length} surfaced, ${run.findings.filter((f) => f.cited).length}/${run.findings.length} cited`
+        ? `${run.findings.filter((f) => f.explained).length}/${run.findings.length} explained, ${run.findings.filter((f) => f.cited).length}/${run.findings.length} cited`
         : 'no defects';
       const s = run.stops;
       const n = (pick: (g: GradedStop) => boolean) => `${s.filter(pick).length}/${s.length}`;
-      return `${found}; behavior-first ${n((g) => g.judged.behaviorFirst)}, names check ${n((g) => g.judged.namesCheck)}, plain first ${n((g) => !g.mechanical.codeInFirstSentence)}; ${run.stopCount} stops; ${money(run.tourUsd + run.judgeUsd)}`;
+      const read = s.filter((g) => g.neutralClear !== null);
+      const neutral = read.length
+        ? `${read.filter((g) => g.neutralClear).length}/${read.length}`
+        : 'not run';
+      return `${found}; opinions ${n((g) => g.judged.unfoundedOpinion)}, behavior-first ${n((g) => g.judged.behaviorFirst)}, neutral clear ${neutral}, plain first ${n((g) => !g.mechanical.codeInFirstSentence)}; ${run.stopCount} stops; ${money(run.tourUsd + run.judgeUsd)}`;
     });
     return `| ${id} | ${cells.join(' | ')} |`;
   });
@@ -325,15 +386,16 @@ Tour model \`${input.model}\`, judge \`${input.judgeModel}\` (rubric v${input.ju
 ## Totals
 
 ${head}
-${row('Defects surfaced (judge)', (t) => `${t.findings.surfaced}/${t.findings.expected}${failedMark(t)}`)}
+${row('Defects explained, cited (judge)', (t) => `${t.findings.explained}/${t.findings.expected}${failedMark(t)}`)}
 ${row('Defects cited (line overlap)', (t) => `${t.findings.cited}/${t.findings.expected}${failedMark(t)}`)}
-${row('External-knowledge defects surfaced', (t) => `${t.externalFindings.surfaced}/${t.externalFindings.expected}`)}
+${row('External-knowledge defects explained', (t) => `${t.externalFindings.explained}/${t.externalFindings.expected}`)}
 ${row('Danger flags: false alarms / missed', (t) => `${t.danger.falseAlarms} / ${t.danger.missed}`)}
 ${row('Graded stops', (t) => `${t.stops}`)}
+${row('Stops with an unfounded opinion (judge, target 0)', (t) => `${t.unfoundedOpinions} (${pct(share(t.unfoundedOpinions, t.stops))})`)}
+${row('First sentence states the behavior change (judge)', (t) => pct(t.quality.behaviorFirst))}
+${row('First sentence clear to a blind reader (neutral check)', (t) => (t.neutral.read ? `${pct(share(t.neutral.clear, t.neutral.read))} (${t.neutral.clear}/${t.neutral.read})` : 'not run'))}
 ${row('First sentence names no code (script)', (t) => pct(t.quality.plainFirstSentence))}
 ${row('Within length (script)', (t) => pct(t.quality.withinLength))}
-${row('First sentence states the behavior change (judge)', (t) => pct(t.quality.behaviorFirst))}
-${row('Names what to check, or says nothing needs it (judge)', (t) => pct(t.quality.namesCheck))}
 ${row('Tours over the stop cap', (t) => `${t.overLongTours}`)}
 ${row('Failed runs', (t) => `${t.failed}/${t.fixtures}`)}
 ${row('Tour cost', (t) => money(t.tourUsd))}

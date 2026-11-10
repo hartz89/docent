@@ -8,7 +8,7 @@ import {
 } from '@docent/server/evals';
 import { describe, expect, test } from 'vitest';
 import { loadFixtures, PUBLIC_FIXTURES_DIR } from './fixtures.ts';
-import { renderMarkdown, runFixture, totals } from './tour-eval.ts';
+import { renderMarkdown, runFixture, runNeutralCheck, totals } from './tour-eval.ts';
 
 // A recorded review of hono#4813, the same PR as the public fixture hono-4813-cors-credentials.
 const RECORDED = join(import.meta.dirname, '..', '..', '..', 'e2e', 'fixtures', 'hono-4813');
@@ -37,10 +37,10 @@ function scripted(judge: unknown) {
   return { runner, requests };
 }
 
-const grade = (stop: number, behaviorFirst: boolean, namesCheck: boolean) => ({
+const grade = (stop: number, behaviorFirst: boolean, unfoundedOpinion: boolean) => ({
   stop,
   behaviorFirst,
-  namesCheck,
+  unfoundedOpinion,
   why: 'Because.',
 });
 const judgment = {
@@ -51,7 +51,7 @@ const judgment = {
     grade(4, true, false),
     grade(5, false, false),
   ],
-  findings: [{ finding: 1, surfaced: true, stop: 3, why: 'Stop 3 says any origin is echoed.' }],
+  findings: [{ finding: 1, explained: true, stop: 3, why: 'Stop 3 says any origin is echoed.' }],
 };
 
 const run = async (runner: AgentRunner) =>
@@ -77,7 +77,7 @@ describe('the tour eval', () => {
         lines: { start: 80, end: 82 },
         externalKnowledge: false,
         cited: true,
-        surfaced: true,
+        explained: true,
       },
     ]);
     expect(result.danger).toEqual({ expected: true, raised: true });
@@ -94,9 +94,9 @@ describe('the tour eval', () => {
     expect(judge?.prompt).not.toMatch(/\bv2\b|version/i);
 
     const t = totals([result], 2);
-    expect(t.findings).toEqual({ expected: 1, cited: 1, surfaced: 1 });
+    expect(t.findings).toEqual({ expected: 1, cited: 1, explained: 1 });
     expect(t.quality.behaviorFirst).toBe(0.6);
-    expect(t.quality.namesCheck).toBe(0.2);
+    expect(t.unfoundedOpinions).toBe(1);
     expect(t.quality.plainFirstSentence).toBe(0);
 
     const markdown = renderMarkdown({
@@ -107,7 +107,8 @@ describe('the tour eval', () => {
       runs: [result],
       prompts: [2],
     });
-    expect(markdown).toContain('| Defects surfaced (judge) | 1/1 |');
+    expect(markdown).toContain('| Defects explained, cited (judge) | 1/1 |');
+    expect(markdown).toContain('| Stops with an unfounded opinion (judge, target 0) | 1 (20%) |');
     expect(markdown).toContain('| First sentence states the behavior change (judge) | 60% |');
   });
 
@@ -131,7 +132,7 @@ describe('the tour eval', () => {
     expect(totals([result], 2)).toMatchObject({
       fixtures: 1,
       failed: 1,
-      findings: { expected: 1, cited: 0, surfaced: 0 },
+      findings: { expected: 1, cited: 0, explained: 0 },
     });
     const markdown = renderMarkdown({
       date: '2026-11-08',
@@ -142,8 +143,52 @@ describe('the tour eval', () => {
       prompts: [2],
     });
     expect(markdown).toContain(
-      '| Defects surfaced (judge) | 0/1 (1 failed run, counted as missed) |',
+      '| Defects explained, cited (judge) | 0/1 (1 failed run, counted as missed) |',
     );
     expect(markdown).toContain('**failed**, 1 defect(s) counted as missed');
+  });
+
+  test('a defect counts as explained only if the stop the judge names cites its lines', async () => {
+    // Stop 5 is about the tests; it never cites the middleware lines where the defect lives.
+    const finding = { finding: 1, explained: true, stop: 5, why: 'Stop 5 describes it.' };
+    const { runner } = scripted({ ...judgment, findings: [finding] });
+    const result = await run(runner);
+
+    if (result.status !== 'ok') throw new Error(result.error);
+    expect(result.findings[0]).toMatchObject({ cited: true, explained: false });
+  });
+
+  test('the neutral check reads first sentences blind and scores each prompt', async () => {
+    const { runner } = scripted(judgment);
+    const v2 = await run(runner);
+    const v3 = { ...(await run(runner)), prompt: 3 as const };
+    const prompts: string[] = [];
+    const neutral: AgentRunner = async (request) => {
+      prompts.push(request.prompt);
+      const items = [...request.prompt.matchAll(/^(\d+)\. /gm)].map((m) => Number(m[1]));
+      // Every other sentence reads clearly.
+      const answers = items.map((item) => ({ item, clear: item % 2 === 1 }));
+      return { sessionId: 'n', text: '', structured: { answers }, cost: cost(10_000), denials: [] };
+    };
+
+    const error = await runNeutralCheck({
+      runs: [v2, v3],
+      prTitle: 'fix(cors): credentials',
+      runner: neutral,
+      judgeModel: 'claude-judge',
+      judgeCwd: '/nowhere',
+    });
+
+    expect(error).toBeNull();
+    // One call for the fixture, with all ten first sentences, backticks stripped, no version.
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('10. ');
+    expect(prompts[0]).not.toContain('`');
+    expect(prompts[0]).not.toMatch(/\bv[23]\b|version/i);
+    const read = totals([v2, v3], 2).neutral.read + totals([v2, v3], 3).neutral.read;
+    const clear = totals([v2, v3], 2).neutral.clear + totals([v2, v3], 3).neutral.clear;
+    expect({ read, clear }).toEqual({ read: 10, clear: 5 });
+    // The call's cost is split over the runs.
+    expect(v2.judgeUsd).toBeCloseTo(0.025);
   });
 });
