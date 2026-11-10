@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import { useLayoutEffect, useRef } from 'react';
+import { type CSSProperties, useLayoutEffect, useRef, useState } from 'react';
 import { api } from './api.ts';
-import { highlight } from './highlight.ts';
+import { highlight, type Token } from './highlight.ts';
 
 export type Range = { startLine: number; endLine: number };
 
@@ -32,9 +32,11 @@ export function CodeView({ path, side, cited, focus, changed }: Props) {
     staleTime: Number.POSITIVE_INFINITY,
   });
 
+  const [wrap, setWrap] = useWrapSetting();
   const scroller = useRef<HTMLDivElement>(null);
   const focusStart = focus?.startLine ?? null;
   const focusEnd = focus?.endLine ?? null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: toggling wrap moves every line, so the cited range is centered again.
   useLayoutEffect(() => {
     const box = scroller.current;
     if (!box || !file.data) return;
@@ -52,7 +54,7 @@ export function CodeView({ path, side, cited, focus, changed }: Props) {
         ? first.offsetTop - (box.clientHeight - span) / 2
         : first.offsetTop - 48;
     box.scrollTop = Math.max(0, target);
-  }, [file.data, focusStart, focusEnd]);
+  }, [file.data, focusStart, focusEnd, wrap]);
 
   const isCited = (line: number) => cited.some((r) => line >= r.startLine && line <= r.endLine);
   const changeClass = side === 'new' ? 'added' : 'removed';
@@ -68,7 +70,7 @@ export function CodeView({ path, side, cited, focus, changed }: Props) {
           </p>
         )}
         {file.data && (
-          <div className="code fade-in">
+          <div className={wrap ? 'code wrap fade-in' : 'code fade-in'}>
             {file.data.map((tokens, index) => {
               const line = index + 1;
               const isChanged = changed.has(line);
@@ -80,7 +82,10 @@ export function CodeView({ path, side, cited, focus, changed }: Props) {
                 <div key={index} className={classes} data-line={line}>
                   <span className="line-number">{line}</span>
                   <span className="line-mark">{isChanged ? changeMark : ''}</span>
-                  <span className="line-text">
+                  <span
+                    className="line-text"
+                    style={{ '--indent': `${indentOf(tokens)}ch` } as CSSProperties}
+                  >
                     {tokens.map((token, t) => (
                       // biome-ignore lint/suspicious/noArrayIndexKey: tokens are positional too.
                       <span key={t} style={token.color ? { color: token.color } : undefined}>
@@ -94,19 +99,68 @@ export function CodeView({ path, side, cited, focus, changed }: Props) {
           </div>
         )}
       </div>
-      <div className="legend" aria-hidden="true">
-        <span>
+      <div className="legend">
+        <span aria-hidden="true">
           <i className={`swatch ${changeClass}`} />
           {side === 'new' ? 'Added in this PR' : 'Removed by this PR'}
         </span>
-        <span>
+        <span aria-hidden="true">
           <i className="swatch cited" />
           Cited by this stop
         </span>
-        <span>
+        <span aria-hidden="true">
           <kbd>←</kbd> <kbd>→</kbd> move between stops
         </span>
+        <button
+          type="button"
+          className="wrap-toggle"
+          aria-pressed={wrap}
+          onClick={() => setWrap(!wrap)}
+        >
+          Wrap long lines
+        </button>
       </div>
     </>
   );
+}
+
+const WRAP_KEY = 'docent-wrap-lines';
+
+/**
+ * Long lines wrap by default, as on GitHub: a reviewer shouldn't scroll sideways to read a line,
+ * and Docent can't control the line lengths of the repos it reviews. The choice is remembered in
+ * this browser. Storage can be missing or blocked, so every read and write is guarded.
+ */
+function useWrapSetting(): [boolean, (wrap: boolean) => void] {
+  const [wrap, setWrap] = useState(() => {
+    try {
+      return localStorage.getItem(WRAP_KEY) !== 'off';
+    } catch {
+      return true;
+    }
+  });
+  const update = (next: boolean) => {
+    setWrap(next);
+    try {
+      localStorage.setItem(WRAP_KEY, next ? 'on' : 'off');
+    } catch {
+      // Not remembered, but the toggle still works for this page.
+    }
+  };
+  return [wrap, update];
+}
+
+const TAB_WIDTH = 4;
+
+/** A line's leading whitespace, in columns, so wrapped rows can hang just past it. */
+function indentOf(tokens: readonly Token[]): number {
+  let columns = 0;
+  for (const token of tokens) {
+    for (const char of token.text) {
+      if (char === ' ') columns += 1;
+      else if (char === '\t') columns += TAB_WIDTH;
+      else return columns;
+    }
+  }
+  return 0;
 }
