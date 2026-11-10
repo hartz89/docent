@@ -550,10 +550,22 @@ describe('P9: renames', () => {
         '<!-- {',
         `module.exports = () => ${name}(poll, 1000);`,
       );
+    // JS ends a line at a lone \r, U+2028 or U+2029; git doesn't.
+    const separated = (separator: string) => (name: string) =>
+      lines(
+        `// setup${separator}export function test() {`,
+        `const ${name} = (f) => f();`,
+        `return ${name}(run);`,
+        `// end${separator}}`,
+        `export const t = () => ${name}(poll, 1000);`,
+      );
     for (const [path, file] of [
       ['a.ts', inLineComments],
       ['a.ts', inStrings],
       ['a.cjs', inHtmlComments],
+      ['a.ts', separated('\r')],
+      ['a.ts', separated('\u2028')],
+      ['a.ts', separated('\u2029')],
     ] as const) {
       const proofs = rename([{ path, before: file('setTimeout'), after: file('queueMicrotask') }]);
       expect(proofs).toEqual([]);

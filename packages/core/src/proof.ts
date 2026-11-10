@@ -70,6 +70,9 @@ export function sidesOf(file: DiffFile, texts: FileTexts): FileSides | null {
   const baseText = texts.base.get(file.oldPath);
   const headText = texts.head.get(file.path);
   if (baseText === undefined || headText === undefined) return null;
+  // Languages may end a line where git doesn't (a lone \r, U+2028, U+2029), so detectors that
+  // read lines would see different lines than the parser. Such files prove nothing.
+  if (LINE_ENDS.test(`${baseText ?? ''}${headText ?? ''}`)) return null;
   const base = baseText === null ? null : splitLines(baseText);
   const head = headText === null ? null : splitLines(headText);
   for (const hunk of file.hunks) {
@@ -81,6 +84,9 @@ export function sidesOf(file: DiffFile, texts: FileTexts): FileSides | null {
   }
   return { base, head };
 }
+
+/** Line terminators in JS and TS that git doesn't split on: a lone CR, U+2028, U+2029. */
+const LINE_ENDS = /[\r\u2028\u2029]/;
 
 export const fileName = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
 export const dirName = (path: string): string => path.slice(0, Math.max(0, path.lastIndexOf('/')));

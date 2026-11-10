@@ -485,6 +485,8 @@ function readSource(lines: readonly string[]): Source {
     if (inComment) comments.add(n);
     // Script code also treats `<!--` and `-->` as line comments (Annex B). Don't guess where.
     if (line.includes('<!--') || line.includes('-->')) readable = false;
+    // Only plain ASCII, as in `tokenize`: other characters can end a line or hide in names.
+    if (/[^\x20-\x7e\t]/.test(line)) readable = false;
     let i = 0;
     while (i < line.length) {
       const char = line[i] ?? '';
