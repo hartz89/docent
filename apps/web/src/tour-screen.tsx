@@ -1,6 +1,15 @@
 import type { AnchorView, CostRecord, ReviewSnapshot, StopView } from '@docent/server';
 import { useMutation } from '@tanstack/react-query';
-import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Fragment,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
 import { Markdown } from './markdown.tsx';
@@ -26,14 +35,23 @@ export function TourScreen({ snapshot, tour }: Props) {
   const [viewing, setViewing] = useState<Viewing | null>(null);
 
   const stop = stops[index];
+  // The guide column outlives each stop, so it would keep the last stop's scroll position.
+  // A stop seen for the first time opens at the top; a revisited stop opens where it was left.
+  const guide = useRef<HTMLElement>(null);
+  const scrollByStop = useRef(new Map<string, number>());
   const go = useCallback(
     (next: number) => {
+      if (stop && guide.current) scrollByStop.current.set(stop.id, guide.current.scrollTop);
       setIndex(Math.max(0, Math.min(stops.length - 1, next)));
       setAnchorIndex(0);
       setViewing(null);
     },
-    [stops.length],
+    [stop, stops.length],
   );
+  const stopId = stop?.id;
+  useLayoutEffect(() => {
+    if (guide.current && stopId) guide.current.scrollTop = scrollByStop.current.get(stopId) ?? 0;
+  }, [stopId]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -103,7 +121,7 @@ export function TourScreen({ snapshot, tour }: Props) {
             <Overview snapshot={snapshot} diff={diff} onOpen={setViewing} />
           )}
         </section>
-        <aside className="column" aria-label="The guide">
+        <aside className="column" aria-label="The guide" ref={guide}>
           <Narration
             key={stop.id}
             stop={stop}
