@@ -13,6 +13,8 @@
      needs deeper ones so text and buttons keep their contrast on paper. */
   --brass-text: #d9b06a;
   --brass-fill: #d9b06a;
+  /* Hover on a filled button: lighter on dark, darker on light, so the ink keeps its contrast. */
+  --fill-hover: brightness(1.08);
   --brass-ink: #1b160d;
   --brass-tint: rgba(217, 176, 106, 0.09);
   --brass-soft: rgba(217, 176, 106, 0.16);
@@ -44,8 +46,9 @@
   --muted: #5e6570;
   --faint: #767c86;
   --brass: #b9842c;
-  --brass-text: #8d5f14;
+  --brass-text: #835710;
   --brass-fill: #94661a;
+  --fill-hover: brightness(0.92);
   --brass-ink: #ffffff;
   --brass-tint: rgba(185, 132, 44, 0.075);
   --brass-soft: rgba(185, 132, 44, 0.15);
@@ -53,7 +56,7 @@
   --added-mark: #287a41;
   --removed-tint: rgba(210, 60, 50, 0.07);
   --removed-mark: #b8443a;
-  --danger: #b8443a;
+  --danger: #a93d34;
   --added-swatch: rgba(46, 160, 80, 0.3);
   --removed-swatch: rgba(210, 60, 50, 0.28);
 }
@@ -914,7 +917,7 @@ code,
 }
 
 .primary-button:hover:not(:disabled) {
-  filter: brightness(1.08);
+  filter: var(--fill-hover);
 }
 
 .primary-button:disabled {

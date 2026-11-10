@@ -8,7 +8,8 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <script>
       // Set the theme before the first paint, so the page never flashes the wrong one. The
-      // same rule as src/theme.tsx: a saved choice, or else the system setting.
+      // same rule as src/theme.tsx: a saved choice, or else the system setting. The server sends
+      // no Content-Security-Policy today; if it ever does, this script needs a hash or nonce.
       (() => {
         let saved = null;
         try {
