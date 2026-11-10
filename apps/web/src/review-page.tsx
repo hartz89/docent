@@ -54,6 +54,12 @@ export function ReviewPage() {
   useEffect(() => {
     if (missingPr && tour && !stillReading) void refetch();
   }, [missingPr, tour, stillReading, refetch]);
+  // Who answers questions is settled by the time the tour is ready; fetch it then if we missed it.
+  const unknownAuthor = data !== undefined && data !== null && data.author === null;
+  const isReady = tour?.state === 'ready';
+  useEffect(() => {
+    if (unknownAuthor && isReady) void refetch();
+  }, [unknownAuthor, isReady, refetch]);
 
   if (snapshot.isPending) return <div className="app" />;
   if (snapshot.isError) {
