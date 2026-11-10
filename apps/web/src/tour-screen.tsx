@@ -1,6 +1,7 @@
 import type {
   AnchorView,
-  CostRecord,
+  AnswerView,
+  AuthorView,
   PostedReview,
   ReviewSnapshot,
   StopView,
@@ -79,6 +80,17 @@ export function TourScreen({ snapshot, tour }: Props) {
     },
     [stop, stops.length],
   );
+  // ↑ ↓ in the code view move between this stop's citations once one is read through.
+  const anchorCount = stop?.anchors.length ?? 0;
+  const stepAnchor = useCallback(
+    (delta: 1 | -1) => {
+      const next = anchorIndex + delta;
+      if (next < 0 || next >= anchorCount) return false;
+      setAnchorIndex(next);
+      return true;
+    },
+    [anchorIndex, anchorCount],
+  );
   const stopId = stop?.id;
   useLayoutEffect(() => {
     if (guide.current && stopId) guide.current.scrollTop = scrollByStop.current.get(stopId) ?? 0;
@@ -146,6 +158,7 @@ export function TourScreen({ snapshot, tour }: Props) {
                 cited={viewing ? [] : cited}
                 focus={viewing ? null : anchor}
                 changed={changes.get(`${shown.side}:${shown.path}`) ?? new Set()}
+                onStep={viewing ? undefined : stepAnchor}
               />
             </>
           ) : (
@@ -156,6 +169,7 @@ export function TourScreen({ snapshot, tour }: Props) {
           <Narration
             key={stop.id}
             stop={stop}
+            author={snapshot.author}
             exchanges={threads[stop.id] ?? []}
             onAsk={(question) => void ask(stop.id, question)}
             activeAnchor={viewing ? -1 : anchorIndex}
@@ -389,12 +403,24 @@ function Overview({
 type Exchange = {
   id: string;
   question: string;
-  answer: { text: string; cost: CostRecord } | null;
+  answer: AnswerView | null;
   error: string | null;
 };
 
+/** Who answered, and what it cost: the author's session, or the guide and why. */
+function answerSource(answer: AnswerView): string {
+  const known = formatUsd(answer.costs.reduce((sum, c) => sum + c.costMicroUsd, 0));
+  const cost = answer.costIncomplete ? `${known}, plus a failed fork of unknown cost` : known;
+  return answer.source === 'author_session'
+    ? `Answered by the author's session, in a read-only copy · ${cost}`
+    : `Answered by the guide, not the author (${lowerFirst(answer.whyNotAuthor)}) · ${cost}`;
+}
+
+const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
+
 function Narration({
   stop,
+  author,
   exchanges,
   onAsk,
   activeAnchor,
@@ -404,6 +430,7 @@ function Narration({
   verdict,
 }: {
   stop: StopView;
+  author: AuthorView;
   exchanges: readonly Exchange[];
   onAsk: (question: string) => void;
   activeAnchor: number;
@@ -483,10 +510,7 @@ function Narration({
                   <div className="exchange-answer">
                     <Markdown text={exchange.answer.text} />
                   </div>
-                  <div className="exchange-source">
-                    Answered by the guide, not the author ·{' '}
-                    {formatUsd(exchange.answer.cost.costMicroUsd)}
-                  </div>
+                  <div className="exchange-source">{answerSource(exchange.answer)}</div>
                 </>
               ) : exchange.error ? (
                 <div className="exchange-source" role="alert">
@@ -494,7 +518,9 @@ function Narration({
                 </div>
               ) : (
                 <div className="exchange-source" aria-live="polite">
-                  The guide is reading the code…
+                  {author?.found
+                    ? "The author's session is thinking it over…"
+                    : 'The guide is reading the code…'}
                 </div>
               )}
             </div>
@@ -527,7 +553,7 @@ function Narration({
               onClick={submit}
               disabled={!draft.trim() || pending}
             >
-              {pending ? 'Asking…' : 'Ask the guide'}
+              {pending ? 'Asking…' : author?.found ? 'Ask the author' : 'Ask the guide'}
             </button>
           </div>
         </div>

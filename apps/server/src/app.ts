@@ -4,6 +4,7 @@ import { bearerAuth } from 'hono/bearer-auth';
 import { createMiddleware } from 'hono/factory';
 import { streamSSE } from 'hono/streaming';
 import { validator } from 'hono/validator';
+import { Busy } from './author-session.ts';
 import { isSafeRepoPath } from './github.ts';
 import { type Review, SubmitRefused, type TourState, verdict } from './review.ts';
 
@@ -99,10 +100,13 @@ export function createApp({ token, origin, version, webRoot, review }: AppOption
         if (!review) return c.json(noReview, 404);
         const { stopId, question } = c.req.valid('json');
         try {
-          const answer = await review.ask(stopId, question);
+          // The request's signal aborts when the reviewer goes away, so a dropped question stops.
+          const answer = await review.ask(stopId, question, c.req.raw.signal);
           return c.json({ answer }, 200);
         } catch (error) {
-          return c.json({ error: error instanceof Error ? error.message : String(error) }, 502);
+          const message = error instanceof Error ? error.message : String(error);
+          if (error instanceof Busy) return c.json({ error: message }, 429);
+          return c.json({ error: message }, 502);
         }
       },
     )

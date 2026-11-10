@@ -1,7 +1,7 @@
 import { endLine } from './anchor.ts';
 import type { CommitSha } from './basics.ts';
 import { type ChangedLine, changedLines, type Diff, type LineRef, type Side } from './diff.ts';
-import type { Skip, StopId, Tour } from './tour.ts';
+import type { Skip, Stop, StopId, Tour } from './tour.ts';
 
 /** A changed line that is both skipped and explained (C5). */
 export type Conflict = {
@@ -30,7 +30,7 @@ export function checkCoverage(diff: Diff, tour: Tour): CoverageReport {
   }
   const lines = changedLines(diff);
   const homes = new Map(
-    lines.map((line) => [keyOf(line), { skips: [] as Skip[], stops: [] as StopId[] }]),
+    lines.map((line) => [lineKey(line), { skips: [] as Skip[], stops: [] as StopId[] }]),
   );
 
   const unknownSkips: Skip[] = [];
@@ -43,11 +43,31 @@ export function checkCoverage(diff: Diff, tour: Tour): CoverageReport {
     const target = skip.target;
     for (const line of lines) {
       const hit = target.kind === 'file' ? line.file === target.path : line.hunk === target.hunk;
-      if (hit) homes.get(keyOf(line))?.skips.push(skip);
+      if (hit) homes.get(lineKey(line))?.skips.push(skip);
     }
   }
 
-  for (const stop of tour.stops) {
+  for (const [key, stops] of explainedBy(diff, tour.stops)) homes.get(key)?.stops.push(...stops);
+
+  const unexplained: LineRef[] = [];
+  const conflicts: Conflict[] = [];
+  for (const line of lines) {
+    const { skips, stops } = homes.get(lineKey(line)) ?? { skips: [], stops: [] };
+    if (skips.length === 0 && stops.length === 0) unexplained.push(refOf(line));
+    else if (skips.length > 0 && stops.length > 0)
+      conflicts.push({ line: refOf(line), skips, stops });
+  }
+  return { state: 'checked', unexplained, conflicts, unknownSkips };
+}
+
+/**
+ * The stops that explain each line (C1–C3), keyed by `lineKey`. Only current anchors at the
+ * diff's base or head count, and only on `core_change` and `edge` stops. Lines nobody explains
+ * are absent. Shared by the coverage check and the ledger, so both mean the same by "explained".
+ */
+export function explainedBy(diff: Diff, stops: readonly Stop[]): Map<string, StopId[]> {
+  const explained = new Map<string, StopId[]>();
+  for (const stop of stops) {
     if (stop.kind !== 'core_change' && stop.kind !== 'edge') continue; // C2
     const covered = new Set<string>();
     for (const anchor of stop.anchors) {
@@ -56,21 +76,12 @@ export function checkCoverage(diff: Diff, tour: Tour): CoverageReport {
       if (side === null) continue; // C3
       const last = endLine(anchor.at, anchor.lines);
       for (let line = anchor.at.startLine; line <= last; line++) {
-        covered.add(keyOf({ path: anchor.at.path, side, line }));
+        covered.add(lineKey({ path: anchor.at.path, side, line }));
       }
     }
-    for (const key of covered) homes.get(key)?.stops.push(stop.id);
+    for (const key of covered) explained.set(key, [...(explained.get(key) ?? []), stop.id]);
   }
-
-  const unexplained: LineRef[] = [];
-  const conflicts: Conflict[] = [];
-  for (const line of lines) {
-    const { skips, stops } = homes.get(keyOf(line)) ?? { skips: [], stops: [] };
-    if (skips.length === 0 && stops.length === 0) unexplained.push(refOf(line));
-    else if (skips.length > 0 && stops.length > 0)
-      conflicts.push({ line: refOf(line), skips, stops });
-  }
-  return { state: 'checked', unexplained, conflicts, unknownSkips };
+  return explained;
 }
 
 /** A hunk or file can exist with no changed lines (a pure rename, say); skipping it is fine. */
@@ -88,5 +99,7 @@ function sideAt(diff: Diff, commit: string): Side | null {
   return null;
 }
 
-const keyOf = ({ path, side, line }: LineRef): string => JSON.stringify([path, side, line]);
+/** A changed line's identity (D3) as a string, for maps and sets. */
+export const lineKey = ({ path, side, line }: LineRef): string =>
+  JSON.stringify([path, side, line]);
 const refOf = ({ path, side, line }: ChangedLine): LineRef => ({ path, side, line });
