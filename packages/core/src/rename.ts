@@ -104,21 +104,27 @@ export function proveRenames(
 /** One hunk that a mapping could explain, and what the mapping would need to hold. */
 type Candidate = {
   readonly hunk: HunkId;
+  readonly file: DiffFile;
   /** Every identifier pair the hunk lines up, identity pairs included. */
   readonly idents: readonly (readonly [string, string])[];
   readonly paths: readonly RenameChange[];
   /** Renamed pairs whose definition (`function a` → `function b`) this hunk renames. */
   readonly defines: readonly string[];
+  /** Renamed pairs on an import or re-export line, with its relative path at base and head. */
+  readonly imports: readonly Import[];
   /** Old names this hunk renames where a property or object key sits, which a rename can't prove. */
   readonly risky: readonly string[];
 };
 
+type Import = { readonly pair: string; readonly from: string; readonly to: string };
+
 /**
  * Keeps the candidates whose mapping holds across the whole PR. The mapping must be one to one,
- * map no name both to itself and to another, and for each real rename: rename its definition
- * somewhere, never sit in a property position, and (when occurrences are given) leave the old
- * name nowhere at head and find the new name nowhere at base. Dropping a hunk can break another's
- * proof (its definition was there), so this repeats until nothing changes.
+ * map no name both to itself and to another, and for each real rename: never sit in a property
+ * position; be licensed in every file that uses it (see `licensed`); and (when occurrences are
+ * given) leave the old name nowhere at head and find the new name nowhere at base. Dropping a
+ * hunk can break another's proof (its definition was there), so this repeats until nothing
+ * changes.
  */
 function solve(
   all: readonly Candidate[],
@@ -133,7 +139,7 @@ function solve(
       targets.set(from, (targets.get(from) ?? new Set()).add(to));
       sources.set(to, (sources.get(to) ?? new Set()).add(from));
     }
-    const defined = new Set(live.flatMap((c) => c.defines));
+    const provides = licensed(live);
     const risky = new Set(live.flatMap((c) => c.risky));
     const bad = new Set<string>();
     for (const [from, to] of targets) {
@@ -141,6 +147,11 @@ function solve(
     }
     for (const from of sources.values()) {
       if (from.size > 1) for (const name of from) bad.add(name);
+    }
+    for (const c of live) {
+      for (const [from, to] of c.idents) {
+        if (from !== to && !provides.get(c.file.path)?.has(pairKey(from, to))) bad.add(from);
+      }
     }
     for (const [from, to] of live.flatMap((c) => c.idents)) {
       if (from === to) continue;
@@ -151,12 +162,50 @@ function solve(
         !words.head.has(from) &&
         (occurrences === null ||
           (occurrences.base.get(to)?.length === 0 && occurrences.head.get(from)?.length === 0));
-      if (!fresh || risky.has(from) || !defined.has(pairKey(from, to))) bad.add(from);
+      if (!fresh || risky.has(from)) bad.add(from);
     }
     const next = live.filter((c) => c.idents.every(([from]) => !bad.has(from)));
     if (next.length === live.length) return next;
     live = next;
   }
+}
+
+/**
+ * Which renamed pairs each file may use: those whose definition it renames itself, and those it
+ * imports (or re-exports) by a relative path from a diff file that may use them in turn. So a
+ * rename in one file never licenses renaming a global, a built-in or another package's export
+ * somewhere else.
+ */
+function licensed(live: readonly Candidate[]): Map<string, Set<string>> {
+  const provides = new Map<string, Set<string>>();
+  const add = (path: string, pair: string) =>
+    provides.set(path, (provides.get(path) ?? new Set()).add(pair));
+  for (const c of live) for (const pair of c.defines) add(c.file.path, pair);
+  const files = [...new Map(live.map((c) => [c.file.path, c.file])).values()];
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const file of files) {
+      const imports = live.filter((c) => c.file === file).flatMap((c) => c.imports);
+      for (const pair of new Set(imports.map((i) => i.pair))) {
+        if (provides.get(file.path)?.has(pair)) continue;
+        const resolved = imports
+          .filter((i) => i.pair === pair)
+          .every((i) =>
+            files.some(
+              (source) =>
+                provides.get(source.path)?.has(pair) &&
+                reaches(file.oldPath, i.from, source.oldPath) &&
+                reaches(file.path, i.to, source.path),
+            ),
+          );
+        if (resolved) {
+          add(file.path, pair);
+          changed = true;
+        }
+      }
+    }
+  }
+  return provides;
 }
 
 type LocalWords = { readonly base: ReadonlySet<string>; readonly head: ReadonlySet<string> };
@@ -205,7 +254,9 @@ function readHunk(
   const idents: (readonly [string, string])[] = [];
   const paths: RenameChange[] = [];
   const defines: string[] = [];
+  const imports: Import[] = [];
   const risky: string[] = [];
+  const jsx = ['jsx', 'tsx'].includes(extension(file.path));
   const blocks: { removed: Numbered[]; added: Numbered[] }[] = [];
   let open = false;
   for (const line of hunk.lines) {
@@ -224,11 +275,11 @@ function readHunk(
     for (const [i, before] of removed.entries()) {
       const after = added[i];
       if (after === undefined) return null;
-      const a = tokenize(before.text);
-      const b = tokenize(after.text);
+      const a = tokenize(before.text, jsx);
+      const b = tokenize(after.text, jsx);
       if (a === null || b === null || a.length !== b.length) return null;
-      const oldLine: Line = { tokens: a, lines: base, at: before.at };
-      const newLine: Line = { tokens: b, lines: head, at: after.at };
+      const oldLine: Line = { tokens: a, lines: base, at: before.at, jsx };
+      const newLine: Line = { tokens: b, lines: head, at: after.at, jsx };
       for (const [k, x] of a.entries()) {
         const y = b[k];
         if (y === undefined) return null;
@@ -238,8 +289,18 @@ function readHunk(
           if (KEYWORDS.has(x.text) || KEYWORDS.has(y.text)) return null;
           // Case can carry meaning (Go exports and serializes capitalized names).
           if (isUpper(x.text) !== isUpper(y.text)) return null;
-          if (definesAt(a, k) && definesAt(b, k)) defines.push(pairKey(x.text, y.text));
+          const pair = pairKey(x.text, y.text);
+          if (definesAt(a, k) && definesAt(b, k)) defines.push(pair);
           if (propertyAt(oldLine, k) || propertyAt(newLine, k)) risky.push(x.text);
+          const from = importedFrom(base, before.at);
+          const to = importedFrom(head, after.at);
+          if (from === 'local' && to === 'local') continue;
+          // An import from a package, or one this can't read, may name anything: never renamed.
+          if (from === 'local' || to === 'local' || from === null || to === null) {
+            risky.push(x.text);
+          } else {
+            imports.push({ pair, from, to });
+          }
         } else if (x.kind === 'string' && y.kind === 'string' && x.quote === y.quote) {
           if (x.body === y.body) continue;
           if (!movedImport(diff, file, x.body, y.body)) return null;
@@ -250,7 +311,7 @@ function readHunk(
       }
     }
   }
-  return { hunk: hunk.id, idents, paths, defines, risky };
+  return { hunk: hunk.id, file, idents, paths, defines, imports, risky };
 }
 
 type Token =
@@ -266,9 +327,11 @@ type Token =
 /**
  * Splits a line into identifiers, single-line string literals and single other characters
  * (spaces included, so spacing must match exactly). Numbers are one token, never an identifier.
- * Null for anything it can't read safely: a quote left open, or any non-ASCII character.
+ * A `//` comment is one token, so it must match exactly. Null for anything it can't read
+ * safely: a quote left open, any non-ASCII character, or any other `/`, which could start a
+ * regex whose body would look like code (in JSX files, `</` and `/>` are tags).
  */
-export function tokenize(line: string): Token[] | null {
+export function tokenize(line: string, jsx = false): Token[] | null {
   if (/[^\x20-\x7e\t]/.test(line)) return null;
   const tokens: Token[] = [];
   let i = 0;
@@ -291,6 +354,11 @@ export function tokenize(line: string): Token[] | null {
         body: line.slice(i + 1, end),
       });
       i = end + 1;
+    } else if (char === '/' && line[i + 1] === '/') {
+      tokens.push({ kind: 'other', text: line.slice(i) });
+      i = line.length;
+    } else if (char === '/' && !(jsx && (line[i - 1] === '<' || line[i + 1] === '>'))) {
+      return null;
     } else {
       tokens.push({ kind: 'other', text: char });
       i++;
@@ -331,25 +399,64 @@ type Line = {
   readonly tokens: readonly Token[];
   readonly lines: readonly string[];
   readonly at: number;
+  readonly jsx: boolean;
 };
 
+/** Words that may come before a method name in a class or object literal. */
+const MODIFIERS: ReadonlySet<string> = new Set(
+  'get set async static public private protected override readonly abstract *'.split(' '),
+);
+
 /**
- * The identifier at k sits where a rename could change data, not just a name: after `.` (a
- * property, which outside data may define), before `:` (an object key, unless it's being
- * defined, as in `const k: T`), or alone between `{`/`,` and `,`/`}` (shorthand, so also a key),
- * except in an import or export list.
+ * The identifier at k sits where a rename could change data or what outside code calls, not
+ * just a name. Unless it's being defined (`const k: T = …`), that's: after `.` (a property);
+ * before `:` (an object key); before a single `=` after `{`, `,`, `(` or a word (a destructuring
+ * default, keyword argument or JSX attribute); a method (`k() {` at the start of a line, after
+ * `{`, `,` or a modifier like `get`); alone between `{`/`,` and `,`/`}` (shorthand, so a key),
+ * except in an import or export list; and in JSX, right after a word or string (an attribute).
  */
-function propertyAt({ tokens, lines, at }: Line, k: number): boolean {
+function propertyAt({ tokens, lines, at, jsx }: Line, k: number): boolean {
   const before = neighbor(tokens, k, -1);
   let after = neighbor(tokens, k, 1);
-  if (textAt(tokens, before) === '.') return true;
+  const prev = textAt(tokens, before) ?? '';
+  if (prev === '.') return true;
+  if (definesAt(tokens, k)) return false;
   if (textAt(tokens, after) === '?') after = neighbor(tokens, after, 1);
-  if (textAt(tokens, after) === ':' && textAt(tokens, after + 1) !== ':' && !definesAt(tokens, k)) {
+  const next = textAt(tokens, after) ?? '';
+  const prevIsWord = tokens[before]?.kind === 'ident';
+  if (next === ':' && textAt(tokens, after + 1) !== ':') return true;
+  const assigns = next === '=' && !['=', '>'].includes(textAt(tokens, after + 1) ?? '');
+  if (assigns && (['{', ',', '('].includes(prev) || prevIsWord)) return true;
+  if (next === '(' || next === '<') {
+    if (['{', ','].includes(prev) || MODIFIERS.has(prev)) return true;
+    if (before < 0 && (lines[at] ?? '').trimEnd().endsWith('{')) return true;
+  }
+  if (jsx && ((prevIsWord && !KEYWORDS.has(prev)) || tokens[before]?.kind === 'string')) {
     return true;
   }
-  const opens = before < 0 || ['{', ','].includes(textAt(tokens, before) ?? '');
-  const closes = after >= tokens.length || ['}', ','].includes(textAt(tokens, after) ?? '');
+  const opens = before < 0 || ['{', ','].includes(prev);
+  const closes = after >= tokens.length || ['}', ','].includes(next);
   return opens && closes && !inImportList(lines, at);
+}
+
+/**
+ * Where line `at` (0-based) imports its names from: `'local'` if it isn't an import or export
+ * list at all, the path for a relative JS or TS import (`from './x'`, single or multi-line), and
+ * null for anything else (a package, a Python `from x import`, or a shape this can't read).
+ */
+function importedFrom(lines: readonly string[], at: number): string | 'local' | null {
+  if (!inImportList(lines, at)) return 'local';
+  for (let j = at; j < Math.min(lines.length, at + 100); j++) {
+    const line = lines[j] ?? '';
+    const from = /\bfrom\s*(['"])([^'"]*)\1\s*;?\s*$/.exec(line);
+    if (from) {
+      const path = from[2] ?? '';
+      return path.startsWith('./') || path.startsWith('../') ? path : null;
+    }
+    if (j > at && !LIST_ITEM.test(line) && !/^\s*\}/.test(line)) break;
+  }
+  // An export list with no `from` re-exports local names.
+  return /^\s*export\s+(?:type\s+)?\{[^}]*\}\s*;?\s*$/.test(lines[at] ?? '') ? 'local' : null;
 }
 
 const LIST_ITEM = /^\s*(?:type\s+)?[A-Za-z_$][\w$]*(?:\s+as\s+[A-Za-z_$][\w$]*)?\s*,?\s*$/;

@@ -119,6 +119,29 @@ describe('P3: whitespace only', () => {
     expect([...template, ...nested, ...continued, ...raw]).toEqual([]);
   });
 
+  test('P3: a backtick hidden in a string, rune or regex still counts as an open template', () => {
+    const close = 'world$' + "{'`'}`;"; // The source text under test, which closes the template.
+    const ts = whitespace({
+      path: 'a.ts',
+      before: lines("const t = '`' + `", 'hello', close, 'log(t);'),
+      after: lines("const t = '`' + `", '        hello', close, 'log(t);'),
+    });
+    const go = whitespace({
+      path: 'a.go',
+      before: lines('package main', "var t = string('`') + `", 'hello', "` + string('`')"),
+      after: lines('package main', "var t = string('`') + `", '    hello', "` + string('`')"),
+    });
+    expect([...ts, ...go]).toEqual([]);
+    const { diff, texts } = changes([
+      {
+        path: 'a.ts',
+        before: lines("const t = '`' + `", 'hello', close),
+        after: lines("const t = '`' + `", 'hello', '', close),
+      },
+    ]);
+    expect(proveBlankLines(diff, texts)).toEqual([]);
+  });
+
   test('P3: Go keeps its blank lines and directives exactly', () => {
     const blank = whitespace({
       path: 'a.go',
@@ -270,6 +293,15 @@ describe('P6: re-exports', () => {
     expect([...newModule, ...rebound, ...renamedAway, ...removed]).toEqual([]);
   });
 
+  test('P6: reordering a barrel changes which module loads first, so it is not proven', () => {
+    expect(
+      prove(
+        lines("export * from './polyfill.ts';", "export { a } from './a.ts';"),
+        lines("export { a } from './a.ts';", "export * from './polyfill.ts';"),
+      ),
+    ).toEqual([]);
+  });
+
   test('P6: a new name next to an export * could shadow it, so it is not proven', () => {
     expect(
       prove(
@@ -333,12 +365,22 @@ describe('P7: lockfiles', () => {
 });
 
 describe('P8: generated and vendored files', () => {
+  /** A file that existed at base, with one line changed. */
   const touched = (path: string) =>
     makeDiff(base, head, [
       {
         path,
         oldPath: path,
-        hunks: [{ oldStart: 1, newStart: 1, lines: [{ kind: 'added', text: 'x' }] }],
+        hunks: [
+          {
+            oldStart: 1,
+            newStart: 1,
+            lines: [
+              { kind: 'removed', text: 'x' },
+              { kind: 'added', text: 'y' },
+            ],
+          },
+        ],
       },
     ]);
 
@@ -360,6 +402,13 @@ describe('P8: generated and vendored files', () => {
     expect(labels(proveGenerated(touched('a/vendor/b.go'), new Map()))).toEqual(['vendored']);
     const unset = new Map([['.gitattributes', lines('dist/index.js -linguist-generated')]]);
     expect(proveGenerated(touched('dist/index.js'), unset)).toEqual([]);
+  });
+
+  test('P8: a new file the PR puts in a known folder is not proven by the pattern alone', () => {
+    const { diff } = changes([{ path: 'dist/evil.js', before: null, after: lines('steal();') }]);
+    expect(proveGenerated(diff, new Map())).toEqual([]);
+    const marked = new Map([['.gitattributes', lines('dist/** linguist-generated')]]);
+    expect(labels(proveGenerated(diff, marked))).toEqual(['generated']);
   });
 
   test('P8: a .gitattributes change in the PR itself is ignored', () => {

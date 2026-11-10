@@ -110,6 +110,149 @@ describe('P9: renames', () => {
     expect([...builtin, ...imported, ...property, ...shorthand]).toEqual([]);
   });
 
+  test('P9: a regex body is never read as code', () => {
+    const file = (name: string) =>
+      lines(
+        `function ${name}() { return 1; }`,
+        `export const ok = (s) => /^${name}$/.test(s) && ${name}();`,
+      );
+    expect(rename([{ path: 'a.ts', before: file('admin'), after: file('guest') }])).toEqual([]);
+  });
+
+  test('P9: a rename in one file never licenses renaming a global or a package export elsewhere', () => {
+    const util = (name: string) =>
+      lines('// helpers', `export function ${name}(o) {`, '  return o;', '}');
+    const fromPackage = rename([
+      { path: 'util.ts', before: util('pick'), after: util('omit') },
+      {
+        path: 'b.ts',
+        before: lines("import { pick } from 'lodash';", '', 'export const x = pick(user, keys);'),
+        after: lines("import { omit } from 'lodash';", '', 'export const x = omit(user, keys);'),
+      },
+    ]);
+    const python = rename([
+      {
+        path: 'util.py',
+        before: lines('# helpers', 'def md5(x):', '    return x'),
+        after: lines('# helpers', 'def sha1(x):', '    return x'),
+      },
+      {
+        path: 'b.py',
+        before: lines('from hashlib import md5', '', 'h = md5(data)'),
+        after: lines('from hashlib import sha1', '', 'h = sha1(data)'),
+      },
+    ]);
+    const global = rename([
+      {
+        path: 'a.ts',
+        before: lines('// a', 'function fetch() { return 1; }', 'export default fetch;'),
+        after: lines('// a', 'function steal() { return 1; }', 'export default steal;'),
+      },
+      {
+        path: 'b.js',
+        before: lines('// b', 'export const r = fetch(url);', '// end'),
+        after: lines('// b', 'export const r = steal(url);', '// end'),
+      },
+    ]);
+    expect([...fromPackage, ...python, ...global]).toEqual([]);
+  });
+
+  test('P9: keyword arguments, destructuring defaults, JSX attributes and methods are keys', () => {
+    const destructure = rename([
+      {
+        path: 'a.ts',
+        before: lines('// a', 'export function limit() {', '  return 1;', '}'),
+        after: lines('// a', 'export function quota() {', '  return 1;', '}'),
+      },
+      {
+        path: 'b.ts',
+        before: lines(
+          "import { limit } from './a.ts';",
+          'export function f(opts) {',
+          '  const { limit = 10 } = opts;',
+          '  return limit;',
+          '}',
+        ),
+        after: lines(
+          "import { quota } from './a.ts';",
+          'export function f(opts) {',
+          '  const { quota = 10 } = opts;',
+          '  return quota;',
+          '}',
+        ),
+      },
+    ]);
+    const kwarg = rename([
+      {
+        path: 'a.py',
+        before: lines(
+          '# a',
+          'def timeout():',
+          '    return 5',
+          '',
+          'requests.get(url, timeout=timeout())',
+        ),
+        after: lines(
+          '# a',
+          'def deadline():',
+          '    return 5',
+          '',
+          'requests.get(url, deadline=deadline())',
+        ),
+      },
+    ]);
+    const jsx = rename([
+      {
+        path: 'a.tsx',
+        before: lines(
+          '// a',
+          'function disabled() { return true; }',
+          'export const B = () => <button disabled={disabled()} />;',
+        ),
+        after: lines(
+          '// a',
+          'function hidden() { return true; }',
+          'export const B = () => <button hidden={hidden()} />;',
+        ),
+      },
+    ]);
+    const method = rename([
+      {
+        path: 'a.ts',
+        before: lines(
+          '// a',
+          'function toJSON() { return 1; }',
+          'export const o = { toJSON() { return toJSON(); } };',
+        ),
+        after: lines(
+          '// a',
+          'function toJson() { return 1; }',
+          'export const o = { toJson() { return toJson(); } };',
+        ),
+      },
+    ]);
+    expect([...destructure, ...kwarg, ...jsx, ...method]).toEqual([]);
+  });
+
+  test('P9: a rename through a relative re-export chain is proven', () => {
+    const util = (name: string) =>
+      lines('// helpers', `export function ${name}(o) {`, '  return o;', '}');
+    const proofs = rename([
+      { path: 'src/util.ts', before: util('pick'), after: util('choose') },
+      {
+        path: 'src/index.ts',
+        before: lines("export { pick } from './util.ts';"),
+        after: lines("export { choose } from './util.ts';"),
+      },
+      {
+        path: 'app.ts',
+        before: lines("import { pick } from './src/index.ts';", 'pick(o);'),
+        after: lines("import { choose } from './src/index.ts';", 'choose(o);'),
+      },
+    ]);
+    expect(proofs).toHaveLength(3);
+  });
+
   test('P9: keywords and built-in values never map', () => {
     expect(
       rename([{ path: 'a.ts', before: lines('let ok = true;'), after: lines('let ok = false;') }]),

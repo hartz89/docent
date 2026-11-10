@@ -139,8 +139,12 @@ export function mayHaveMultilineStrings(lines: readonly string[] | null): boolea
   return lines.some((line) => {
     if (/\\[ \t]*$/.test(line) || STRING_OPENERS.test(line)) return true;
     if (!line.includes('`')) return false;
-    // An odd count leaves a template open; unbalanced braces may hide one inside `${`.
-    return count(line, '`') % 2 === 1 || count(line, '{') !== count(line, '}');
+    // An odd count leaves a template open; unbalanced braces may hide one inside `${`. A quote,
+    // slash or backslash on the same line could hide a backtick in a string, rune, regex or
+    // comment and throw the count off, so those lines count as open too.
+    return (
+      count(line, '`') % 2 === 1 || count(line, '{') !== count(line, '}') || /['"/\\]/.test(line)
+    );
   });
 }
 

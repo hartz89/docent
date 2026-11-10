@@ -229,7 +229,7 @@ const EXPORT_STAR = new RegExp(
   String.raw`^export\s+(type\s+)?\*(?:\s+as\s+(${NAME}))?\s+from\s*(${SPECIFIER})\s*;?$`,
 );
 
-/** What a barrel file exports: each public name's source, and its bare `export *` lines. */
+/** A barrel: its modules in load order, each public name's source, and its bare `export *` lines. */
 type Barrel = {
   readonly specifiers: ReadonlySet<string>;
   readonly names: ReadonlyMap<string, string>;
@@ -303,7 +303,9 @@ export function proveReExports(diff: Diff, texts: FileTexts): Proof[] {
 }
 
 function unchangedMeaning(before: Barrel, after: Barrel): boolean {
-  if (!sameSet(before.specifiers, after.specifiers) || !sameSet(before.stars, after.stars)) {
+  // Modules evaluate in the order they first appear, so that order must hold too.
+  const order = (barrel: Barrel) => JSON.stringify([...barrel.specifiers]);
+  if (order(before) !== order(after) || !sameSet(before.stars, after.stars)) {
     return false;
   }
   for (const [name, binding] of before.names) {
@@ -421,8 +423,9 @@ const KNOWN: readonly { label: 'generated' | 'vendored'; pattern: string; regex:
 
 /**
  * P8: files that base's `.gitattributes` marks `linguist-generated` or `linguist-vendored`, or
- * that match the known patterns, unless base's `.gitattributes` unsets the attribute. Only base
- * text counts: a PR can't mark its own files. A moved file must qualify at both paths.
+ * that already existed at base and match the known patterns, unless base's `.gitattributes`
+ * unsets the attribute. Only base text counts: a PR can't mark its own files, or vouch for a new
+ * file by choosing its folder. A moved file must qualify at both paths.
  */
 export function proveGenerated(
   diff: Diff,
@@ -433,11 +436,11 @@ export function proveGenerated(
     if (!file.hunks.some(hasChanges)) continue;
     for (const label of ['generated', 'vendored'] as const) {
       const attribute: LinguistAttribute = `linguist-${label}`;
-      const rule = ruleFor(baseGitattributes, attribute, label, file.path);
+      const rule = ruleFor(baseGitattributes, attribute, label, file.path, existedAtBase(file));
       if (rule === null) continue;
       if (
         file.oldPath !== file.path &&
-        ruleFor(baseGitattributes, attribute, label, file.oldPath) === null
+        ruleFor(baseGitattributes, attribute, label, file.oldPath, true) === null
       ) {
         continue;
       }
@@ -448,17 +451,24 @@ export function proveGenerated(
   return proofs;
 }
 
+/** Any removed or context line means the file existed at base. Only added lines: maybe not. */
+const existedAtBase = (file: DiffFile): boolean =>
+  file.hunks.some((hunk) => hunk.lines.some((line) => line.kind !== 'added'));
+
 function ruleFor(
   gitattributes: ReadonlyMap<string, string>,
   attribute: LinguistAttribute,
   label: 'generated' | 'vendored',
   path: string,
+  existed: boolean,
 ): GeneratedRule | null {
   const match = attributeFor(gitattributes, attribute, path);
   if (match === 'unusable' || match?.value === false) return null;
   if (match?.value === true) {
     return { source: 'gitattributes', file: match.file, line: match.line, pattern: match.pattern };
   }
+  // The PR chooses where a new file goes, so a known folder only vouches for files already there.
+  if (!existed) return null;
   const known = KNOWN.find((k) => k.label === label && k.regex.test(path));
   return known ? { source: 'known', pattern: known.pattern } : null;
 }
