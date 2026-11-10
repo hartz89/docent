@@ -734,21 +734,30 @@ code,
   border-radius: 6px;
   border: 1px solid var(--border-strong);
   background: var(--panel-raised);
+  /* Set, not inherited: inside a row of faint hint text, an inherited color made the
+     enabled button look disabled. */
+  color: var(--text);
   font-size: 13px;
   cursor: pointer;
 }
 
 .secondary-button:hover:not(:disabled) {
-  border-color: var(--muted);
+  border-color: var(--brass);
 }
 
 .secondary-button:disabled {
+  border-color: var(--border);
+  background: transparent;
   color: var(--faint);
   cursor: default;
 }
 
 .exchange {
-  margin-top: 18px;
+  margin-bottom: 22px;
+}
+
+.question label.follow-up {
+  margin-top: 4px;
 }
 
 .exchange-question {

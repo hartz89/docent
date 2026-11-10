@@ -27,3 +27,4 @@ Calls that are the maintainer's, batched so they don't block work. The rules are
 - **2026-11-06 · Stack:** Hono server, Vite + React + TanStack Router/Query web app, TypeScript 7, pnpm. Chosen on agentic legibility, performance and product fit; familiarity didn't count.
 - **2026-11-06 · Open source from day one.**
 - **2026-11-06 · Name: keep "Docent."** Chosen in decision brief no. 1, option A. The metaphor carries the product's idea; the npm package will be scoped.
+- **2026-11-09 · The product has no risk tiers.** Docent never rates, labels or routes a PR by risk. How much review a PR needs is up to the org that owns it. Risk tiers stay in how *this repo* merges its own PRs (`scripts/tier.ts`, `docs/process/pull-requests.md`); that's dev environment, not product.

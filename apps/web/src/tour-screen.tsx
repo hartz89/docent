@@ -1,6 +1,14 @@
 import type { AnchorView, AnswerView, AuthorView, ReviewSnapshot, StopView } from '@docent/server';
-import { useMutation } from '@tanstack/react-query';
-import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Fragment,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
 import { Markdown } from './markdown.tsx';
@@ -24,16 +32,48 @@ export function TourScreen({ snapshot, tour }: Props) {
   const [anchorIndex, setAnchorIndex] = useState(0);
   // A file opened from the skip list or the overview, in place of the stop's citation.
   const [viewing, setViewing] = useState<Viewing | null>(null);
+  // Each stop's questions and answers, kept here so they survive moving between stops.
+  const [threads, setThreads] = useState<Record<string, Exchange[]>>({});
+  const ask = useCallback(async (stopId: string, question: string) => {
+    // Each exchange has its own id, so an answer always lands on the question it answers.
+    const id = crypto.randomUUID();
+    const settle = (patch: Partial<Exchange>) =>
+      setThreads((all) => ({
+        ...all,
+        [stopId]: (all[stopId] ?? []).map((e) => (e.id === id ? { ...e, ...patch } : e)),
+      }));
+    setThreads((all) => ({
+      ...all,
+      [stopId]: [...(all[stopId] ?? []), { id, question, answer: null, error: null }],
+    }));
+    try {
+      const res = await api.questions.$post({ json: { stopId, question } });
+      const body = await res.json();
+      if ('answer' in body) settle({ answer: body.answer });
+      else settle({ error: body.error });
+    } catch (error) {
+      settle({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }, []);
 
   const stop = stops[index];
+  // The guide column outlives each stop, so it would keep the last stop's scroll position.
+  // A stop seen for the first time opens at the top; a revisited stop opens where it was left.
+  const guide = useRef<HTMLElement>(null);
+  const scrollByStop = useRef(new Map<string, number>());
   const go = useCallback(
     (next: number) => {
+      if (stop && guide.current) scrollByStop.current.set(stop.id, guide.current.scrollTop);
       setIndex(Math.max(0, Math.min(stops.length - 1, next)));
       setAnchorIndex(0);
       setViewing(null);
     },
-    [stops.length],
+    [stop, stops.length],
   );
+  const stopId = stop?.id;
+  useLayoutEffect(() => {
+    if (guide.current && stopId) guide.current.scrollTop = scrollByStop.current.get(stopId) ?? 0;
+  }, [stopId]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -103,11 +143,13 @@ export function TourScreen({ snapshot, tour }: Props) {
             <Overview snapshot={snapshot} diff={diff} onOpen={setViewing} />
           )}
         </section>
-        <aside className="column" aria-label="The guide">
+        <aside className="column" aria-label="The guide" ref={guide}>
           <Narration
             key={stop.id}
             stop={stop}
             author={snapshot.author}
+            exchanges={threads[stop.id] ?? []}
+            onAsk={(question) => void ask(stop.id, question)}
             activeAnchor={viewing ? -1 : anchorIndex}
             onAnchor={(i) => {
               setAnchorIndex(i);
@@ -324,6 +366,7 @@ function Overview({
 }
 
 type Exchange = {
+  id: string;
   question: string;
   answer: AnswerView | null;
   error: string | null;
@@ -343,6 +386,8 @@ const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1
 function Narration({
   stop,
   author,
+  exchanges,
+  onAsk,
   activeAnchor,
   onAnchor,
   isLast,
@@ -350,34 +395,32 @@ function Narration({
 }: {
   stop: StopView;
   author: AuthorView;
+  exchanges: readonly Exchange[];
+  onAsk: (question: string) => void;
   activeAnchor: number;
   onAnchor: (index: number) => void;
   isLast: boolean;
   onNext: () => void;
 }) {
   const [draft, setDraft] = useState('');
-  const [exchanges, setExchanges] = useState<Exchange[]>([]);
-  const ask = useMutation({
-    mutationFn: async (question: string) => {
-      const res = await api.questions.$post({ json: { stopId: stop.id, question } });
-      const body = await res.json();
-      if ('answer' in body) return body.answer;
-      throw new Error(body.error);
-    },
-    onMutate: (question) => {
-      setExchanges((list) => [...list, { question, answer: null, error: null }]);
-      setDraft('');
-    },
-    onSuccess: (answer) =>
-      setExchanges((list) => list.map((e, i) => (i === list.length - 1 ? { ...e, answer } : e))),
-    onError: (error) =>
-      setExchanges((list) =>
-        list.map((e, i) => (i === list.length - 1 ? { ...e, error: error.message } : e)),
-      ),
-  });
+  const last = exchanges.at(-1);
+  const pending = last !== undefined && last.answer === null && last.error === null;
+  // A new question scrolls into view at the top, so its answer arrives below it and the
+  // question box follows, as in a chat.
+  const newest = useRef<HTMLParagraphElement>(null);
+  const asked = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once the new question has rendered.
+  useEffect(() => {
+    if (!asked.current) return;
+    asked.current = false;
+    newest.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }, [exchanges.length]);
   const submit = () => {
     const question = draft.trim();
-    if (question && !ask.isPending) ask.mutate(question);
+    if (!question || pending) return;
+    asked.current = true;
+    setDraft('');
+    onAsk(question);
   };
 
   return (
@@ -414,36 +457,14 @@ function Narration({
         ))}
 
         <div className="question">
-          <label htmlFor={`question-${stop.id}`}>Your question</label>
-          <textarea
-            id={`question-${stop.id}`}
-            value={draft}
-            placeholder="Why is it built this way? What calls this?"
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-                event.preventDefault();
-                submit();
-              }
-            }}
-          />
-          <div className="question-actions">
-            <span>
-              <kbd>⌘</kbd> <kbd>Enter</kbd> to ask
-            </span>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={submit}
-              disabled={!draft.trim() || ask.isPending}
-            >
-              {ask.isPending ? 'Asking…' : author?.found ? 'Ask the author' : 'Ask the guide'}
-            </button>
-          </div>
           {exchanges.map((exchange, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: exchanges only ever append.
-            <div className="exchange fade-in" key={i}>
-              <p className="exchange-question">{exchange.question}</p>
+            <div className="exchange fade-in" key={exchange.id}>
+              <p
+                className="exchange-question"
+                ref={i === exchanges.length - 1 ? newest : undefined}
+              >
+                {exchange.question}
+              </p>
               {exchange.answer ? (
                 <>
                   <div className="exchange-answer">
@@ -464,6 +485,37 @@ function Narration({
               )}
             </div>
           ))}
+          <label
+            htmlFor={`question-${stop.id}`}
+            className={exchanges.length > 0 ? 'follow-up' : undefined}
+          >
+            {exchanges.length > 0 ? 'Ask a follow-up' : 'Your question'}
+          </label>
+          <textarea
+            id={`question-${stop.id}`}
+            value={draft}
+            placeholder="Why is it built this way? What calls this?"
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault();
+                submit();
+              }
+            }}
+          />
+          <div className="question-actions">
+            <span>
+              <kbd>⌘</kbd> <kbd>Enter</kbd> to ask
+            </span>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={submit}
+              disabled={!draft.trim() || pending}
+            >
+              {pending ? 'Asking…' : author?.found ? 'Ask the author' : 'Ask the guide'}
+            </button>
+          </div>
         </div>
       </div>
 
