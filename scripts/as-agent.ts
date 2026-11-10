@@ -80,6 +80,7 @@ const ALLOWED: Record<Role, string[]> = {
     'git push [-u] origin <branch>   (a plain branch name: not main, HEAD or refs/...; no flags but -u)',
     'gh pr create|view|checks|diff|comment|edit ...',
     'gh pr merge <number> --squash [--auto]',
+    'gh issue create|view|list|comment|edit|close ...  (never adding or removing the backlog label)',
     'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
     'Never with gh --jq/-q or --template/-t, or --web/--editor.',
   ],
@@ -95,7 +96,20 @@ const PR_SUBCOMMANDS: Record<Role, string[]> = {
   reviewer: ['view', 'diff', 'checks', 'review', 'comment'],
 };
 
-type Allowed = { tool: 'gh' | 'git'; args: string[] };
+const ISSUE_SUBCOMMANDS = ['create', 'view', 'list', 'comment', 'edit', 'close'];
+
+/**
+ * Only the maintainer ranks work: an issue counts as backlog when they applied this label, which
+ * agents verify from the issue's timeline. So agents may never add or remove it, here or anywhere.
+ */
+const MAINTAINER_LABEL = 'backlog';
+
+type Allowed = {
+  tool: 'gh' | 'git';
+  args: string[];
+  /** Permissions this command needs beyond the role's base set. */
+  extra?: Record<string, 'read' | 'write'>;
+};
 
 /** Returns the exact command to run, or throws why it's refused. */
 function allowed(role: Role, command: string[]): Allowed {
@@ -116,7 +130,23 @@ function allowed(role: Role, command: string[]): Allowed {
   }
   if (program === 'gh' && sub === 'api') {
     checkGhApi(rest, refuse);
-    return { tool: 'gh', args: ['api', ...rest] };
+    // Reading issues and their timelines (who applied a label) needs issues: read. Requested only
+    // for those calls, so other commands keep working on an app without the permission.
+    const issues =
+      role === 'builder' && rest.some((arg) => /^\/?repos\/[^/]+\/[^/]+\/issues\b/.test(arg));
+    return { tool: 'gh', args: ['api', ...rest], ...(issues ? { extra: { issues: 'read' } } : {}) };
+  }
+  if (program === 'gh' && sub === 'issue' && role === 'builder') {
+    const [action, ...args] = rest;
+    if (!action || !ISSUE_SUBCOMMANDS.includes(action)) {
+      refuse(`"gh issue ${action ?? ''}" isn't allowed for the ${role}`);
+    }
+    const interactive = args.find((arg) => /^(--web|--editor)(=|$)|^-[we]$/.test(arg));
+    if (interactive) refuse(`${interactive} opens a browser or editor`);
+    // Filtering by a label only reads it; creating or editing an issue can set it.
+    const writes = action !== 'view' && action !== 'list';
+    if (writes) checkLabels(args, refuse);
+    return { tool: 'gh', args: ['issue', ...rest], extra: { issues: writes ? 'write' : 'read' } };
   }
   if (program === 'gh' && sub === 'pr') {
     const [action, ...args] = rest;
@@ -133,6 +163,20 @@ function allowed(role: Role, command: string[]): Allowed {
     return { tool: 'gh', args: ['pr', ...rest] };
   }
   return refuse(`the ${role} may only run the commands below`);
+}
+
+/** Refuses any label flag that names the maintainer's label, in any case or list position. */
+function checkLabels(args: string[], refuse: (reason: string) => never): void {
+  const LABEL_FLAGS = /^(-l|--label|--add-label|--remove-label)(=(.*))?$/;
+  for (let i = 0; i < args.length; i++) {
+    const match = LABEL_FLAGS.exec(args[i] ?? '');
+    if (!match) continue;
+    const value = match[2] !== undefined ? (match[3] ?? '') : (args[++i] ?? '');
+    const names = value.split(',').map((name) => name.trim().toLowerCase());
+    if (names.includes(MAINTAINER_LABEL)) {
+      refuse(`only the maintainer adds or removes the "${MAINTAINER_LABEL}" label`);
+    }
+  }
 }
 
 /** A plain branch name. Anything git might resolve to another ref (HEAD, @, refs/...) is out. */
@@ -473,7 +517,7 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
   };
   try {
     const { role, command } = parseArgs(argv);
-    const { tool, args } = allowed(role, command);
+    const { tool, args, extra } = allowed(role, command);
     const file = findTool(tool, deps);
     const base = baseEnv(deps.env);
     checkLocalGitConfig(findTool('git', deps), deps.cwd);
@@ -505,7 +549,10 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
       path: `/app/installations/${installation.id}/access_tokens`,
       auth: `Bearer ${jwt}`,
       hint: `Check that the key belongs to the ${role} app and that it has these permissions.`,
-      body: { repositories: [REPO.split('/')[1]], permissions: TOKEN_PERMISSIONS[role] },
+      body: {
+        repositories: [REPO.split('/')[1]],
+        permissions: { ...TOKEN_PERMISSIONS[role], ...extra },
+      },
     });
     const basicAuth = Buffer.from(`x-access-token:${token}`).toString('base64');
     secrets.push(token, basicAuth);

@@ -17,10 +17,12 @@
 
 | Role       | App does                                          | Permissions on hartz89/docent                                                         |
 | ---------- | ------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `builder`  | Pushes branches, opens and merges PRs  | Contents: write. Pull requests: write. Checks: read. Metadata: read. |
+| `builder`  | Pushes branches, opens and merges PRs, files and updates issues | Contents: write. Pull requests: write. Issues: write. Checks: read. Metadata: read. |
 | `reviewer` | Posts reviews (the future AI reviewer) | Pull requests: write. Contents: read. Metadata: read.                |
 
 The builder has no Workflows permission on purpose. Changes to CI are the maintainer's, so GitHub rejects a builder push that touches `.github/workflows/`.
+
+The builder can file and update issues, but never adds or removes the `backlog` label: the runner refuses it. An issue counts as backlog work only when the maintainer applied that label, which agents check in the issue's timeline. Issues access is requested only for `gh issue` commands and issue reads, so the other commands keep working on an app that doesn't have it yet.
 
 ## How tiers become mechanical
 
