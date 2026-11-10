@@ -23,6 +23,12 @@ export function ReviewPage() {
   const [tour, setTour] = useState<TourState | null>(null);
 
   const data = snapshot.data;
+  // The tab names the PR, "Title · Docent", the usual "page · site" order, so tabs stay
+  // distinguishable when several reviews are open. Until the PR is read, it's just "Docent".
+  const prTitle = data?.pr?.title;
+  useEffect(() => {
+    document.title = prTitle ? `${prTitle} · Docent` : 'Docent';
+  }, [prTitle]);
   useEffect(() => {
     if (!data) return;
     if (data.tour.state !== 'working') {
