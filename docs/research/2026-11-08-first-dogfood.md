@@ -14,6 +14,8 @@ What the stop should have said:
 
 > **The CLI now has two modes.** Normal mode is unchanged. The new prepare mode builds the tour and exits. It force-quits on purpose, so stray agent processes can't hang it. That exit is the one thing worth checking.
 
+(2026-11-09: under the corrected principle below, that last sentence goes. The stop states the force-quit as a fact, and the reviewer decides whether it matters.)
+
 ## Why it happened
 
 The tour prompt (`apps/server/src/tour.ts`, `TOUR_PROMPT_VERSION = 2`) opens its writing rules with "Describe, never judge." That rule exists so the docent never issues a verdict. Combined with "every claim cites lines" and a script that checks every changed line is covered, it pushes the model toward transcription: say what each piece of code does, in order.
@@ -24,19 +26,22 @@ The prompt doesn't separate two things:
 
 ## The principle
 
+> **Corrected 2026-11-09.** The first version of this principle had a step for "what's worth checking": the judgment call, the risky assumption. Prompt v3 followed it, and the maintainer's next review found tours that led the reviewer to conclusions and flagged concerns that weren't well-founded ("check that nobody relies on the old error", when nothing did). That breaks the brief's "describe, don't judge". Docent is the guide, not the reviewer. An AI reviewer, if a project wants one, is a separate concern. The principle is now explain-only.
+
 Each stop answers, in this order:
 1. **What changed in behavior,** in one sentence a tired reviewer gets on first read. Use user or caller terms, not function names.
-2. **Why it matters:** what it connects to, and what would break.
-3. **What's worth checking,** if anything: the judgment call, the risky assumption, the place the description and code disagree. Say "nothing here needs a judgment call" when that's true. Pointing at a risk is not a verdict.
-4. **Mechanics,** only where they're needed to check point 3, and briefly. The citations carry the detail; the prose doesn't have to.
+2. **How it connects:** facts verified in the code, such as who calls it, what depends on it, and which tests cover it. Stated as facts, never as warnings.
+3. **Mechanics,** only where needed, and briefly. The citations carry the detail; the prose doesn't have to.
 
-**The test:** read only the first sentence of each stop. If that tells you what the PR does and where to look, the tour works.
+No review advice, no speculative concerns, no hedged risks. If the reviewer's judgment matters, the facts should make that visible on their own. Two flags stay, because they're facts: "mismatch" (the description against the code) and "danger" (obvious, dangerous problems only, with cited evidence).
+
+**The test:** read only the first sentence of each stop. If that tells you what the PR does, the tour works.
 
 ## How we'll know it's better
 
 This is a prompt change, so measure it rather than argue it. Run tour prompt v2 against a v3 that follows the principle above, on the public eval fixtures. Score both on:
 - **Mechanical checks,** where scripts can decide: the first sentence names no function or identifier; stops stay within length.
-- **A model judge,** where scripts can't: "Does the first sentence state the behavior change?" and "Does the stop name what's worth checking, or say nothing is?"
+- **A model judge,** where scripts can't: "Does the first sentence state the behavior change?" and (since 2026-11-09) "Does the stop give advice or a concern the code doesn't back?"
 - **Human samples:** the maintainer's `Docent feedback:` replies on dogfooded PRs (see `docs/process/pull-requests.md`).
 
 Defect-finding must not get worse. A clearer tour that misses more problems is a regression.
@@ -52,4 +57,4 @@ Defect-finding must not get worse. A clearer tour that misses more problems is a
 
 ## Result
 
-Tour prompt v3 follows the principle above. On the public fixtures, the judge says 81% of v3's first sentences state the behavior change, against 12 to 17% for v2. The judge's rubric echoes v3's own wording, so a neutral, blind check ran too: 81% against 28%. No drop in defect-finding was detected, but with 7 defects the eval can't resolve a drop smaller than one. Numbers and caveats: [`2026-11-08-tour-prompt-v3.md`](2026-11-08-tour-prompt-v3.md).
+Tour prompt v3 follows the corrected principle (2026-11-09). In a neutral, blind check, 78 to 89% of its first sentences read clearly to a reader, against 23 to 30% for v2. Stops with review advice or unbacked concerns fell from 47% (the first v3) to 1 in 92. Defect-finding dropped: v3 explained 4 of 7 planted defects in each of two runs, against 5 of 7 for v2. Numbers and caveats: [`2026-11-08-tour-prompt-v3.md`](2026-11-08-tour-prompt-v3.md).
