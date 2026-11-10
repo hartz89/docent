@@ -539,10 +539,23 @@ describe('P9: renames', () => {
         'const v = "/*"; } const w = "*/";',
         `export const t = () => ${name}(poll, 1000);`,
       );
-    for (const file of [inLineComments, inStrings]) {
-      const proofs = rename([
-        { path: 'a.ts', before: file('setTimeout'), after: file('queueMicrotask') },
-      ]);
+    // Annex B: in script code, `<!--` starts a line comment too.
+    const inHtmlComments = (name: string) =>
+      lines(
+        'function test() {',
+        '<!-- }',
+        `const ${name} = (f) => f();`,
+        `return ${name}(run);`,
+        '}',
+        '<!-- {',
+        `module.exports = () => ${name}(poll, 1000);`,
+      );
+    for (const [path, file] of [
+      ['a.ts', inLineComments],
+      ['a.ts', inStrings],
+      ['a.cjs', inHtmlComments],
+    ] as const) {
+      const proofs = rename([{ path, before: file('setTimeout'), after: file('queueMicrotask') }]);
       expect(proofs).toEqual([]);
     }
   });

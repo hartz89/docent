@@ -483,6 +483,8 @@ function readSource(lines: readonly string[]): Source {
   for (const [n, line] of lines.entries()) {
     if (depth === 0 && !inComment) topLevel.add(n);
     if (inComment) comments.add(n);
+    // Script code also treats `<!--` and `-->` as line comments (Annex B). Don't guess where.
+    if (line.includes('<!--') || line.includes('-->')) readable = false;
     let i = 0;
     while (i < line.length) {
       const char = line[i] ?? '';
