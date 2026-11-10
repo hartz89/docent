@@ -98,6 +98,8 @@ export function CodeView({ path, side, cited, focus, changed, onStep }: Props) {
             return;
           }
         }
+        // A held key reads on but doesn't race through the stop's citations.
+        if (event.repeat) return;
         if (onStep?.(down ? 1 : -1)) return;
       }
       box.scrollBy({ top: down ? step : -step, behavior });

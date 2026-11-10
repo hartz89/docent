@@ -134,6 +134,20 @@ test('the CLI opens a recorded PR, and the reviewer walks the tour by keyboard',
       await expect(pressed).toContainText('364');
 
       // ↑ scrolls back to its start, then returns to the previous citation.
+      // ↑ reads back to the long citation's first line before leaving it.
+      const firstLineShown = () =>
+        code.evaluate((box) => {
+          const line = box.querySelector('[data-line="364"]');
+          if (!line) return false;
+          const view = box.getBoundingClientRect();
+          const rect = line.getBoundingClientRect();
+          return rect.top >= view.top && rect.bottom <= view.bottom;
+        });
+      for (let i = 0; i < 6 && !(await firstLineShown()); i++) {
+        await page.keyboard.press('ArrowUp');
+      }
+      await expect(pressed).toContainText('364');
+      expect(await firstLineShown()).toBe(true);
       await pressUntil('ArrowUp', '135');
     });
   } finally {
