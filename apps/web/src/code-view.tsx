@@ -84,7 +84,7 @@ export function CodeView({ path, side, cited, focus, changed }: Props) {
                   <span className="line-mark">{isChanged ? changeMark : ''}</span>
                   <span
                     className="line-text"
-                    style={{ '--indent': `${indentOf(tokens)}ch` } as CSSProperties}
+                    style={{ '--hang': `${hangOf(tokens)}ch` } as CSSProperties}
                   >
                     {tokens.map((token, t) => (
                       // biome-ignore lint/suspicious/noArrayIndexKey: tokens are positional too.
@@ -152,13 +152,22 @@ function useWrapSetting(): [boolean, (wrap: boolean) => void] {
 
 const TAB_WIDTH = 4;
 
-/** A line's leading whitespace, in columns, so wrapped rows can hang just past it. */
+/**
+ * How far a wrapped line's continuation rows hang, in columns: 2 past the line's own indentation,
+ * rounded up to a tab stop. Tab stops are measured from the padded edge, so a hang that isn't a
+ * whole number of tab stops would shift every tab on the first row.
+ */
+function hangOf(tokens: readonly Token[]): number {
+  return Math.ceil((indentOf(tokens) + 2) / TAB_WIDTH) * TAB_WIDTH;
+}
+
+/** A line's leading whitespace, in columns. A tab moves to the next tab stop. */
 function indentOf(tokens: readonly Token[]): number {
   let columns = 0;
   for (const token of tokens) {
     for (const char of token.text) {
       if (char === ' ') columns += 1;
-      else if (char === '\t') columns += TAB_WIDTH;
+      else if (char === '\t') columns = (Math.floor(columns / TAB_WIDTH) + 1) * TAB_WIDTH;
       else return columns;
     }
   }
