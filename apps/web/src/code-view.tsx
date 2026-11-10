@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { type CSSProperties, useEffect, useLayoutEffect, useRef } from 'react';
 import { api } from './api.ts';
-import { highlight } from './highlight.ts';
+import { highlight, type Token } from './highlight.ts';
 
 export type Range = { startLine: number; endLine: number };
 
@@ -137,7 +137,7 @@ export function CodeView({ path, side, cited, focus, changed, onStep }: Props) {
                   <span className="line-text">
                     {tokens.map((token, t) => (
                       // biome-ignore lint/suspicious/noArrayIndexKey: tokens are positional too.
-                      <span key={t} style={token.color ? { color: token.color } : undefined}>
+                      <span key={t} style={tokenStyle(token)}>
                         {token.text}
                       </span>
                     ))}
@@ -163,6 +163,12 @@ export function CodeView({ path, side, cited, focus, changed, onStep }: Props) {
       </div>
     </>
   );
+}
+
+/** Both themes' colors ride along as CSS variables; styles.css picks the one for the page's theme. */
+function tokenStyle({ dark, light }: Token): CSSProperties | undefined {
+  if (!dark && !light) return undefined;
+  return { '--token-dark': dark, '--token-light': light } as CSSProperties;
 }
 
 const lineAt = (box: HTMLElement, line: number) =>

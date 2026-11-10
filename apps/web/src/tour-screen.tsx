@@ -13,6 +13,7 @@ import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
 import { Markdown } from './markdown.tsx';
 import type { Ready } from './review-page.tsx';
+import { ThemeToggle } from './theme.tsx';
 
 type Props = { snapshot: ReviewSnapshot; tour: Ready };
 type Diff = NonNullable<ReviewSnapshot['diff']>;
@@ -240,6 +241,7 @@ function TopBar({
       >
         Verdict at the end
       </button>
+      <ThemeToggle />
     </header>
   );
 }

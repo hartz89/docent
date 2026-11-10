@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { api, followTour } from './api.ts';
 import { HealthPage } from './health-page.tsx';
 import { StatusScreen } from './status-screen.tsx';
+import { ThemeToggle } from './theme.tsx';
 import { TourScreen } from './tour-screen.tsx';
 
 export type Snapshot = ReviewSnapshot;
@@ -95,6 +96,7 @@ function TopBarShell({ snapshot }: { snapshot: Snapshot }) {
           </div>
         )}
       </div>
+      <ThemeToggle />
     </header>
   );
 }
