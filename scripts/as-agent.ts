@@ -691,6 +691,9 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 
 if (import.meta.main) {
+  // If whoever reads our output goes away (`| head`), a write fails with EPIPE. Unhandled, that
+  // kills the runner before it revokes the token. Dropping the output is the lesser harm.
+  for (const stream of [process.stdout, process.stderr]) stream.on('error', () => {});
   process.exitCode = await asAgent(process.argv.slice(2), {
     fetch,
     env: process.env,
