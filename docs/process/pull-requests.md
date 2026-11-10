@@ -15,7 +15,7 @@ The tier comes from the paths a PR changes. If paths span several tiers, the hig
 
 **Reviews live on the PR.** Every review is posted to its PR as the reviewer app, before anything merges. That includes security reviews and reviews run inside a building agent. A review that's only reported back doesn't count. Posting is a separate step from the merge, never folded into the same command. That way the review is on record, and the merge can point to it.
 
-**Findings go on their lines.** Post the review with the reviewer form in [`agent-identities.md`](agent-identities.md), with each finding as an inline comment on the lines it concerns. The review body holds only the verdict, plus feedback no line can carry, like "the premise is wrong".
+**Findings go on their lines.** Post the review with the reviewer form in [`agent-identities.md`](agent-identities.md), with each finding as an inline comment on the lines it concerns. The review body holds only the verdict, plus feedback no line can carry, like "the premise is wrong". An inline comment must sit on a line inside the PR's diff, or GitHub rejects the whole review; feedback about lines outside the diff goes in the body.
 
 **Each finding starts with its kind and weight,** in bold, like `**Bug · must-fix:**`.
 - Kinds: `Bug`, `Security`, `Design`, `Test gap`, `Docs`.

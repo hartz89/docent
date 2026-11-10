@@ -491,6 +491,16 @@ describe('as-agent review and reply forms', () => {
     expect(JSON.parse(readFileSync(join(dir, 'stdin'), 'utf8'))).toEqual(review);
   });
 
+  test('reads a relative input path from the working directory', async () => {
+    const repo = join(dir, 'repo');
+    execFileSync(REAL_GIT, ['init', '-q', repo]);
+    writeFileSync(join(repo, 'reply.json'), JSON.stringify({ body: 'Fixed in abc1234.' }));
+    const { deps } = setup({ cwd: repo, extra: `cat > "${dir}/stdin"` });
+    const command = ['gh', 'api', '--method', 'POST', REPLIES, '--input', 'reply.json'];
+    expect(await asAgent(['builder', '--', ...command], deps)).toBe(0);
+    expect(readFileSync(join(dir, 'stdin'), 'utf8')).toBe('{"body":"Fixed in abc1234."}');
+  });
+
   test('passes on the exit code when gh fails without reading the body', async () => {
     const { deps, calls } = setup({ config: reviewerConfig, exit: 1 });
     const big = { ...review, body: 'x'.repeat(900_000) };
