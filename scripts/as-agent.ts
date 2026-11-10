@@ -156,6 +156,8 @@ function allowed(role: Role, command: string[]): Allowed {
     if (interactive && ['create', 'edit', 'comment', 'review'].includes(action ?? '')) {
       refuse(`${interactive} opens a browser or editor`);
     }
+    // PRs are issues to GitHub, so the label rule covers them too.
+    if (action === 'create' || action === 'edit') checkLabels(args, refuse);
     if (action === 'merge' && role === 'builder') checkMerge(args, refuse);
     else if (!action || !PR_SUBCOMMANDS[role].includes(action)) {
       refuse(`"gh pr ${action ?? ''}" isn't allowed for the ${role}`);
@@ -169,9 +171,17 @@ function allowed(role: Role, command: string[]): Allowed {
 function checkLabels(args: string[], refuse: (reason: string) => never): void {
   const LABEL_FLAGS = /^(-l|--label|--add-label|--remove-label)(=(.*))?$/;
   for (let i = 0; i < args.length; i++) {
-    const match = LABEL_FLAGS.exec(args[i] ?? '');
+    const arg = args[i] ?? '';
+    // A short flag with anything glued on (-lbacklog) or bundled with others (-wl) parses in gh
+    // as a flag plus a value we'd otherwise miss, so only a bare -x or -x=value is accepted.
+    if (/^-[^-]/.test(arg) && arg.length > 2 && arg[2] !== '=') {
+      refuse(`write ${arg} as a separate flag and value`);
+    }
+    const match = LABEL_FLAGS.exec(arg);
     if (!match) continue;
     const value = match[2] !== undefined ? (match[3] ?? '') : (args[++i] ?? '');
+    // gh reads label lists as CSV, so quotes would hide a name from a plain split.
+    if (/["'`\\]/.test(value)) refuse('label values may not contain quotes or backslashes');
     const names = value.split(',').map((name) => name.trim().toLowerCase());
     if (names.includes(MAINTAINER_LABEL)) {
       refuse(`only the maintainer adds or removes the "${MAINTAINER_LABEL}" label`);

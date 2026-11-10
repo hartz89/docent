@@ -423,6 +423,15 @@ describe('as-agent allowlist', () => {
     ['builder', 'gh issue comment 4 -e'],
     ['builder', 'gh issue view 4 --json body --jq .body'],
     ['reviewer', 'gh issue create --title x'],
+    // From the security review of #39: forms gh accepts that a plain match missed.
+    ['builder', 'gh issue create --title x -lbacklog'],
+    ['builder', 'gh issue edit 4 --add-label "backlog"'],
+    ['builder', "gh issue edit 4 --remove-label 'backlog'"],
+    ['builder', 'gh issue create --title x --label="backlog"'],
+    ['builder', 'gh issue create --title x -wl'],
+    ['builder', 'gh pr edit 3 --add-label backlog'],
+    ['builder', 'gh pr create --title x --label backlog'],
+    ['builder', 'gh pr create --title x -lbacklog'],
   ];
 
   test.each(refused)('%s refuses: %s', async (role, command) => {
