@@ -1,0 +1,219 @@
+import fc from 'fast-check';
+import { describe, expect, test } from 'vitest';
+import { type Change, changes } from './changes.testing.ts';
+import type { Proof } from './proof.ts';
+import { proveRenames, type RenameOccurrences, renameLookups } from './rename.ts';
+
+const lines = (...text: string[]) => `${text.join('\n')}\n`;
+
+/** Proves renames, answering the repository lookups with `found` (default: nowhere else). */
+function rename(
+  list: readonly Change[],
+  found: { base?: Record<string, string[]>; head?: Record<string, string[]> } = {},
+): Proof[] {
+  const { diff, texts } = changes(list);
+  const asks = renameLookups(diff, texts);
+  const occurrences: RenameOccurrences = {
+    base: new Map(asks.atBase.map((name) => [name, found.base?.[name] ?? []])),
+    head: new Map(asks.atHead.map((name) => [name, found.head?.[name] ?? []])),
+  };
+  return proveRenames(diff, texts, occurrences);
+}
+
+const renamed = (proofs: readonly Proof[]) =>
+  proofs.map((p) => (p.evidence.label === 'rename' ? p.evidence.changes : []));
+
+const users = (name: string, id = 'id') =>
+  lines('// Users.', `export function ${name}(${id}) {`, `  return db.find(${id});`, '}');
+const caller = (name: string, arg = '1', op = '===') =>
+  lines(
+    `import { ${name} } from './users.ts';`,
+    '',
+    `const user = ${name}(${arg});`,
+    `if (user ${op} null) throw new Error();`,
+  );
+
+describe('P9: renames', () => {
+  test('P9: a sweeping rename across files is proven, with its mapping', () => {
+    const proofs = rename([
+      { path: 'src/users.ts', before: users('getUser'), after: users('fetchUser') },
+      { path: 'src/main.ts', before: caller('getUser'), after: caller('fetchUser') },
+    ]);
+    expect(renamed(proofs)).toEqual([
+      [{ kind: 'identifier', from: 'getUser', to: 'fetchUser' }],
+      [{ kind: 'identifier', from: 'getUser', to: 'fetchUser' }],
+    ]);
+  });
+
+  test('P9: the lookups ask for the new names at base and the old ones at head', () => {
+    const { diff, texts } = changes([
+      { path: 'src/users.ts', before: users('getUser'), after: users('fetchUser') },
+    ]);
+    expect(renameLookups(diff, texts)).toEqual({ atBase: ['fetchUser'], atHead: ['getUser'] });
+  });
+
+  test('P9: a rename hunk that also changes a literal or an operator is not proven', () => {
+    const literal = rename([
+      { path: 'src/users.ts', before: users('getUser'), after: users('fetchUser') },
+      { path: 'src/main.ts', before: caller('getUser'), after: caller('fetchUser', '2') },
+    ]);
+    const operator = rename([
+      { path: 'src/users.ts', before: users('getUser'), after: users('fetchUser') },
+      { path: 'src/main.ts', before: caller('getUser'), after: caller('fetchUser', '1', '!==') },
+    ]);
+    // The definition's own hunk is still a clean rename; the caller's hunk is not.
+    for (const proofs of [literal, operator]) {
+      expect(proofs.map((p) => p.target.kind === 'hunk' && p.target.hunk.split('#')[0])).toEqual([
+        'src/users.ts',
+      ]);
+    }
+  });
+
+  test('P9: string contents never map, even when they look like names', () => {
+    expect(
+      rename([
+        {
+          path: 'a.ts',
+          before: lines('const role = getRole();', "if (role === 'admin') grant();"),
+          after: lines('const role = getRole();', "if (role === 'guest') grant();"),
+        },
+      ]),
+    ).toEqual([]);
+  });
+
+  test('P9: a name defined outside the repo, or a property, is never renamed', () => {
+    const builtin = rename([
+      { path: 'a.ts', before: lines('x = Math.min(a, b);'), after: lines('x = Math.max(a, b);') },
+    ]);
+    const imported = rename([
+      {
+        path: 'a.ts',
+        before: lines("import { min } from 'lodash';", 'x = min(a, b);'),
+        after: lines("import { max } from 'lodash';", 'x = max(a, b);'),
+      },
+    ]);
+    // Defined here, but also a property of outside data.
+    const property = rename([
+      {
+        path: 'a.ts',
+        before: lines('const isBanned = (u) => u.isBanned;', 'if (!isBanned(user)) allow();'),
+        after: lines('const isBlocked = (u) => u.isBlocked;', 'if (!isBlocked(user)) allow();'),
+      },
+    ]);
+    const shorthand = rename([
+      {
+        path: 'a.ts',
+        before: lines('const banned = load();', 'send({ banned });'),
+        after: lines('const blocked = load();', 'send({ blocked });'),
+      },
+    ]);
+    expect([...builtin, ...imported, ...property, ...shorthand]).toEqual([]);
+  });
+
+  test('P9: keywords and built-in values never map', () => {
+    expect(
+      rename([{ path: 'a.ts', before: lines('let ok = true;'), after: lines('let ok = false;') }]),
+    ).toEqual([]);
+  });
+
+  test('P9: a new name that already exists, or an old name still in use, is not a rename', () => {
+    const both = [
+      { path: 'src/users.ts', before: users('getUser'), after: users('fetchUser') },
+      { path: 'src/main.ts', before: caller('getUser'), after: caller('fetchUser') },
+    ];
+    expect(rename(both, { base: { fetchUser: ['src/legacy.ts'] } })).toEqual([]);
+    expect(rename(both, { head: { getUser: ['src/other.ts'] } })).toEqual([]);
+  });
+
+  test('P9: a swap is never a rename, whatever the lookups say', () => {
+    const before = lines('function allow() {}', 'function deny() {}', 'check(allow);');
+    const after = lines('function deny() {}', 'function allow() {}', 'check(deny);');
+    expect(rename([{ path: 'a.ts', before, after }])).toEqual([]);
+  });
+
+  test('P9: merging two names into one is not a rename', () => {
+    const before = lines('function a() {}', 'function b() {}', 'a(); b();');
+    const after = lines('function c() {}', 'function c() {}', 'c(); c();');
+    expect(rename([{ path: 'a.ts', before, after }])).toEqual([]);
+  });
+
+  test('P9: changing the case of the first letter is not a rename', () => {
+    expect(
+      rename([
+        {
+          path: 'a.go',
+          before: lines('package a', 'func secret() string { return s }', 'var x = secret()'),
+          after: lines('package a', 'func Secret() string { return s }', 'var x = Secret()'),
+        },
+      ]),
+    ).toEqual([]);
+  });
+
+  test('P9: import paths follow a file move in the same diff, and nothing else', () => {
+    const body = lines('export const x = 1;');
+    const moved: Change = { path: 'src/lib/new.ts', from: 'src/old.ts', before: body, after: body };
+    const importer = (path: string) => lines(`import { x } from '${path}';`, 'use(x);');
+    const followed = rename([
+      moved,
+      { path: 'src/main.ts', before: importer('./old.ts'), after: importer('./lib/new.ts') },
+    ]);
+    expect(renamed(followed)).toEqual([
+      [{ kind: 'import_path', from: './old.ts', to: './lib/new.ts' }],
+    ]);
+    const elsewhere = rename([
+      moved,
+      { path: 'src/main.ts', before: importer('./old.ts'), after: importer('./evil.ts') },
+    ]);
+    expect(elsewhere).toEqual([]);
+  });
+
+  test('P9: multi-line import lists may carry a rename', () => {
+    const block = (name: string) =>
+      lines('import {', `  ${name},`, '  other,', "} from './users.ts';", `${name}(1);`);
+    const proofs = rename([
+      { path: 'src/users.ts', before: users('getUser'), after: users('fetchUser') },
+      { path: 'src/main.ts', before: block('getUser'), after: block('fetchUser') },
+    ]);
+    expect(proofs).toHaveLength(2);
+  });
+
+  test('P9: a whitespace-significant or unlisted language, or a multi-line string, is never a rename', () => {
+    const yaml = rename([
+      { path: 'a.yml', before: lines('role: admin'), after: lines('role: guest') },
+    ]);
+    const template = rename([
+      {
+        path: 'a.ts',
+        before: lines('function f() {}', 'const q = `', 'admin', '`;'),
+        after: lines('function g() {}', 'const q = `', 'admin', '`;'),
+      },
+    ]);
+    expect([...yaml, ...template]).toEqual([]);
+  });
+
+  test('P9: Python definitions rename too', () => {
+    const py = (name: string) => lines(`def ${name}(x):`, '    return x', '', `${name}(1)`);
+    expect(rename([{ path: 'a.py', before: py('old_name'), after: py('new_name') }])).toHaveLength(
+      1,
+    );
+  });
+
+  test('P9: any single-token change to a proven rename un-proves that hunk', () => {
+    const base = lines('function getUser(id) {', '  return db.find(id, 1);', '}', 'getUser(2);');
+    const after = base.replaceAll('getUser', 'fetchUser');
+    expect(rename([{ path: 'a.ts', before: base, after }])).toHaveLength(1);
+    const positions = [...after.matchAll(/[a-z0-9(),;.]/gi)].map((m) => m.index);
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...positions),
+        fc.constantFrom('x', '7', '+', '!'),
+        (at, char) => {
+          if (after[at] === char) return;
+          const tampered = after.slice(0, at) + char + after.slice(at + 1);
+          expect(rename([{ path: 'a.ts', before: base, after: tampered }])).toEqual([]);
+        },
+      ),
+      { seed: 6, numRuns: 200 },
+    );
+  });
+});
