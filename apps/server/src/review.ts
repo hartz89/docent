@@ -166,7 +166,8 @@ Question: ${question}`,
   /**
    * Posts the reviewer's verdict as one GitHub review on this PR, at the head the tour covered.
    * Refuses if the PR has moved on since, so an approval never covers code the tour didn't see.
-   * Posts at most once per review.
+   * Posts at most once per launch. The head can still move between the check and the post;
+   * `commit_id` keeps the review on the commit the tour covered either way.
    */
   async submit(verdict: Verdict): Promise<PostedReview> {
     const workspace = this.#workspace;

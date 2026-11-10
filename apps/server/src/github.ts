@@ -56,6 +56,7 @@ export function parsePrUrl(url: string): { owner: string; name: string; number: 
     url,
   );
   if (!match?.[1] || !match[2] || !match[3]) return null;
+  if ([match[1], match[2]].some((part) => /^\.+$/.test(part))) return null;
   return { owner: match[1], name: match[2], number: Number(match[3]) };
 }
 
@@ -131,20 +132,26 @@ export function githubSource(url: string, cacheDir: string): PrSource {
       }
     };
     const pull = `repos/${repo}/pulls/${pr.number}`;
+    // The PR is on github.com; GH_HOST or a default Enterprise host must not redirect the write.
+    const onGitHub = ['--hostname', 'github.com'];
     return {
       pr,
       diffText,
       dir,
       readFile: (side, path) => show(side === 'new' ? pr.head : pr.base, path),
       currentHead: async () =>
-        commitSha((await ghForReview(['api', pull, '--jq', '.head.sha'])).trim()),
+        commitSha((await ghForReview(['api', ...onGitHub, pull, '--jq', '.head.sha'])).trim()),
       postReview: async ({ commitId, event, body }) => {
         // The review goes in as JSON on stdin, so the reviewer's text is never an argument.
         const out = await ghForReview(
-          ['api', '--method', 'POST', `${pull}/reviews`, '--input', '-'],
+          ['api', ...onGitHub, '--method', 'POST', `${pull}/reviews`, '--input', '-'],
           JSON.stringify({ commit_id: commitId, event, body }),
         );
-        const { html_url: url } = JSON.parse(out) as { html_url?: unknown };
+        // gh exited 0, so the review is posted. Never fail from here, or a retry would post twice.
+        let url: unknown;
+        try {
+          url = (JSON.parse(out) as { html_url?: unknown }).html_url;
+        } catch {}
         // The link is shown to the reviewer, so it must be GitHub's.
         return { url: typeof url === 'string' && url.startsWith(`${pr.url}#`) ? url : pr.url };
       },
@@ -233,7 +240,8 @@ async function gh(args: string[]): Promise<string> {
 /** `gh` for posting a review: feeds `input` on stdin, and turns failures into GitHubRefusals. */
 async function ghForReview(args: string[], input?: string): Promise<string> {
   try {
-    const pending = run('gh', args, { maxBuffer: 1 << 20 });
+    // A hung gh would hold the post lock forever; give up after a minute.
+    const pending = run('gh', args, { maxBuffer: 1 << 20, timeout: 60_000 });
     pending.child.stdin?.end(input ?? '');
     const { stdout } = await pending;
     return stdout;
