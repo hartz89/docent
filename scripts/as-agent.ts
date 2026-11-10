@@ -178,11 +178,21 @@ function checkLabels(args: string[], refuse: (reason: string) => never): void {
       refuse(`write ${arg} as a separate flag and value`);
     }
     const match = LABEL_FLAGS.exec(arg);
-    if (!match) continue;
-    const value = match[2] !== undefined ? (match[3] ?? '') : (args[++i] ?? '');
-    // gh reads label lists as CSV, so quotes would hide a name from a plain split.
-    if (/["'`\\]/.test(value)) refuse('label values may not contain quotes or backslashes');
-    const names = value.split(',').map((name) => name.trim().toLowerCase());
+    if (match) {
+      const value = match[2] !== undefined ? (match[3] ?? '') : (args[i + 1] ?? '');
+      // gh reads label lists as CSV, so quotes would hide a name from a plain split.
+      if (/["'`\\]/.test(value)) refuse('label values may not contain quotes or backslashes');
+      if (match[2] === undefined && value.startsWith('-')) {
+        refuse(`${arg} needs a value that doesn't start with -`);
+      }
+    }
+    // Position-independent, so it can't be thrown off by which flag gh gives a value to: no
+    // argument anywhere may name the label as a list item, with or without a --flag= prefix.
+    const value = arg.startsWith('-') && arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg;
+    const names = value
+      .replace(/["'`\\]/g, '')
+      .split(',')
+      .map((name) => name.trim().toLowerCase());
     if (names.includes(MAINTAINER_LABEL)) {
       refuse(`only the maintainer adds or removes the "${MAINTAINER_LABEL}" label`);
     }

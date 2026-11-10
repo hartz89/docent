@@ -432,6 +432,9 @@ describe('as-agent allowlist', () => {
     ['builder', 'gh pr edit 3 --add-label backlog'],
     ['builder', 'gh pr create --title x --label backlog'],
     ['builder', 'gh pr create --title x -lbacklog'],
+    // Round two: gh gives -l to --title, then applies --label backlog.
+    ['builder', 'gh issue create --title -l --label backlog'],
+    ['builder', 'gh issue edit 4 --body x --add-label bug --title backlog'],
   ];
 
   test.each(refused)('%s refuses: %s', async (role, command) => {
@@ -463,6 +466,8 @@ describe('as-agent allowlist', () => {
   // working on an app that hasn't been granted the Issues permission.
   const scoped: [string, Record<string, string>][] = [
     ['gh issue create --title x --label proposed', { issues: 'write' }],
+    // Mentioning the backlog in a title is fine; only the label itself is the maintainer's.
+    ['gh issue create --title Backlog:tidy-item-6 --label proposed', { issues: 'write' }],
     ['gh issue edit 4 --add-label proposed', { issues: 'write' }],
     ['gh issue list --label backlog', { issues: 'read' }],
     ['gh issue view 4', { issues: 'read' }],
