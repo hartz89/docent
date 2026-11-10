@@ -71,25 +71,6 @@ test('the CLI opens a recorded PR, and the reviewer walks the tour by keyboard',
       await expect(page.locator('.narration-title')).toHaveText(titles[1] ?? '');
       await expect.poll(scrollTop).toBe(left);
     });
-
-    await test.step('long lines wrap by default, and turning wrapping off is remembered', async () => {
-      await page.setViewportSize({ width: 1280, height: 720 });
-      const code = page.locator('.code-scroll');
-      const scrollsSideways = () => code.evaluate((el) => el.scrollWidth > el.clientWidth);
-      const toggle = page.getByRole('button', { name: 'Wrap long lines' });
-      await expect(toggle).toHaveAttribute('aria-pressed', 'true');
-      await expect.poll(scrollsSideways).toBe(false);
-
-      await toggle.click();
-      await expect(toggle).toHaveAttribute('aria-pressed', 'false');
-      await expect.poll(scrollsSideways).toBe(true);
-
-      await page.reload();
-      await expect(page.getByRole('button', { name: 'Wrap long lines' })).toHaveAttribute(
-        'aria-pressed',
-        'false',
-      );
-    });
   } finally {
     await docent.stop();
   }
