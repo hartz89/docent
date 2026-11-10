@@ -13,7 +13,15 @@ The tier comes from the paths a PR changes. If paths span several tiers, the hig
 
 **Changing the rules is tier 2b.** Any change to tier definitions, the autonomy dial or merge rules is 2b, wherever it lives, so agents can't loosen their own gates.
 
-**Reviews live on the PR.** Post the fresh-context agent review as its own PR comment before anything merges. Posting it is a separate step from the merge, never folded into the same command. That way the review is on record, and the merge can point to it.
+**Reviews live on the PR.** Every review is posted to its PR as the reviewer app, before anything merges. That includes security reviews and reviews run inside a building agent. A review that's only reported back doesn't count. Posting is a separate step from the merge, never folded into the same command. That way the review is on record, and the merge can point to it.
+
+**Findings go on their lines.** Post the review with the reviewer form in [`agent-identities.md`](agent-identities.md), with each finding as an inline comment on the lines it concerns. The review body holds only the verdict, plus feedback no line can carry, like "the premise is wrong".
+
+**Each finding starts with its kind and weight,** in bold, like `**Bug · must-fix:**`.
+- Kinds: `Bug`, `Security`, `Design`, `Test gap`, `Docs`.
+- Weights: `must-fix` (blocks the merge), `should-fix` (fix it or say why not), `nit` (take it or leave it).
+
+**The builder answers every finding in its thread,** with the builder reply form: `Fixed in <sha>`, `Won't fix: <why>`, or `Deferred to #<issue>`. These outcomes are the record that the trust metric and learning across reviews read.
 
 **Trust metric:** escaped defects per tier, meaning defects found later (by sampled review or a later fix) that trace back to a merged PR. Track it once there's volume.
 

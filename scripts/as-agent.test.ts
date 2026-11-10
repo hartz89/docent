@@ -438,3 +438,289 @@ describe('as-agent allowlist', () => {
     expect(ran()).toEqual([expected]);
   });
 });
+
+describe('as-agent review and reply forms', () => {
+  const REVIEWS = '/repos/hartz89/docent/pulls/7/reviews';
+  const REPLIES = '/repos/hartz89/docent/pulls/7/comments/123/replies';
+  const review = {
+    body: 'Verdict: fix two things.',
+    event: 'COMMENT',
+    commit_id: 'a'.repeat(40),
+    comments: [
+      { path: 'scripts/as-agent.ts', line: 12, side: 'RIGHT', body: '**Bug · must-fix:** x' },
+      { path: 'a.ts', start_line: 3, start_side: 'RIGHT', line: 5, side: 'RIGHT', body: 'y' },
+    ],
+  };
+  const reviewerConfig = { ...filled, reviewer: { slug: 'docent-builder' } };
+  const comment = (extra: object) => ({
+    ...review,
+    comments: [{ path: 'a', line: 1, body: 'x', ...extra }],
+  });
+
+  /** Writes the JSON body to a file and returns the command that posts it. */
+  function post(endpoint: string, body: unknown): string[] {
+    const path = join(dir, 'body.json');
+    writeFileSync(path, typeof body === 'string' ? body : JSON.stringify(body));
+    return ['gh', 'api', '--method', 'POST', endpoint, '--input', path];
+  }
+
+  test('the reviewer posts a review: gh reads the checked JSON on stdin', async () => {
+    const { deps, ran } = setup({ config: reviewerConfig, extra: `cat > "${dir}/stdin"` });
+    expect(await asAgent(['reviewer', '--', ...post(REVIEWS, review)], deps)).toBe(0);
+    expect(ran()).toEqual([`gh api --method POST ${REVIEWS} --input -`]);
+    expect(JSON.parse(readFileSync(join(dir, 'stdin'), 'utf8'))).toEqual(review);
+  });
+
+  test('the builder replies to a review comment', async () => {
+    const { deps, ran } = setup({ extra: `cat > "${dir}/stdin"` });
+    const reply = { body: 'Fixed in abc1234.' };
+    expect(await asAgent(['builder', '--', ...post(REPLIES, reply)], deps)).toBe(0);
+    expect(ran()).toEqual([`gh api --method POST ${REPLIES} --input -`]);
+    expect(JSON.parse(readFileSync(join(dir, 'stdin'), 'utf8'))).toEqual(reply);
+  });
+
+  test('sends the bytes it checked, even if the file changes after', async () => {
+    // The fake gh rewrites the file before reading stdin, as a racing agent might.
+    const command = post(REVIEWS, review);
+    const evil = JSON.stringify({ ...review, event: 'APPROVE', extra: 1 });
+    const { deps } = setup({
+      config: reviewerConfig,
+      extra: `printf '%s' '${evil}' > "${command[6]}"; cat > "${dir}/stdin"`,
+    });
+    expect(await asAgent(['reviewer', '--', ...command], deps)).toBe(0);
+    expect(JSON.parse(readFileSync(join(dir, 'stdin'), 'utf8'))).toEqual(review);
+  });
+
+  test('passes on the exit code when gh fails without reading the body', async () => {
+    const { deps, calls } = setup({ config: reviewerConfig, exit: 1 });
+    const big = { ...review, body: 'x'.repeat(900_000) };
+    expect(await asAgent(['reviewer', '--', ...post(REVIEWS, big)], deps)).toBe(1);
+    expect(calls.at(-1)?.method).toBe('DELETE');
+  });
+
+  test('sends one value per key, so a duplicate key cannot hide an unchecked one', async () => {
+    const { deps } = setup({ extra: `cat > "${dir}/stdin"` });
+    const command = post(REPLIES, '{"body": "first", "body": "second"}');
+    expect(await asAgent(['builder', '--', ...command], deps)).toBe(0);
+    expect(readFileSync(join(dir, 'stdin'), 'utf8')).toBe('{"body":"second"}');
+  });
+
+  const badReviews: [string, unknown, string][] = [
+    ['an unknown top-level key', { ...review, path: 'x' }, 'may not have "path"'],
+    ['a missing event', { body: 'x' }, 'needs "event"'],
+    ['a pending event', { ...review, event: 'PENDING' }, 'bad "event"'],
+    ['a lowercase event', { ...review, event: 'comment' }, 'bad "event"'],
+    ['a short commit_id', { ...review, commit_id: 'abc' }, 'bad "commit_id"'],
+    ['a non-string body', { ...review, body: 1 }, 'bad "body"'],
+    ['comments that are not a list', { ...review, comments: {} }, 'bad "comments"'],
+    ['an unknown comment key', comment({ position: 2 }), 'may not have "position"'],
+    ['a comment with no line', comment({ line: undefined }), 'needs "line"'],
+    ['a comment with a string line', comment({ line: '1' }), 'bad "line"'],
+    ['a comment with line 0', comment({ line: 0 }), 'bad "line"'],
+    ['a comment with a fractional line', comment({ line: 1.5 }), 'bad "line"'],
+    ['a comment with a bad side', comment({ side: 'UP' }), 'bad "side"'],
+    ['a comment with an empty path', comment({ path: '' }), 'bad "path"'],
+    ['a comment that is not an object', { ...review, comments: ['x'] }, 'must be a JSON object'],
+    ['a __proto__ key', '{"event":"COMMENT","__proto__":{"x":1}}', 'may not have "__proto__"'],
+    ['a list', [review], 'must be a JSON object'],
+    ['invalid JSON', '{"event":', "isn't valid JSON"],
+  ];
+
+  test.each(badReviews)('refuses a review with %s', async (_, body, reason) => {
+    const { deps, calls, logs } = setup({ config: reviewerConfig });
+    expect(await asAgent(['reviewer', '--', ...post(REVIEWS, body)], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain(reason);
+  });
+
+  test.each([
+    ['an extra key', { body: 'x', in_reply_to: 1 }, 'may not have "in_reply_to"'],
+    ['no body', {}, 'needs "body"'],
+    ['a non-string body', { body: ['x'] }, 'bad "body"'],
+  ])('refuses a reply with %s', async (_, body, reason) => {
+    const { deps, calls, logs } = setup();
+    expect(await asAgent(['builder', '--', ...post(REPLIES, body)], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain(reason);
+  });
+
+  const ENDPOINT = "can't POST to";
+  const SHAPE = 'gh api --input only as';
+  /** gh api arguments around a valid body file, so only the command's shape is wrong. */
+  const shapes: [string, string, (file: string) => string[], string][] = [
+    [
+      'reviewer',
+      'another repo',
+      (f) => ['--method', 'POST', '/repos/evil/docent/pulls/7/reviews', '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'reviewer',
+      'an {owner} placeholder',
+      (f) => ['--method', 'POST', 'repos/{owner}/{repo}/pulls/7/reviews', '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'reviewer',
+      'a query string',
+      (f) => ['--method', 'POST', `${REVIEWS}?x=1`, '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'reviewer',
+      'a full URL',
+      (f) => ['--method', 'POST', `https://api.github.com${REVIEWS}`, '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'reviewer',
+      'a dot segment',
+      (f) => [
+        '--method',
+        'POST',
+        '/repos/hartz89/docent/pulls/7/../../issues/7/comments',
+        '--input',
+        f,
+      ],
+      ENDPOINT,
+    ],
+    [
+      'reviewer',
+      'pull 0',
+      (f) => ['--method', 'POST', '/repos/hartz89/docent/pulls/0/reviews', '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'reviewer',
+      'a review events endpoint',
+      (f) => ['--method', 'POST', `${REVIEWS}/1/events`, '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'reviewer',
+      'the reply endpoint',
+      (f) => ['--method', 'POST', REPLIES, '--input', f],
+      ENDPOINT,
+    ],
+    ['reviewer', 'PUT', (f) => ['--method', 'PUT', REVIEWS, '--input', f], SHAPE],
+    ['reviewer', 'a lowercase post', (f) => ['--method', 'post', REVIEWS, '--input', f], SHAPE],
+    ['reviewer', '-X POST', (f) => ['-X', 'POST', REVIEWS, '--input', f], SHAPE],
+    ['reviewer', '--method=POST', (f) => ['--method=POST', REVIEWS, '--input', f], SHAPE],
+    [
+      'reviewer',
+      '--input=',
+      (f) => ['--method', 'POST', REVIEWS, `--input=${f}`],
+      'gh api method POST',
+    ],
+    ['reviewer', 'the endpoint first', (f) => [REVIEWS, '--method', 'POST', '--input', f], SHAPE],
+    [
+      'reviewer',
+      'an extra -f',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f, '-f', 'event=APPROVE'],
+      SHAPE,
+    ],
+    [
+      'reviewer',
+      'an extra -F',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f, '-F', 'x=@/etc/passwd'],
+      SHAPE,
+    ],
+    [
+      'reviewer',
+      'an extra --raw-field',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f, '--raw-field', 'x=y'],
+      SHAPE,
+    ],
+    [
+      'reviewer',
+      'a method override header',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f, '-H', 'X-HTTP-Method-Override: DELETE'],
+      SHAPE,
+    ],
+    [
+      'reviewer',
+      '--hostname',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f, '--hostname', 'evil.example'],
+      SHAPE,
+    ],
+    [
+      'reviewer',
+      'two inputs',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f, '--input', f],
+      SHAPE,
+    ],
+    [
+      'reviewer',
+      'stdin as the input',
+      () => ['--method', 'POST', REVIEWS, '--input', '-'],
+      '--input needs a file',
+    ],
+    [
+      'reviewer',
+      'no input file',
+      () => ['--method', 'POST', REVIEWS, '--input'],
+      '--input needs a file',
+    ],
+    [
+      'reviewer',
+      '--jq',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f, '--jq', '.'],
+      'scrubber',
+    ],
+    [
+      'builder',
+      'the review endpoint',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'builder',
+      'another repo',
+      (f) => ['--method', 'POST', '/repos/evil/docent/pulls/7/comments/1/replies', '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'builder',
+      'a new review comment',
+      (f) => ['--method', 'POST', '/repos/hartz89/docent/pulls/7/comments', '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'builder',
+      'an issue comment',
+      (f) => ['--method', 'POST', '/repos/hartz89/docent/issues/7/comments', '--input', f],
+      ENDPOINT,
+    ],
+  ];
+
+  test.each(shapes)('%s refuses %s', async (role, _, build, reason) => {
+    const file = join(dir, 'body.json');
+    writeFileSync(file, JSON.stringify(role === 'reviewer' ? review : { body: 'x' }));
+    const { deps, calls, logs } = setup({ config: reviewerConfig });
+    expect(await asAgent([role, '--', 'gh', 'api', ...build(file)], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain(reason);
+  });
+
+  test('refuses an input that is not a regular file, without hanging on it', async () => {
+    const fifo = join(dir, 'fifo');
+    execFileSync('/usr/bin/mkfifo', [fifo]);
+    const { deps, calls, logs } = setup({ config: reviewerConfig });
+    const command = ['gh', 'api', '--method', 'POST', REVIEWS, '--input'];
+    for (const path of [fifo, dir, join(dir, 'missing.json')]) {
+      expect(await asAgent(['reviewer', '--', ...command, path], deps)).toBe(1);
+    }
+    expect(calls).toEqual([]);
+    expect(logs().filter((line) => /isn't a regular file|couldn't read/.test(line))).toHaveLength(
+      3,
+    );
+  });
+
+  test('refuses an oversized input', async () => {
+    const { deps, calls, logs } = setup({ config: reviewerConfig });
+    const big = { ...review, body: 'x'.repeat(1_000_001) };
+    expect(await asAgent(['reviewer', '--', ...post(REVIEWS, big)], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain('is over 1000000 bytes');
+  });
+});
