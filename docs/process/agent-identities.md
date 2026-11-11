@@ -14,14 +14,14 @@
 
 Our own agents are trusted, so there are no code owners: no path waits for the maintainer. The app permissions are the ceiling, and only the maintainer can change them.
 
-**Containment is an open decision for the maintainer.** It needs OS-level separation: a separate macOS user or sandbox that holds the keys and runs the runner. It also needs the maintainer's own admin `gh` login out of agents' reach. The ruleset lets admins bypass it, so today that login is a master key for any agent that can run `gh`.
+**Containment is an open decision for the maintainer.** It needs OS-level separation: a separate macOS user or sandbox that holds the keys and runs the runner. It also needs the maintainer's own admin `gh` login out of agents' reach. Nobody can bypass the ruleset, but an admin can edit or delete it, so today that login is a master key for any agent that can run `gh`.
 
 | Role       | App does                                          | Permissions on hartz89/docent                                                         |
 | ---------- | ------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `builder`  | Pushes branches, opens and merges PRs  | Contents: write. Pull requests: write. Checks: read. Metadata: read. |
 | `reviewer` | Posts reviews (the future AI reviewer) | Pull requests: write. Contents: read. Metadata: read.                |
 
-The builder has no Workflows permission on purpose, so GitHub rejects a builder push that touches `.github/workflows/`. A workflow change goes to the maintainer to push.
+The builder has no Workflows permission on purpose, so GitHub rejects a builder push that touches `.github/workflows/`. That's the one change the maintainer has to push themselves, and it comes from the app's permissions, not from a review rule.
 
 ## How tiers become mechanical
 
@@ -29,7 +29,7 @@ One file turns the merge rule in [`pull-requests.md`](pull-requests.md) into a G
 
 Tiers set how deep that review goes; they don't add approvers. The JSON is the repo's record of the live ruleset. Editing it changes nothing until the maintainer applies it (see the end of this page).
 
-**Agents queue, GitHub merges.** After the review is posted, an agent queues every PR with `gh pr merge <number> --squash --auto`. GitHub lands it the moment those rules are met. This needs the repo's "Allow auto-merge" setting on (`gh repo edit hartz89/docent --enable-auto-merge`). The repository admin role can bypass the ruleset, so the maintainer is never locked out.
+**Agents queue, GitHub merges.** After the review is posted, an agent queues every PR with `gh pr merge <number> --squash --auto`. GitHub lands it the moment those rules are met. This needs the repo's "Allow auto-merge" setting on (`gh repo edit hartz89/docent --enable-auto-merge`). The ruleset has no bypass, for anyone. The maintainer is never locked out, because an admin can always edit the ruleset.
 
 ## Using it
 

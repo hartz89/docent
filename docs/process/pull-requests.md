@@ -2,14 +2,14 @@
 
 PRs are sorted into risk tiers, and humans review a sample of them. Trust is earned through metrics: as defects stop escaping in a tier, review in that tier becomes rarer. This is a trial, based on [Ship / Show / Ask](https://martinfowler.com/articles/ship-show-ask.html); see [`../north-stars.md`](../north-stars.md).
 
-Tiers set how deep the review goes. They don't decide who approves: no path waits for the maintainer.
+Tiers set how deep the review goes. They don't decide who approves: no path waits for the maintainer's approval. The one thing they have to do by hand is push a change to `.github/workflows/`, because the builder app has no Workflows permission.
 
 | Tier | What it covers | Review |
 | ---- | -------------- | ------ |
 | 0 | Docs, comments, tests only, formatting | Mechanical checks + an approving agent review |
 | 1 | Feature work inside one package, with tests | Checks + a fresh-context agent review; the maintainer samples some |
-| 2a | Shared contracts (core model, adapter interface, snapshot format, tour schema) that don't touch a security gate; dependencies without install or build scripts, outside `apps/server`; version bumps and lockfile-only changes; the agent harness (`AGENTS.md`, `CLAUDE.md`, `.claude/`, `docs/process/`, skills, hooks) | Checks + a fresh-context agent review with no blockers open. Harness changes also run the harness evals. The merge is logged in `backlog/decisions.md` for the maintainer's veto. |
-| 2b | Security-sensitive: the agent runner (`scripts/as-agent.ts`) and app keys; CI, the ruleset and anything else in `.github/`; the code that runs `gh` as the maintainer, including posting reviews, and hardens the PR's checkout (`apps/server/src/github.ts`); the read-only session options (`apps/server/src/agent.ts`); the server's request gates (`apps/server/src/app.ts`, `server.ts`) and the check that ties a PR's session link to an author session (`author-session.ts`); scrubbing and credentials; dependencies with install scripts or used by `apps/server` | Checks + a security-focused fresh-context review, posted on the PR, before the approving review |
+| 2a | Shared contracts (core model, adapter interface, snapshot format, tour schema) that don't touch a security gate; dependencies without install or build scripts, outside `apps/server`; version bumps and lockfile-only changes; the agent harness (`AGENTS.md`, `CLAUDE.md`, `.claude/`, `docs/process/`, skills, hooks), except what 2b names | Checks + a fresh-context agent review with no blockers open. Harness changes also run the harness evals. The merge is logged in `backlog/decisions.md` for the maintainer's veto. |
+| 2b | Security-sensitive: the agent runner (`scripts/as-agent.ts`) and app keys; CI, the ruleset and anything else in `.github/`; permission rules and hooks in `.claude/settings*.json`; the tier definitions, autonomy dial and merge rules, wherever they live; the code that runs `gh` as the maintainer, including posting reviews, and hardens the PR's checkout (`apps/server/src/github.ts`); the read-only session options and the tests that pin and prove them (`apps/server/src/agent.ts`, `agent.test.ts`, `agent.live.test.ts`); the prompt framing that treats PR content as data, and the fork and resume wiring (`review.ts`, `tour.ts`); the server's request gates (`app.ts`, `server.ts`) and the check that ties a PR's session link to an author session (`author-session.ts`); scripts that run a session or git as the maintainer (`scripts/check-context-loading.ts`, `scripts/sync-main-checkout.sh`); scrubbing and credentials; dependencies with install scripts or used by `apps/server` | Checks + a security-focused fresh-context review, posted on the PR, before the approving review |
 
 The tier comes from the paths a PR changes. If paths span several tiers, the highest one wins. A script will assign tiers mechanically; until then, state the tier and why.
 
@@ -17,7 +17,7 @@ The tier comes from the paths a PR changes. If paths span several tiers, the hig
 
 **Our own agents are trusted; the gates guard against outside input.** That means a PR's own code, other websites, and anything else that doesn't come from us. The ceiling on what an agent can do is each GitHub App's permissions. The maintainer sets those on GitHub, outside this repo. For example, the builder has no Workflows permission, so GitHub refuses its pushes to `.github/workflows/`.
 
-**The maintainer decides; they don't approve.** Their part is answering decision briefs (see [`decisions.md`](decisions.md)), sampling merged work, and vetoing a logged merge. A change to the tiers, the ruleset or the autonomy dial is still tier 2b, and a big one goes to them as a decision brief.
+**The maintainer decides; they don't approve.** Their part is answering decision briefs (see [`decisions.md`](decisions.md)), sampling merged work, and vetoing a logged merge. A big change to the tiers, the ruleset or the autonomy dial goes to them as a decision brief.
 
 **Reviews live on the PR.** Post the fresh-context agent review on the PR, as the `reviewer` app, before anything merges. It approves (`gh pr review --approve`) only when no blockers are open; otherwise it comments or requests changes. Posting it is a separate step from the merge, never folded into the same command. That way the review is on record, and the merge can point to it.
 
