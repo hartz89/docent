@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { type CommitSha, commitSha } from '@docent/core';
+import { gitHeadFiles, type HeadFiles } from './head-files.ts';
 
 const run = promisify(execFile);
 
@@ -47,6 +48,8 @@ export type Workspace = {
   currentHead: () => Promise<CommitSha>;
   /** Posts one review on this PR as the reviewer, and returns its link on GitHub. */
   postReview: (review: ReviewPost) => Promise<{ url: string }>;
+  /** The files at head, for the symbol index: read from git's objects, never the working tree. */
+  headFiles: () => Promise<HeadFiles>;
 };
 
 /** GitHub turned the review down, or couldn't be reached. The message is fit to show. */
@@ -166,6 +169,7 @@ export function githubSource(url: string, cacheDir: string): PrSource {
         // The link is shown to the reviewer, so it must be GitHub's.
         return { url: typeof url === 'string' && url.startsWith(`${pr.url}#`) ? url : pr.url };
       },
+      headFiles: () => gitHeadFiles(dir, pr.head),
     };
   };
 }
@@ -204,38 +208,45 @@ async function ensureCheckout(dir: string, repo: string, pr: PrInfo): Promise<vo
  *   checkout.
  */
 export function git(dir: string, args: readonly string[], options: { maxBuffer?: number } = {}) {
-  return run(
-    'git',
-    [
-      '-C',
-      dir,
-      '-c',
-      'core.symlinks=false',
-      '-c',
-      'core.hooksPath=/dev/null',
-      '-c',
-      'submodule.recurse=false',
-      '-c',
-      'protocol.file.allow=never',
-      '-c',
-      'advice.detachedHead=false',
-      '-c',
-      'credential.helper=',
-      '-c',
-      'credential.helper=!gh auth git-credential',
-      ...args,
-    ],
-    {
-      maxBuffer: options.maxBuffer ?? 1 << 26,
-      env: {
-        ...process.env,
-        GIT_CONFIG_GLOBAL: '/dev/null',
-        GIT_CONFIG_NOSYSTEM: '1',
-        GIT_LFS_SKIP_SMUDGE: '1',
-        GIT_TERMINAL_PROMPT: '0',
-      },
-    },
-  );
+  return run('git', hardenedGitArgs(dir, args), {
+    maxBuffer: options.maxBuffer ?? 1 << 26,
+    env: hardenedGitEnv(),
+  });
+}
+
+/** `git()`'s arguments, for callers that need to stream its output. */
+export function hardenedGitArgs(dir: string, args: readonly string[]): string[] {
+  return [
+    '-C',
+    dir,
+    '-c',
+    'core.symlinks=false',
+    '-c',
+    'core.hooksPath=/dev/null',
+    '-c',
+    'submodule.recurse=false',
+    '-c',
+    'protocol.file.allow=never',
+    '-c',
+    'advice.detachedHead=false',
+    '-c',
+    'credential.helper=',
+    '-c',
+    'credential.helper=!gh auth git-credential',
+    ...args,
+  ];
+}
+
+/** `git()`'s environment. `offline` forbids fetching missing objects, so nothing is downloaded. */
+export function hardenedGitEnv({ offline = false } = {}): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_LFS_SKIP_SMUDGE: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    ...(offline ? { GIT_NO_LAZY_FETCH: '1' } : {}),
+  };
 }
 
 async function gh(args: string[]): Promise<string> {

@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
+  type Candidate,
   type CommitSha,
   type CostRecord,
   type Diff,
@@ -21,6 +22,7 @@ import {
   type ReviewEvent,
   type Workspace,
 } from './github.ts';
+import { type BuiltIndex, buildIndex, type IndexLimits, type IndexStatus } from './symbols.ts';
 import {
   generateTour,
   TOUR_PROMPT_VERSION,
@@ -118,7 +120,12 @@ export type ReviewOptions = {
   forkBudgetUsd?: number;
   /** How long one answer may take, author or guide, before it's abandoned. Default 3 minutes. */
   questionTimeoutMs?: number;
+  /** Caps on the symbol index. Default `INDEX_LIMITS`. */
+  indexLimits?: IndexLimits;
 };
+
+/** A jump returns at most this many candidates; `more` says how many were left out. */
+export const MAX_CANDIDATES = 50;
 
 const DEFAULT_FORK_BUDGET_USD = 2;
 const DEFAULT_QUESTION_TIMEOUT_MS = 180_000;
@@ -140,6 +147,8 @@ export class Review {
   #listeners = new Set<(tour: TourState) => void>();
   #posted: PostedReview | null = null;
   #posting = false;
+  /** The symbol index, built on first use. A review is bound to one head, so this is per head. */
+  #symbols: Promise<BuiltIndex> | null = null;
   readonly done: Promise<void>;
 
   constructor(options: ReviewOptions) {
@@ -167,6 +176,47 @@ export class Review {
     this.#listeners.add(listener);
     listener(this.#tour);
     return () => this.#listeners.delete(listener);
+  }
+
+  /**
+   * Where `symbol` may be defined, ranked, from the index of the PR's head. Null until the PR
+   * has been read.
+   */
+  async definitions(
+    symbol: string,
+    from?: { path: string; line?: number },
+  ): Promise<{ candidates: Candidate[]; more: number; index: IndexStatus } | null> {
+    const built = await this.#symbolIndex();
+    if (!built) return null;
+    const all = built.index.definitions(symbol, from);
+    return {
+      candidates: all.slice(0, MAX_CANDIDATES),
+      more: Math.max(0, all.length - MAX_CANDIDATES),
+      index: built.status,
+    };
+  }
+
+  /** The repo file an import specifier names, or a null path when it doesn't resolve. */
+  async resolveImport(
+    from: string,
+    spec: string,
+  ): Promise<{ path: string | null; index: IndexStatus } | null> {
+    const built = await this.#symbolIndex();
+    if (!built) return null;
+    return { path: built.index.resolveImport(from, spec), index: built.status };
+  }
+
+  #symbolIndex(): Promise<BuiltIndex> | null {
+    const workspace = this.#workspace;
+    if (!workspace) return null;
+    // Concurrent first requests share one build. A failed build isn't kept, so the next retries.
+    this.#symbols ??= buildIndex(workspace.headFiles, this.#options.indexLimits).catch(
+      (error: unknown) => {
+        this.#symbols = null;
+        throw error;
+      },
+    );
+    return this.#symbols;
   }
 
   async readFile(side: 'old' | 'new', path: string): Promise<string | null> {
