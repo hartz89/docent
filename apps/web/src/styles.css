@@ -1785,3 +1785,10 @@ kbd {
 .verdict-lines .mono {
   color: var(--text);
 }
+
+.verdict-stale-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}

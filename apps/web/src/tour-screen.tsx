@@ -27,6 +27,7 @@ import {
   DraftCard,
   ReviewList,
   useDrafts,
+  whereLabel,
 } from './comments.tsx';
 import { Markdown } from './markdown.tsx';
 import type { Ready } from './review-page.tsx';
@@ -135,6 +136,7 @@ export function TourScreen({ snapshot, tour }: Props) {
   const pr = snapshot.pr as PrInfo;
   const drafts = useDrafts(pr);
   const [composing, setComposing] = useState<Composing | null>(null);
+  const [trayOpen, setTrayOpen] = useState(false);
   const verdictIndex = stops.findIndex((s) => s.kind === 'verdict_prompt');
   const saveComposing = () => {
     if (!composing || !stop) return;
@@ -148,7 +150,7 @@ export function TourScreen({ snapshot, tour }: Props) {
       line: composing.line,
       body,
       head: pr.head,
-      stopId: existing?.stopId ?? stop.id,
+      stopId: composing.stopId,
     });
     setComposing(null);
   };
@@ -159,13 +161,14 @@ export function TourScreen({ snapshot, tour }: Props) {
       line: draft.line,
       draftId: draft.id,
       text: draft.body,
+      stopId: draft.stopId,
     });
   const removeDraft = (draft: Draft) => {
     drafts.remove([draft.id]);
     if (composing?.draftId === draft.id) setComposing(null);
   };
   /** Back to a comment's line: at the stop that cites it, or opened from the stop it was written at. */
-  const jumpTo = (draft: Draft) => {
+  const jumpTo = (draft: Pick<Draft, 'path' | 'side' | 'line' | 'stopId'>) => {
     const covers = (a: AnchorView) =>
       a.path === draft.path &&
       a.side === draft.side &&
@@ -186,10 +189,13 @@ export function TourScreen({ snapshot, tour }: Props) {
   /** Opens a comment on a line, unless one with text is already open: that one keeps its words. */
   const openComposer = (at: { path: string; side: 'old' | 'new' }, line: number) => {
     if (composing?.text.trim()) {
-      document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus();
+      const open = document.querySelector<HTMLTextAreaElement>('.composer textarea');
+      if (open) open.focus();
+      else jumpTo(composing);
       return;
     }
-    setComposing({ path: at.path, side: at.side, line, draftId: null, text: '' });
+    if (!stop) return;
+    setComposing({ path: at.path, side: at.side, line, draftId: null, text: '', stopId: stop.id });
   };
   const composer = composing && (
     <Composer
@@ -348,6 +354,8 @@ export function TourScreen({ snapshot, tour }: Props) {
                   stale={drafts.stale}
                   diff={diff}
                   onJump={jumpTo}
+                  open={trayOpen}
+                  onToggle={() => setTrayOpen(!trayOpen)}
                 />
               ) : null
             }
@@ -358,7 +366,15 @@ export function TourScreen({ snapshot, tour }: Props) {
                   diff={diff}
                   comments={drafts.current}
                   stale={drafts.stale.length}
-                  unsaved={hasUnsaved}
+                  unsaved={
+                    hasUnsaved && composing
+                      ? {
+                          where: whereLabel(composing),
+                          onShow: () => jumpTo(composing),
+                          onDiscard: () => setComposing(null),
+                        }
+                      : null
+                  }
                   posted={posted}
                   onPosted={(review, sent) => {
                     setPosted(review);

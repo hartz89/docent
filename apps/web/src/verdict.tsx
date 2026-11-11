@@ -57,8 +57,8 @@ export function VerdictForm({
   comments: readonly Draft[];
   /** How many comments were written at an older head; they aren't sent. */
   stale: number;
-  /** A comment is open with words not yet in the batch; sending now would leave them out. */
-  unsaved: boolean;
+  /** A comment open with words not yet in the batch: sending now would leave them out. */
+  unsaved: { where: string; onShow: () => void; onDiscard: () => void } | null;
   posted: PostedReview | null;
   onPosted: (posted: PostedReview, sent: readonly Draft[]) => void;
 }) {
@@ -180,10 +180,18 @@ export function VerdictForm({
       )}
 
       {unsaved && (
-        <p className="verdict-stale" role="alert">
-          You have a comment open that isn't in the batch yet. Add or cancel it before you send, so
-          what posts is what you see.
-        </p>
+        <div className="verdict-stale" role="alert">
+          Your comment on <span className="mono">{unsaved.where}</span> isn't in the batch yet. Add
+          or discard it before you send, so what posts is what you see.
+          <div className="verdict-stale-actions">
+            <button type="button" className="secondary-button" onClick={unsaved.onShow}>
+              Show it
+            </button>
+            <button type="button" className="text-button" onClick={unsaved.onDiscard}>
+              Discard
+            </button>
+          </div>
+        </div>
       )}
 
       {stale > 0 && (

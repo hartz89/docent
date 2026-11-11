@@ -29,7 +29,12 @@ export type Composing = {
   line: number;
   draftId: string | null;
   text: string;
+  /** The stop it's written at, or the draft's own stop when editing. */
+  stopId: string;
 };
+
+/** The server's limit on one comment. */
+export const MAX_COMMENT_CHARS = 10_000;
 
 const storageKey = (pr: PrInfo) => `docent:drafts:${pr.repo}#${pr.number}`;
 
@@ -56,7 +61,6 @@ function isDraft(value: unknown): value is Draft {
     Number.isSafeInteger(d.line) &&
     d.line >= 1 &&
     typeof d.body === 'string' &&
-    d.body.length <= 10_000 &&
     typeof d.head === 'string' &&
     typeof d.stopId === 'string'
   );
@@ -147,6 +151,7 @@ export function Composer({
       <div className="composer">
         <textarea
           id={id}
+          maxLength={MAX_COMMENT_CHARS}
           // biome-ignore lint/a11y/noAutofocus: the reviewer just asked to write here.
           autoFocus
           value={composing.text}
@@ -165,7 +170,10 @@ export function Composer({
         />
         <div className="composer-row">
           <span>
-            <kbd>⌘</kbd> <kbd>Enter</kbd> {editing ? 'to save' : 'adds to the batch'}
+            <kbd>⌘</kbd> <kbd>Enter</kbd> {editing ? 'saves' : 'adds to the batch'} · Cancel
+            discards
+            {composing.text.length > MAX_COMMENT_CHARS - 1000 &&
+              ` · ${(MAX_COMMENT_CHARS - composing.text.length).toLocaleString('en-US')} characters left`}
           </span>
           <span className="grow" />
           <button type="button" className="secondary-button" onClick={onCancel}>
@@ -224,13 +232,17 @@ export function BatchTray({
   stale,
   diff,
   onJump,
+  open,
+  onToggle,
 }: {
   current: readonly Draft[];
   stale: readonly Draft[];
   diff: Diff;
   onJump: (draft: Draft) => void;
+  /** Kept by the tour, so the tray stays as the reviewer left it from stop to stop. */
+  open: boolean;
+  onToggle: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   const inBody = current.filter((d) => !landsOnDiff(diff, d)).length;
   const parts = [
     current.length - inBody > 0 ? `${current.length - inBody} on diff lines` : '',
@@ -245,12 +257,7 @@ export function BatchTray({
         <b>Your batch</b>
         <span className="tray-sub">{parts.join(' · ')}</span>
         <span className="grow" />
-        <button
-          type="button"
-          className="text-button"
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
-        >
+        <button type="button" className="text-button" aria-expanded={open} onClick={onToggle}>
           {open ? 'Hide' : 'Show'}
         </button>
       </div>

@@ -24,7 +24,9 @@ export function parseComments(input: unknown): DraftComment[] | string {
   for (const item of input as unknown[]) {
     const { path, side, line, body } = (item ?? {}) as Record<string, unknown>;
     if (typeof path !== 'string' || !isCommentPath(path)) {
-      return 'Each comment needs the path of a file in the repository.';
+      return typeof path === 'string' && path.length < 300
+        ? `A comment can't go on ${JSON.stringify(path)}: comments need a plain path inside the repository.`
+        : 'Each comment needs the path of a file in the repository.';
     }
     if (side !== 'old' && side !== 'new') return 'Each comment needs a side: old or new.';
     if (typeof line !== 'number' || !Number.isSafeInteger(line) || line < 1) {
@@ -33,7 +35,7 @@ export function parseComments(input: unknown): DraftComment[] | string {
     const text = typeof body === 'string' ? body.trim() : '';
     if (!text) return 'A comment can’t be empty.';
     if (text.length > MAX_COMMENT_CHARS) {
-      return `A comment can be up to ${MAX_COMMENT_CHARS.toLocaleString('en-US')} characters.`;
+      return `Your comment on ${path}:${line} is too long: a comment can be up to ${MAX_COMMENT_CHARS.toLocaleString('en-US')} characters.`;
     }
     comments.push({ path, side, line, body: text });
   }

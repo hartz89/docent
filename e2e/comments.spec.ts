@@ -122,7 +122,9 @@ test('the reviewer comments on lines, and the comments post with the verdict', a
       await code.getByLabel('Your comment on line 80').fill('Changed my mind about this.');
       await expect(review.getByRole('alert')).toContainText("isn't in the batch yet");
       await expect(review.getByRole('button', { name: 'Approve on GitHub' })).toBeDisabled();
-      await code.getByRole('button', { name: 'Cancel' }).click();
+      await expect(review.getByRole('alert')).toContainText(`${file}:80`);
+      await review.getByRole('button', { name: 'Discard' }).click();
+      await expect(items.nth(1)).toContainText('Should this log that the wildcard was reflected?');
       await expect(review.getByRole('button', { name: 'Approve on GitHub' })).toBeEnabled();
     });
 
