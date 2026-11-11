@@ -102,7 +102,8 @@ const RULES: { tier: Tier; why: string; matches: (path: string) => boolean }[] =
 
 /**
  * The form of a path the rules match. A Mac's file system ignores case, so `.Claude/settings.json`
- * is the real settings file there; a leading `./` names the same file. Both can only raise a tier.
+ * is the real settings file there; a leading `./` names the same file. Every rule is
+ * written in lower case, so this never takes a path out of 2b.
  */
 const ruleKey = (path: string) => path.toLowerCase().replace(/^(?:\.\/)+/, '');
 
