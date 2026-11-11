@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { costRecord, readOnlyOptions, sdkRunner } from './agent.ts';
+import { costRecord, forkCostEstimateUsd, readOnlyOptions, sdkRunner } from './agent.ts';
 
 describe('the guide session is read-only', () => {
   test('pins the exact options that keep the session read-only', () => {
@@ -53,6 +53,15 @@ describe('the guide session is read-only', () => {
     ).toBe(5);
   });
 
+  test('a kept fork differs only in being saved, so later forks can start from it', () => {
+    expect(
+      readOnlyOptions({ cwd: '/checkout', model: 'claude-test', fork: 'author-1', keepIn: '/k' }),
+    ).toEqual({
+      ...readOnlyOptions({ cwd: '/checkout', model: 'claude-test', fork: 'author-1' }),
+      persistSession: true,
+    });
+  });
+
   test("forks the author's session with the same sandbox, and saves no copy", () => {
     // Fork, never resume in place: a resume would append to the author's own transcript.
     expect(readOnlyOptions({ cwd: '/checkout', model: 'claude-test', fork: 'author-1' })).toEqual({
@@ -84,5 +93,30 @@ describe('costRecord', () => {
 
     // $4 input + $20 output + $0.20 cache read + $5 (5m) + $8 (1h)
     expect(record.costMicroUsd).toBe(37_200_000);
+  });
+
+  test("prices Haiku 5.5 at its long-prompt rate once a request's prompt passes 100k", () => {
+    const usage = {
+      input_tokens: 0,
+      output_tokens: 1_000_000,
+      cache_read_input_tokens: 1_000_000,
+      cache_creation_input_tokens: 0,
+    };
+
+    // $0.50 output + $0.01 cache read, then $2.50 + $0.05 above 100k.
+    expect(costRecord('question', 'claude-haiku-5-5', usage, 1, 90_000).costMicroUsd).toBe(510_000);
+    expect(costRecord('question', 'claude-haiku-5-5', usage, 1, 200_000).costMicroUsd).toBe(
+      2_550_000,
+    );
+    // Opus has one price at any length.
+    expect(costRecord('question', 'claude-opus-5-5', usage, 1, 200_000).costMicroUsd).toBe(
+      20_200_000,
+    );
+  });
+
+  test('estimates a fork of a long session on Haiku at the long-prompt rate', () => {
+    // 400k tokens written to a 1-hour cache: 2x the $0.50 long-prompt input price.
+    expect(forkCostEstimateUsd('claude-haiku-5-5', 400_000)).toBeCloseTo(0.4);
+    expect(forkCostEstimateUsd('claude-haiku-5-5', 50_000)).toBeCloseTo(0.01);
   });
 });

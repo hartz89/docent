@@ -4,7 +4,8 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { AgentReply, AgentRunner } from './agent.ts';
+import type { MicroUsd } from '@docent/core';
+import type { AgentReply, AgentRequest, AgentRunner } from './agent.ts';
 import { isSafeRepoPath, type PrInfo, type PrSource, type ReviewPost } from './github.ts';
 
 type RecordedReplies = Partial<Record<'tour' | 'question', AgentReply[]>>;
@@ -42,11 +43,32 @@ export function fixtureSource(dir: string, record: ReviewRecorder = printReview)
   };
 }
 
+/**
+ * The fork that primes the author's session (the one kept on disk) shows nothing in the review,
+ * so it is neither recorded nor replayed: a replay primes for free.
+ */
+const isPrimer = (request: AgentRequest) => request.keepIn !== undefined;
+
+const replayedPrimer = (request: AgentRequest): AgentReply => ({
+  sessionId: '00000000-0000-4000-8000-000000000000',
+  text: 'Ready.',
+  structured: undefined,
+  denials: [],
+  cost: {
+    job: request.job,
+    model: request.model,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    costMicroUsd: 0 as MicroUsd,
+    latencyMs: 0,
+  },
+});
+
 /** Replays the recorded replies for each job in order, repeating the last one. */
 export function fixtureRunner(dir: string): AgentRunner {
   let replies: RecordedReplies | undefined;
   const used = { tour: 0, question: 0 };
   return async (request) => {
+    if (isPrimer(request)) return replayedPrimer(request);
     replies ??= JSON.parse(await readFile(join(dir, 'replies.json'), 'utf8')) as RecordedReplies;
     const job = request.job === 'question' ? 'question' : 'tour';
     const list = replies[job] ?? [];
@@ -83,6 +105,7 @@ export function recording(
     },
     runner: async (request) => {
       const reply = await runner(request);
+      if (isPrimer(request)) return reply;
       const job = request.job === 'question' ? 'question' : 'tour';
       replies[job] = [...(replies[job] ?? []), reply];
       await save(join(dir, 'replies.json'), `${JSON.stringify(replies, null, 2)}\n`);

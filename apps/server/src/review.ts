@@ -2,7 +2,8 @@
 // the author's own session when it can. The server routes read from here; the model, GitHub and
 // the author's session sit behind injected boundaries.
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   type CommitSha,
@@ -111,7 +112,14 @@ export type ReviewOptions = {
   runner: AgentRunner;
   /** Finds the PR author's session, so questions can fork it. */
   locator: SessionLocator;
+  /** The guide's model: tours, and answers from the code. */
   model: string;
+  /**
+   * The model a fork of the author's session answers with. Default: `model`. A cheaper model
+   * costs cents a question on a long session, with some answers less sure of the author's
+   * reasons (docs/research/2026-11-11-cheaper-questions.md).
+   */
+  questionModel?: string;
   /** Where finished tours are cached, by head commit. Leave out to skip the cache. */
   cacheDir?: string;
   /** Skip the fork when its first call is estimated to cost more than this. Default $2. */
@@ -140,6 +148,9 @@ export class Review {
   #listeners = new Set<(tour: TourState) => void>();
   #posted: PostedReview | null = null;
   #posting = false;
+  /** The kept, primed copy of the author's session that questions fork, once it exists. */
+  #primed: string | null = null;
+  #primedDir: Promise<string> | null = null;
   readonly done: Promise<void>;
 
   constructor(options: ReviewOptions) {
@@ -223,11 +234,13 @@ ${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
             // The deadline starts now, when the question leaves the line, not when it joined.
             const limit = deadline();
             try {
+              const primed = await this.#prime(author.id, workspace.dir, limit.signal);
+              if (primed.cost) costs.push(primed.cost);
               return await this.#options.runner({
                 job: 'question',
                 cwd: workspace.dir,
-                model: this.#options.model,
-                fork: author.id,
+                model: this.#questionModel(),
+                fork: primed.session,
                 prompt: authorPrompt(pr, workspace.dir, author.cwd, context, question),
                 signal: limit.signal,
                 maxBudgetUsd: this.#forkBudgetUsd(),
@@ -244,7 +257,7 @@ ${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
           source: 'author_session',
           session: author.id,
           askedAt,
-          costs: [reply.cost],
+          costs: [...costs, reply.cost],
           costIncomplete: false,
         };
       } catch (error) {
@@ -318,6 +331,47 @@ Question: ${question}`,
     return this.#lookup;
   }
 
+  /**
+   * The author's session, primed once per review: a fork with one fixed turn, kept on disk.
+   * Claude Code caches a fork only up to its newest message, the question, so forks of the
+   * original that ask different questions each write the whole session to the cache again.
+   * Forks of the primed copy all start with the same turn, so they read its cache instead
+   * (docs/research/2026-11-11-cheaper-questions.md). The first question pays for the primer too.
+   */
+  async #prime(
+    author: SessionId,
+    cwd: string,
+    signal: AbortSignal,
+  ): Promise<{ session: string; cost: CostRecord | null }> {
+    if (this.#primed) return { session: this.#primed, cost: null };
+    this.#primedDir ??= mkdtemp(join(tmpdir(), 'docent-primed-'));
+    const dir = await this.#primedDir;
+    const reply = await this.#options.runner({
+      job: 'question',
+      cwd,
+      model: this.#questionModel(),
+      fork: author,
+      keepIn: dir,
+      prompt: PRIMER,
+      signal,
+      maxBudgetUsd: this.#forkBudgetUsd(),
+    });
+    this.#primed = join(dir, `${reply.sessionId}.jsonl`);
+    return { session: this.#primed, cost: reply.cost };
+  }
+
+  /** Deletes the primed copy of the author's session. Call it when the review ends. */
+  async close(): Promise<void> {
+    const dir = await this.#primedDir?.catch(() => null);
+    this.#primed = null;
+    this.#primedDir = null;
+    if (dir) await rm(dir, { recursive: true, force: true });
+  }
+
+  #questionModel(): string {
+    return this.#options.questionModel ?? this.#options.model;
+  }
+
   /** Both the pre-fork estimate's limit and the fork's own spending cap. */
   #forkBudgetUsd(): number {
     return this.#options.forkBudgetUsd ?? DEFAULT_FORK_BUDGET_USD;
@@ -326,11 +380,11 @@ Question: ${question}`,
   #withinBudget(author: AuthorSession): AuthorSession {
     if (!author.found || author.contextTokens === null) return author;
     const budget = this.#forkBudgetUsd();
-    const estimate = forkCostEstimateUsd(this.#options.model, author.contextTokens);
+    const estimate = forkCostEstimateUsd(this.#questionModel(), author.contextTokens);
     if (estimate === null || estimate <= budget) return author;
     return {
       found: false,
-      reason: `The author's session is too big to ask within budget (about $${estimate.toFixed(2)} a question; the budget is $${budget.toFixed(2)})`,
+      reason: `The author's session is too big to ask within budget (about $${estimate.toFixed(2)} for the first question; the budget is $${budget.toFixed(2)})`,
     };
   }
 
@@ -423,6 +477,9 @@ Question: ${question}`,
     }
   }
 }
+
+/** The fixed turn that primes the author's session. Changing it starts a fresh cache. */
+const PRIMER = `A reviewer is about to ask you questions about your pull request through Docent, in a read-only copy of this session. Reply with just: Ready.`;
 
 /** A queued question found the author's session turned over to the guide while it waited. */
 class TurnedOver extends Error {}

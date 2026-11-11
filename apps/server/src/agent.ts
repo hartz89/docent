@@ -1,5 +1,9 @@
 // The boundary to the model. Everything Docent asks an agent goes through an AgentRunner, so tests
 // can swap in a scripted runner and never make a model call.
+import { existsSync } from 'node:fs';
+import { copyFile, readdir, rm } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { type CostRecord, type Job, type MicroUsd, microUsd } from '@docent/core';
 
@@ -21,13 +25,21 @@ export type AgentRequest = {
       /** Continue Docent's own earlier session, as the checker loop does with its problems. */
       resume?: string;
       fork?: never;
+      keepIn?: never;
     }
   | {
       /**
        * Fork someone else's session, the PR author's: the agent sees its whole history, and the
-       * original transcript is never written to. The fork itself isn't saved either.
+       * original transcript is never written to. A session id, or the path of a transcript an
+       * earlier fork kept (see `keepIn`). The fork itself isn't saved, unless `keepIn` says so.
        */
       fork: string;
+      /**
+       * Keep this fork's transcript as `<keepIn>/<sessionId>.jsonl`, so later forks can start
+       * from it. Claude Code saves it under its projects folder; it's moved out as soon as the
+       * fork ends, so neither Claude Code's resume list nor Docent's session search finds it.
+       */
+      keepIn?: string;
       resume?: never;
     }
 );
@@ -70,12 +82,16 @@ const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
  * A fork of the author's session gets exactly the same options. The author's own tools,
  * permissions and settings live in their settings files, not the transcript, so none of them
  * carry over. `forkSession` keeps the original transcript untouched, and `persistSession: false`
- * leaves no copy of it behind.
+ * leaves no copy of it behind. The one fork Docent keeps (`keepIn`) is moved into a folder of its
+ * own and deleted when the review ends.
  * `src/agent.test.ts` pins these options; `src/agent.live.test.ts` proves them against a hostile
  * checkout with a real session, and proves a fork leaves the author's transcript unchanged.
  */
 export function readOnlyOptions(
-  request: Pick<AgentRequest, 'cwd' | 'model' | 'schema' | 'resume' | 'fork' | 'maxBudgetUsd'>,
+  request: Pick<
+    AgentRequest,
+    'cwd' | 'model' | 'schema' | 'resume' | 'fork' | 'keepIn' | 'maxBudgetUsd'
+  >,
 ) {
   return {
     cwd: request.cwd,
@@ -88,7 +104,9 @@ export function readOnlyOptions(
     maxTurns: 60,
     maxBudgetUsd: request.maxBudgetUsd ?? 2,
     ...(request.resume ? { resume: request.resume } : {}),
-    ...(request.fork ? { resume: request.fork, forkSession: true, persistSession: false } : {}),
+    ...(request.fork
+      ? { resume: request.fork, forkSession: true, persistSession: request.keepIn !== undefined }
+      : {}),
     ...(request.schema
       ? { outputFormat: { type: 'json_schema' as const, schema: request.schema } }
       : {}),
@@ -126,8 +144,20 @@ export const sdkRunner: AgentRunner = async (request) => {
         0,
       ),
     };
-    return costRecord(request.job, model, usage, Date.now() - started);
+    return costRecord(request.job, model, usage, Date.now() - started, largestPrompt());
   };
+  /** The biggest single request's prompt, which sets a long-prompt price. */
+  const largestPrompt = () =>
+    calls.size === 0
+      ? undefined
+      : Math.max(
+          ...[...calls.values()].map(
+            (u) =>
+              (u.input_tokens ?? 0) +
+              (u.cache_read_input_tokens ?? 0) +
+              (u.cache_creation_input_tokens ?? 0),
+          ),
+        );
 
   try {
     for await (const message of query({
@@ -178,9 +208,13 @@ export const sdkRunner: AgentRunner = async (request) => {
     if (cost) throw new AgentError('The agent stopped without a result.', cost);
     throw new Error('The agent stopped without a result.');
   }
-  const cost = costRecord(request.job, model, ended.usage, Date.now() - started);
+  const cost = costRecord(request.job, model, ended.usage, Date.now() - started, largestPrompt());
   if (!ended.ok)
     throw new AgentError(`The agent stopped without an answer (${ended.failure})`, cost);
+  if (request.keepIn !== undefined) {
+    const kept = await keepTranscript(ended.sessionId, request.keepIn).catch(() => false);
+    if (!kept) throw new AgentError("The fork's transcript couldn't be kept.", cost);
+  }
   return {
     sessionId: ended.sessionId,
     text: ended.text,
@@ -199,14 +233,24 @@ type Usage = {
   cache_creation?: { ephemeral_5m_input_tokens: number; ephemeral_1h_input_tokens: number } | null;
 };
 
-/** USD per million tokens, list prices as of 2026-10. */
-const PRICES: Record<string, { input: number; output: number; cacheRead: number }> = {
+type Price = { input: number; output: number; cacheRead: number };
+
+/**
+ * USD per million tokens, list prices as of 2026-10. Haiku 5.5 charges 5x for a request whose
+ * prompt is over 100k tokens, which every question forked from a long session is.
+ */
+const PRICES: Record<string, Price & { over100k?: Price }> = {
   'claude-fable-5-1': { input: 10, output: 50, cacheRead: 0.25 },
   'claude-fable-5': { input: 10, output: 50, cacheRead: 1 },
   'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2 },
   'claude-opus-5': { input: 5, output: 25, cacheRead: 0.5 },
   'claude-sonnet-5': { input: 2, output: 10, cacheRead: 0.2 },
-  'claude-haiku-5-5': { input: 0.1, output: 0.5, cacheRead: 0.01 },
+  'claude-haiku-5-5': {
+    input: 0.1,
+    output: 0.5,
+    cacheRead: 0.01,
+    over100k: { input: 0.5, output: 2.5, cacheRead: 0.05 },
+  },
 };
 
 /**
@@ -214,8 +258,16 @@ const PRICES: Record<string, { input: number; output: number; cacheRead: number 
  * cost on forks and resumes (see the session spike). Not from assistant frames either: their
  * `usage` is a snapshot from the start of streaming, with output tokens near zero.
  * Cache writes cost 1.25x input for 5-minute entries and 2x for 1-hour ones.
+ * `promptTokens` is the largest single request's prompt, which picks a model's long-prompt
+ * price. Left out, the turn's summed prompt stands in, which can only overprice.
  */
-export function costRecord(job: Job, model: string, usage: Usage, latencyMs: number): CostRecord {
+export function costRecord(
+  job: Job,
+  model: string,
+  usage: Usage,
+  latencyMs: number,
+  promptTokens?: number,
+): CostRecord {
   const tokens = {
     input: usage.input_tokens,
     output: usage.output_tokens,
@@ -223,7 +275,10 @@ export function costRecord(job: Job, model: string, usage: Usage, latencyMs: num
     cacheWrite: usage.cache_creation_input_tokens,
   };
   const oneHour = usage.cache_creation?.ephemeral_1h_input_tokens ?? 0;
-  const price = priceFor(model);
+  const price = priceFor(
+    model,
+    promptTokens ?? tokens.input + tokens.cacheRead + tokens.cacheWrite,
+  );
   const usd = price
     ? (tokens.input * price.input +
         tokens.output * price.output +
@@ -242,19 +297,43 @@ export function costRecord(job: Job, model: string, usage: Usage, latencyMs: num
  * subscription by default (the SDK's `promptCacheTtl`: "1 hour on a Claude subscription"). The
  * PR #17 live run agrees: 196k written tokens at 2x account for its $1.63. On an API key writes
  * are 5-minute (1.25x), so this overestimates there, which is the safe direction.
- * Null for a model with no known price.
+ * Later questions within the hour read that cache instead, for about a tenth of this
+ * (docs/research/2026-11-11-cheaper-questions.md). Null for a model with no known price.
  */
 export function forkCostEstimateUsd(model: string, contextTokens: number): number | null {
-  const price = priceFor(model);
+  const price = priceFor(model, contextTokens);
   return price ? (contextTokens * price.input * 2) / 1e6 : null;
 }
 
+const LONG_PROMPT_TOKENS = 100_000;
+
 /** Longest matching id prefix, so `claude-opus-5-5-…` doesn't price as `claude-opus-5`. */
-function priceFor(model: string) {
+function priceFor(model: string, promptTokens: number): Price | undefined {
   const key = Object.keys(PRICES)
     .filter((id) => model.startsWith(id))
     .sort((a, b) => b.length - a.length)[0];
-  return key ? PRICES[key] : undefined;
+  const price = key ? PRICES[key] : undefined;
+  return price && promptTokens > LONG_PROMPT_TOKENS && price.over100k ? price.over100k : price;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Moves a saved session's transcript out of Claude Code's projects folder into `into`, along
+ * with nothing else: its folder of tool results, if any, is deleted. False if it isn't there.
+ */
+async function keepTranscript(sessionId: string, into: string): Promise<boolean> {
+  if (!UUID.test(sessionId)) return false;
+  const projects = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects');
+  for (const project of await readdir(projects)) {
+    const from = join(projects, project, `${sessionId}.jsonl`);
+    if (!existsSync(from)) continue;
+    await copyFile(from, join(into, `${sessionId}.jsonl`));
+    await rm(from);
+    await rm(join(projects, project, sessionId), { recursive: true, force: true });
+    return true;
+  }
+  return false;
 }
 
 function describeTool(name: string, input: unknown, cwd: string): string {
