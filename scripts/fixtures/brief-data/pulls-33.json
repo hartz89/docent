@@ -1,0 +1,20 @@
+{
+  "html_url": "https://github.com/hartz89/docent/pull/33",
+  "number": 33,
+  "title": "Web: questions read like a chat, and survive leaving the stop",
+  "user": {
+    "login": "docent-builder-hartz89[bot]",
+    "html_url": "https://github.com/apps/docent-builder-hartz89"
+  },
+  "body": "**Intent:** maintainer dogfood feedback. Asking a second question meant scrolling up to the box above the answers, then back down to read. It should work like an agent session, with the input after the latest answer. This also fixes the gap noted in [#25](https://github.com/hartz89/docent/pull/25): a stop's questions disappeared when you left it.\n\n**Behavior change:**\n- The thread reads top to bottom: question, answer, question, answer, then the box. After the first answer, the box's label becomes \"Ask a follow-up\".\n- A new question scrolls smoothly to the top of the guide, so its answer arrives right below it, and the box follows underneath.\n- Each stop's thread is kept in the tour screen, keyed by stop. Leaving a stop and coming back shows the whole conversation, and an answer that arrives while you're on another stop lands in the right thread.\n- The request no longer uses `useMutation` in the stop's component. That component remounts on every stop change, which is why threads were lost.\n\n**Tests:** a new e2e step:\n- asks a question and checks the box sits below the answer;\n- asks a follow-up with ⌘/Ctrl+Enter;\n- leaves the stop and comes back, and expects both questions still there.\n\n`pnpm verify` and e2e pass. I also checked a screenshot.\n\n**Tier 1:** `apps/web` and one e2e step.\n\n**Known gaps:**\n- Follow-ups don't carry the earlier questions to the model. Each question is still answered on its own.\n- [#19](https://github.com/hartz89/docent/pull/19) changes the answer labels in the same component, so it will need a small main merge.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+  "created_at": "2026-11-10T03:39:43Z",
+  "updated_at": "2026-11-10T03:43:00Z",
+  "merged_at": "2026-11-10T03:42:59Z",
+  "labels": [],
+  "draft": false,
+  "auto_merge": {
+    "merge_method": "squash"
+  },
+  "additions": 117,
+  "deletions": 50
+}

@@ -1,0 +1,20 @@
+{
+  "html_url": "https://github.com/hartz89/docent/pull/36",
+  "number": 36,
+  "title": "Backlog: proven skips for barrels, and no citations needed for imports in new files",
+  "user": {
+    "login": "docent-builder-hartz89[bot]",
+    "html_url": "https://github.com/apps/docent-builder-hartz89"
+  },
+  "body": "**Intent:** maintainer dogfood feedback on [#21](https://github.com/hartz89/docent/pull/21). Its tour spent a stop on `apps/server/src/evals.ts`, which is only re-exports. The fact worth knowing was the new `@docent/server/evals` entry point, not the 21 lines.\n\n**Behavior change:** none. Adds \"re-export-only changes\" to the proven skips in backlog item 6. A script checks from the syntax that every changed line is an `export … from`, and the map stop names the new entry point in a sentence.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** none.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+  "created_at": "2026-11-10T04:03:43Z",
+  "updated_at": "2026-11-10T04:08:11Z",
+  "merged_at": "2026-11-10T04:08:09Z",
+  "labels": [],
+  "draft": false,
+  "auto_merge": {
+    "merge_method": "squash"
+  },
+  "additions": 3,
+  "deletions": 1
+}

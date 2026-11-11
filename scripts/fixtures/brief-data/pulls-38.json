@@ -1,0 +1,20 @@
+{
+  "html_url": "https://github.com/hartz89/docent/pull/38",
+  "number": 38,
+  "title": "Web: up and down arrows read through a stop's citations",
+  "user": {
+    "login": "docent-builder-hartz89[bot]",
+    "html_url": "https://github.com/apps/docent-builder-hartz89"
+  },
+  "body": "**Intent:** maintainer dogfood request. ↑ and ↓ should read through the code: scroll through the current citation while lines are off-screen, then, once all of it is revealed with a little padding, jump to the stop's next citation.\n\n**Behavior change:**\n- **↓:** while the end of the citation in focus is below the view (plus 48px of room), it scrolls on by up to 60% of the view, stopping at the end. Once the end is in view, the next press moves to the stop's next citation, which can be in another file, and the code view centers it as usual.\n- **↑:** mirrors that, using the citation's start, and moves to the previous citation.\n- **Past the first or last citation,** or with a file opened from the route, the arrows scroll the file.\n- **Ignored while typing** (inputs, the question box) and with modifier keys. Smooth scrolling, or instant with reduced motion.\n- **The legend** now reads \"← → stops · ↑ ↓ read on\".\n\n**Tests:** a new e2e step on the fixture's edge stop, which has two short citations and one 57-line citation:\n- ↓ reaches the second citation, then the third;\n- ↓ reads on through the long one without leaving it;\n- ↑ comes back to the second.\n\nIt passes 4/4 on repeat. One fix along the way: the first version pressed keys before the file had loaded. `pnpm verify` and e2e pass.\n\n**Tier 1:** `apps/web` and one e2e step.\n\n**Known gaps:**\n- The arrows now always drive the code view, even if the guide panel has focus. Space and Page Up/Down still scroll the guide.\n- The step size (60% of the view) and the padding (48px) are first guesses for dogfooding.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+  "created_at": "2026-11-10T04:21:51Z",
+  "updated_at": "2026-11-10T04:26:20Z",
+  "merged_at": "2026-11-10T04:26:18Z",
+  "labels": [],
+  "draft": false,
+  "auto_merge": {
+    "merge_method": "squash"
+  },
+  "additions": 123,
+  "deletions": 3
+}

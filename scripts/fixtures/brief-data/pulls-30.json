@@ -1,0 +1,20 @@
+{
+  "html_url": "https://github.com/hartz89/docent/pull/30",
+  "number": 30,
+  "title": "Web: keep wrapped lines' tabs in place",
+  "user": {
+    "login": "docent-builder-hartz89[bot]",
+    "html_url": "https://github.com/apps/docent-builder-hartz89"
+  },
+  "body": "**Intent:** fix the bug the reviewer found in [#29](https://github.com/hartz89/docent/pull/29). #29 auto-merged on green CI 19 seconds before its review, which requested changes, landed.\n\n**Behavior change:** with wrapping on (the default), lines indented with tabs no longer shift 2ch left.\n- **Cause:** tab stops are measured from the padded edge, so a hang of indent + 2ch put the first row 2ch before a tab stop.\n- **Fix:** the hang is now rounded up to a whole tab stop. Tabs in the indentation also count as moving to the next stop, so a mix like \"2 spaces + tab\" is measured correctly.\n\n**Tests:** measured in headless Chromium with the real CSS, with wrapping on and off. The cases were two tabs, eight spaces, one tab, four spaces, \"2 spaces + tab\", a tab mid-line, and three spaces. Every marker lands at the same x with wrapping on and off (before the fix, the tab cases were 15px off). `pnpm verify` and e2e pass.\n\n**Tier 1:** `apps/web`.\n\n**Known gaps:**\n- There's no permanent regression test for tabs. The e2e fixture has no tab-indented lines, and `apps/web` has no unit test project yet; adding one is a config change, which is code-owned.\n- The process gap that let #29 merge before its review is reported to the maintainer separately.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+  "created_at": "2026-11-10T02:40:53Z",
+  "updated_at": "2026-11-10T02:42:49Z",
+  "merged_at": "2026-11-10T02:42:48Z",
+  "labels": [],
+  "draft": false,
+  "auto_merge": {
+    "merge_method": "squash"
+  },
+  "additions": 17,
+  "deletions": 7
+}

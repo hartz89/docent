@@ -1,0 +1,20 @@
+{
+  "html_url": "https://github.com/hartz89/docent/pull/29",
+  "number": 29,
+  "title": "Web: wrap long lines in the code view, with a toggle",
+  "user": {
+    "login": "docent-builder-hartz89[bot]",
+    "html_url": "https://github.com/apps/docent-builder-hartz89"
+  },
+  "body": "**Intent:** the maintainer was scrolling sideways a lot while reviewing PRs in Docent. Most long lines are Markdown prose and prompt strings, which no formatter wraps, and Docent will review repos whose line lengths it can't control. So the fix belongs in the code view.\n\n**Behavior change:**\n- Long lines wrap by default, as on GitHub. Continuation rows hang 2ch past the line's own indentation, so a wrapped line still reads as one line, like an editor's soft wrap.\n- A \"Wrap long lines\" toggle in the legend turns it off. The choice is remembered in this browser, and every storage access is guarded.\n- Toggling re-centers the cited range, since every line moves.\n- The legend is no longer hidden from screen readers as a whole: only the decorative items are, so the toggle is reachable.\n\n**Tests:** a new e2e step checks there's no sideways scroll by default, that it appears when the toggle is off, and that the choice survives a reload. I also checked screenshots before and after the indentation fix. `pnpm verify` and e2e pass.\n\n**Tier 1:** `apps/web` and one e2e step.\n\n**Known gaps:** a line with very deep indentation in a narrow column wraps into a thin strip. That's rare, and the toggle covers it.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+  "created_at": "2026-11-10T02:38:13Z",
+  "updated_at": "2026-11-10T02:39:33Z",
+  "merged_at": "2026-11-10T02:39:14Z",
+  "labels": [],
+  "draft": false,
+  "auto_merge": {
+    "merge_method": "squash"
+  },
+  "additions": 118,
+  "deletions": 9
+}

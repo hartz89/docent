@@ -1,0 +1,20 @@
+{
+  "html_url": "https://github.com/hartz89/docent/pull/27",
+  "number": 27,
+  "title": "Decisions: the product has no risk tiers",
+  "user": {
+    "login": "docent-builder-hartz89[bot]",
+    "html_url": "https://github.com/apps/docent-builder-hartz89"
+  },
+  "body": "**Intent:** record a maintainer decision. Risk tiers belong to how this repo merges its own PRs, not to the open source product. Review policy is up to the org that owns the PRs.\n\n**Behavior change:** none. One line in the \"Decided by the maintainer\" section of `backlog/decisions.md`. The product has no tiers today; this keeps it that way.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** none.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+  "created_at": "2026-11-10T02:29:35Z",
+  "updated_at": "2026-11-10T02:30:50Z",
+  "merged_at": "2026-11-10T02:30:48Z",
+  "labels": [],
+  "draft": false,
+  "auto_merge": {
+    "merge_method": "squash"
+  },
+  "additions": 1,
+  "deletions": 0
+}
