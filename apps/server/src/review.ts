@@ -356,6 +356,8 @@ Question: ${question}`,
       this.#primedDir = mkdtemp(join(tmpdir(), 'docent-primed-'));
     }
     const dir = await (this.#primedDir as Promise<string>);
+    // Closed while the folder was made: close() has already looked for a primer, so none starts.
+    if (this.#closed) throw new Error('The review is closed.');
     const stop = new AbortController();
     const running = this.#options.runner({
       job: 'question',

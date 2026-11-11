@@ -734,13 +734,16 @@ describe('POST /api/questions', () => {
   test('closing the review stops a primer still running, then deletes its folder', async () => {
     const author = withAuthor();
     let stopped = false;
-    // A primer that runs until it's aborted, then cleans up after itself, as sdkRunner does.
+    let kept = '';
+    // A primer that runs until it's aborted, then takes a while to clean up, as sdkRunner does.
     const runner: AgentRunner = async (request) => {
       if (request.keepIn === undefined) return author.runner(request);
+      kept = request.keepIn;
       started = true;
       await new Promise<void>((resolve) => {
         request.signal?.addEventListener('abort', () => resolve());
       });
+      await new Promise((resolve) => setTimeout(resolve, 20));
       stopped = true;
       throw new AgentError('The agent stopped without an answer (aborted)', cost('question', 50));
     };
@@ -754,6 +757,18 @@ describe('POST /api/questions', () => {
     expect(stopped).toBe(true);
     expect(await (await asked).json()).toMatchObject({ answer: { source: 'guide' } });
     expect(author.forks).toEqual([]);
+    expect(existsSync(kept)).toBe(false);
+  });
+
+  test('a question asked as the review closes starts no primer', async () => {
+    const author = withAuthor();
+    const { review, api } = await open(author.runner, undefined, 'claude-test', authorFound);
+
+    const asked = ask(api);
+    await review.close();
+
+    expect(await (await asked).json()).toMatchObject({ answer: { source: 'guide' } });
+    expect(author.primers).toEqual([]);
   });
 
   test('closing the review deletes the primed copy of the session', async () => {

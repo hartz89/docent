@@ -131,7 +131,10 @@ export const sdkRunner: AgentRunner = async (request) => {
     if (!(await keepTranscript(id, request.keepIn).catch(() => false))) {
       throw new AgentError("The fork's transcript couldn't be kept.", reply.cost);
     }
-    return { ...reply, sessionId: id };
+    if (reply.sessionId !== id) {
+      throw new AgentError(`Claude Code didn't use the chosen session id ${id}.`, reply.cost);
+    }
+    return reply;
   } catch (error) {
     await discardTranscript(id).catch(() => undefined);
     // An aborted Claude Code may still be flushing its transcript as it exits.
