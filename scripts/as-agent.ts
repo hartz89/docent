@@ -73,8 +73,8 @@ function parseArgs(argv: string[]): { role: Role; command: string[] } {
 }
 
 // The allowlist. A broad "allow as-agent" permission rule is only safe because this is strict:
-// anything not matching one of these forms is refused before a token exists. scripts/ is
-// code-owned, so widening it needs the maintainer's approval.
+// anything not matching one of these forms is refused before a token exists. Widening it is
+// tier 2b: a security-focused review comes before the approval. The app's permissions cap it.
 const ALLOWED: Record<Role, string[]> = {
   builder: [
     'git push [-u] origin <branch>   (a plain branch name: not main, HEAD or refs/...; no flags but -u)',
@@ -160,8 +160,8 @@ function checkMerge(args: string[], refuse: (reason: string) => never): void {
   const [number, ...extra] = args.filter((arg) => !arg.startsWith('-'));
   const options = args.filter((arg) => arg.startsWith('-'));
   if (!number || !/^\d+$/.test(number) || extra.length > 0) refuse('merge takes one PR number');
-  // --auto queues the merge; GitHub lands it once the ruleset is satisfied (green CI, and the
-  // maintainer's approval on code-owned paths). The builder isn't an admin, so it can't bypass that.
+  // --auto queues the merge; GitHub lands it once the ruleset is satisfied (green CI and one
+  // approving review). The builder isn't an admin, so it can't bypass that.
   const form = options.join(' ');
   if (form !== '--squash' && form !== '--squash --auto') {
     refuse('merge only with --squash, optionally followed by --auto');

@@ -2,30 +2,37 @@
 
 PRs are sorted into risk tiers, and humans review a sample of them. Trust is earned through metrics: as defects stop escaping in a tier, review in that tier becomes rarer. This is a trial, based on [Ship / Show / Ask](https://martinfowler.com/articles/ship-show-ask.html); see [`../north-stars.md`](../north-stars.md).
 
-| Tier | What it covers                                                                                                                                                                                                                                                    | Review                                                                                      |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| 0    | Docs, comments, tests only, formatting                                                                                                                                                                                                                            | Mechanical checks                                                                           |
+Tiers set how deep the review goes. They don't decide who approves: no path waits for the maintainer.
+
+| Tier | What it covers | Review |
+| ---- | -------------- | ------ |
+| 0 | Docs, comments, tests only, formatting | Mechanical checks + an approving agent review |
 | 1 | Feature work inside one package, with tests | Checks + a fresh-context agent review; the maintainer samples some |
-| 2a | Shared contracts (core model, adapter interface, snapshot format, tour schema) that don't touch scrubbing, auth or session gates; new dependencies without install or build scripts, outside `apps/server`; version bumps and lockfile-only changes | Checks + a fresh-context agent review with no blockers open. An agent merges, and logs the merge in `backlog/decisions.md` for the maintainer's veto. |
-| 2b | Security boundaries (server auth, read-only session gates, scrubbing, credentials, agent identities: the GitHub Apps, `scripts/as-agent.ts`, and app keys), permissions and settings (`.claude/`), CI and releases, the agent harness (`AGENTS.md`, `CLAUDE.md`, `docs/process/`), the tier definitions and merge rules themselves, any contract change that touches scrubbing, auth or session gates, and dependencies with install scripts or used by `apps/server` | Checks + agent review + the maintainer, always (for now). Harness changes also run the harness evals. |
+| 2a | Shared contracts (core model, adapter interface, snapshot format, tour schema) that don't touch a security gate; dependencies without install or build scripts, outside `apps/server`; version bumps and lockfile-only changes; the agent harness (`AGENTS.md`, `CLAUDE.md`, `.claude/`, `docs/process/`, skills, hooks) | Checks + a fresh-context agent review with no blockers open. Harness changes also run the harness evals. The merge is logged in `backlog/decisions.md` for the maintainer's veto. |
+| 2b | Security-sensitive: the agent runner (`scripts/as-agent.ts`) and app keys; CI, the ruleset and anything else in `.github/`; the code that runs `gh` as the maintainer, including posting reviews, and hardens the PR's checkout (`apps/server/src/github.ts`); the read-only session options (`apps/server/src/agent.ts`); the server's request gates (`apps/server/src/app.ts`, `server.ts`) and the check that ties a PR's session link to an author session (`author-session.ts`); scrubbing and credentials; dependencies with install scripts or used by `apps/server` | Checks + a security-focused fresh-context review, posted on the PR, before the approving review |
 
 The tier comes from the paths a PR changes. If paths span several tiers, the highest one wins. A script will assign tiers mechanically; until then, state the tier and why.
 
-**Changing the rules is tier 2b.** Any change to tier definitions, the autonomy dial or merge rules is 2b, wherever it lives, so agents can't loosen their own gates.
+**One approving review gates every merge.** The `main` ruleset needs green CI and one approving review. The `reviewer` app gives it, after a fresh-context review finds no blockers. The ruleset dismisses an approval when new commits land, so a later push needs a fresh approval.
 
-**Reviews live on the PR.** Post the fresh-context agent review as its own PR comment before anything merges. Posting it is a separate step from the merge, never folded into the same command. That way the review is on record, and the merge can point to it.
+**Our own agents are trusted; the gates guard against outside input.** That means a PR's own code, other websites, and anything else that doesn't come from us. The ceiling on what an agent can do is each GitHub App's permissions. The maintainer sets those on GitHub, outside this repo. For example, the builder has no Workflows permission, so GitHub refuses its pushes to `.github/workflows/`.
+
+**The maintainer decides; they don't approve.** Their part is answering decision briefs (see [`decisions.md`](decisions.md)), sampling merged work, and vetoing a logged merge. A change to the tiers, the ruleset or the autonomy dial is still tier 2b, and a big one goes to them as a decision brief.
+
+**Reviews live on the PR.** Post the fresh-context agent review on the PR, as the `reviewer` app, before anything merges. It approves (`gh pr review --approve`) only when no blockers are open; otherwise it comments or requests changes. Posting it is a separate step from the merge, never folded into the same command. That way the review is on record, and the merge can point to it.
 
 **Trust metric:** escaped defects per tier, meaning defects found later (by sampled review or a later fix) that trace back to a merged PR. Track it once there's volume.
 
 ## The autonomy dial
 
 Autonomy expands quickly and pulls back on evidence, not on worry. Where the dial stands today:
-- Agents merge tiers 0, 1 and 2a. A 2a merge needs a fresh-context review with no open blockers, and is logged in `backlog/decisions.md` for veto.
-- Tier 2b waits for the maintainer.
+- Agents merge every tier, once CI is green and the reviewer app has approved.
+- A 2a merge needs a fresh-context review with no open blockers, and is logged in `backlog/decisions.md` for veto.
+- A 2b merge needs a security-focused review posted before the approval.
 
-This was set on 2026-11-07, at the maintainer's direction: merge autonomously when PRs pass the quality and risk gates, and escalate only when it's genuinely critical.
+This was set on 2026-11-07, at the maintainer's direction: merge autonomously when PRs pass the quality and risk gates, and escalate only when it's genuinely critical. On 2026-11-10, code ownership was removed, so tier 2b no longer waits for the maintainer.
 
-**When to turn it down.** An agent-merged PR causes an escaped defect: a bug, a regression, or a broken rule. Then tighten that tier one step, for example sending tier 1 back to the maintainer, and record what happened and why here. When the trust metric shows the tier is clean again, turn it back up.
+**When to turn it down.** An agent-merged PR causes an escaped defect: a bug, a regression, or a broken rule. Then tighten that tier one step, for example requiring a second, independent review for that tier, and record what happened and why here. When the trust metric shows the tier is clean again, turn it back up.
 
 ## The description is the author handoff
 
@@ -40,7 +47,7 @@ It's what Docent itself reads, and often the only part a human reads. Make it wo
 
 ## Dogfooding Docent
 
-Every PR that needs the maintainer gets a Docent tour, prepared ahead of time. The steps are in [`worktrees.md`](worktrees.md), under "Prepare a Docent tour". Each of these reviews is also a chance to find out where the tour falls short.
+Every tier 2b PR gets a Docent tour, prepared ahead of time, so the maintainer can sample it cheaply. The steps are in [`worktrees.md`](worktrees.md), under "Prepare a Docent tour". Each of these reviews is also a chance to find out where the tour falls short.
 
 **Feedback goes on the PR.** If the tour missed something or got something wrong, the maintainer replies to the tour-ready comment with a line starting `Docent feedback:`. Point at the file and lines, and say what was missed or wrong. Silence means the tour was fine. To find feedback, list the PRs with `gh api search/issues -X GET -f q='repo:hartz89/docent commenter:hartz89 "Docent feedback" in:comments'`. That returns PRs, not comments, so read each PR's comments and keep the maintainer's that start with `Docent feedback:`.
 
