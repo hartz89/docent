@@ -111,13 +111,13 @@ export function createApp({ token, origin, version, webRoot, review }: AppOption
       },
     )
     // The guide's check of an author answer. Waits until the check is done, then sends a
-    // correction, or null when the guide has nothing to say.
+    // correction, or null when the guide has nothing to say, and what the check cost either way.
     .get('/api/answer-checks/:id', async (c) => {
       if (!review) return c.json(noReview, 404);
       const check = review.answerCheck(c.req.param('id'));
       if (!check) return c.json({ error: 'No such answer check' }, 404);
-      const { correction } = await check;
-      return c.json({ correction }, 200);
+      const { correction, costs } = await check;
+      return c.json({ correction, costs }, 200);
     })
     // Posts the reviewer's verdict to GitHub as them. The PR, repo and commit come from the
     // review this server holds; the client chooses only the event and the summary.

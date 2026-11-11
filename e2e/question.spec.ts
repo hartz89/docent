@@ -37,8 +37,8 @@ test("with the author's session, the author answers", async ({ page }) => {
   }
 });
 
-// The fixture's second recorded author answer is wrong about the code, and its second recorded
-// answer check says so. The first check finds nothing to say.
+// The fixture's second author answer and both answer checks are hand-written, not recorded: the
+// second answer is wrong about the code, and the second check says so. The first finds nothing.
 test("the guide stays quiet on a sound answer, and notes what the code does when it isn't", async ({
   page,
 }) => {
@@ -63,7 +63,7 @@ test("the guide stays quiet on a sound answer, and notes what the code does when
     const note = guide.locator('.exchange').nth(1).locator('.callout.correction');
     await expect(note).toContainText('The code returns origin || null when credentials are on');
     await expect(note.locator('.correction-source')).toHaveText(
-      /^Noted by the guide, from the code at head · <\$0\.01$/,
+      /^Noted by the guide, at head · <\$0\.01$/,
     );
 
     await note.getByRole('button', { name: 'index.ts 109–112' }).click();

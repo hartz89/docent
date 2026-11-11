@@ -4,7 +4,7 @@
 // badge. The guide explains; it never grades the author.
 import { anchorAt, type CommitSha, type CostRecord } from '@docent/core';
 import { AgentError, type AgentRunner } from './agent.ts';
-import type { Workspace } from './github.ts';
+import { isSafeRepoPath, type Workspace } from './github.ts';
 import type { AnchorView } from './tour.ts';
 
 /** What the guide shows under an author answer that the code contradicts. */
@@ -122,6 +122,8 @@ async function verifyCitations(
   for (const cite of citations) {
     const count = cite.endLine - cite.startLine + 1;
     if (count < 1 || count > MAX_CITE_LINES) return null;
+    // One spelling per file: `./src/a.ts` would read the same file under another name.
+    if (!isSafeRepoPath(cite.path) || cite.path.split('/').includes('.')) return null;
     const text = await workspace.readFile('new', cite.path);
     if (text === null) return null;
     const anchor = anchorAt(
@@ -148,7 +150,7 @@ function parseWire(value: unknown): WireCheck | null {
 
 /** Text from the PR or the author can't close or open the prompt's fenced blocks. */
 const unfence = (text: string) =>
-  text.replace(/<\/?(stop|question|answer)>/gi, (tag) => tag.replace(/[<>]/g, ''));
+  text.replace(/<\s*\/?\s*(stop|question|answer)\b[^>]*>/gi, (tag) => tag.replace(/[<>]/g, ''));
 
 export function checkPrompt(job: Pick<CheckJob, 'context' | 'question' | 'answer'>): string {
   return `You are the docent for a pull request review. A reviewer asked the PR's author a question, and the author's agent answered. Your one job: check whether the answer is clearly wrong about what the code does. Your working directory is a read-only checkout of the PR's head commit; use Read, Grep and Glob to check.

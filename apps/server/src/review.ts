@@ -474,7 +474,7 @@ class TurnedOver extends Error {}
 
 /** Text from the PR can't close or open the prompt's fenced blocks. */
 const unfence = (text: string) =>
-  text.replace(/<\/?(pull_request|question)>/gi, (tag) => tag.replace(/[<>]/g, ''));
+  text.replace(/<\s*\/?\s*(pull_request|question)\b[^>]*>/gi, (tag) => tag.replace(/[<>]/g, ''));
 
 /** The prompt for a fork of the author's session: it answers as the author, read-only. */
 function authorPrompt(

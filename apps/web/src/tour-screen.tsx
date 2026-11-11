@@ -544,8 +544,13 @@ function Narration({
                     <Markdown text={exchange.answer.text} />
                   </div>
                   <div className="exchange-source">{answerSource(exchange.answer)}</div>
-                  {exchange.correction && (
-                    <Correction correction={exchange.correction} onOpenCite={onOpenCite} />
+                  {exchange.answer.source === 'author_session' && (
+                    // Present before any note arrives, so a screen reader announces it.
+                    <div aria-live="polite">
+                      {exchange.correction && (
+                        <Correction correction={exchange.correction} onOpenCite={onOpenCite} />
+                      )}
+                    </div>
                   )}
                 </>
               ) : exchange.error ? (
@@ -627,7 +632,7 @@ function Correction({
         {correction.cites.map((cite) => (
           <button
             type="button"
-            key={`${cite.path}:${cite.startLine}`}
+            key={`${cite.path}:${cite.startLine}-${cite.endLine}`}
             className="chip"
             onClick={() => onOpenCite(cite)}
             title={`${cite.path} at head`}
@@ -636,9 +641,7 @@ function Correction({
           </button>
         ))}
       </div>
-      <div className="correction-source">
-        Noted by the guide, from the code at head · {formatUsd(spent)}
-      </div>
+      <div className="correction-source">Noted by the guide, at head · {formatUsd(spent)}</div>
     </div>
   );
 }
