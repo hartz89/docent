@@ -26,7 +26,7 @@ Tiers set how deep the agent review goes. They don't send a PR to the maintainer
 - scripts that run a session or git as the maintainer (`scripts/check-context-loading.ts`, `scripts/sync-main-checkout.sh`);
 - dependencies with install scripts, or used by `apps/server`.
 
-**The path floor.** These paths always make a PR 2b: `.github/`, `scripts/as-agent.ts`, `.claude/settings*.json`, everything in `apps/server/src/` except tests (but including `agent.test.ts` and `agent.live.test.ts`), and the skip-proof files above. Without the `apps/server/src/` line, a backtest found that PRs like [#19](https://github.com/hartz89/docent/pull/19) (the question path) fell to 2a.
+**The path floor.** These paths always make a PR 2b: `.github/`, `scripts/as-agent.ts`, `.claude/settings*.json`, `apps/server/package.json`, everything in `apps/server/src/` except tests (but including `agent.test.ts` and `agent.live.test.ts`), and the skip-proof files above. Without the `apps/server/src/` line, a backtest found that PRs like [#19](https://github.com/hartz89/docent/pull/19) (the question path) fell to 2a.
 
 **Our own agents are trusted; the gates guard against outside input.** That means a PR's own code, other websites, and anything else that doesn't come from us. The ceiling on what an agent can do is each GitHub App's permissions. The maintainer sets those on GitHub, outside this repo. For example, the builder has no Workflows permission, so GitHub refuses its pushes to `.github/workflows/`. Those pushes are the one thing the maintainer always does by hand.
 
@@ -54,11 +54,11 @@ Being 2b isn't enough. A 2b PR whose security review found issues that were then
 
 **Expect it to be rare.** Roughly one per session. That's an expectation, not a quota. If escalations are frequent, the bar is too low.
 
-**Everything else merges without the maintainer,** 2b included, once its review is posted.
+**Everything else merges without the maintainer,** 2b included, once its review is posted with no blockers open.
 
 **How to escalate.** The builder adds the `needs-maintainer` label (`gh pr edit <number> --add-label needs-maintainer`) and says why in a PR comment, naming which rule above applies.
 
-**At most two PRs wait on the maintainer at once.** "Waiting" means open, labeled `needs-maintainer`, and not a draft. If a third would escalate, it stays a draft PR with the label, and agents work on something else. The daily brief lists that queue.
+**At most two PRs wait on the maintainer at once.** "Waiting" means open and labeled `needs-maintainer`. Count them with `gh api 'repos/hartz89/docent/issues?labels=needs-maintainer&state=open'`. If a third would escalate, it gets the `escalation-queued` label instead, and agents work on something else. When a slot frees, the builder swaps the labels (`gh pr edit <number> --remove-label escalation-queued --add-label needs-maintainer`). The builder can't mark PRs draft or ready (`gh pr ready` isn't on its allowlist), so the label does that job. Once the morning brief exists, it lists the queue.
 
 **No stacking on a waiting PR.** Agents don't push to a PR that's waiting on the maintainer, or build on its branch, unless the maintainer asks. A new commit would also dismiss their approval.
 
