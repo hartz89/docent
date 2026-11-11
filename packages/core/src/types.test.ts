@@ -7,6 +7,8 @@ import { base } from './arbitraries.testing.ts';
 import type { AbandonedBatch, BatchItem, SentBatch } from './batch.ts';
 import type { CostRecord, Job } from './cost.ts';
 import type { DiffFile } from './diff.ts';
+import type { Placement } from './ledger.ts';
+import type { Evidence, Proof } from './proof.ts';
 import { type Answer, type Exchange, type QuestionThread, threadId } from './question.ts';
 import { type Review, reviewId } from './review.ts';
 import { type Skip, type Stop, stopId, type Tour } from './tour.ts';
@@ -175,6 +177,30 @@ describe('illegal states do not typecheck', () => {
     const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     // @ts-expect-error costMicroUsd must come from microUsd()
     const _c: CostRecord = { job: 'tour', model: 'm', tokens, costMicroUsd: 0.5, latencyMs: 1 };
+    typechecks();
+  });
+
+  test('P1: only a detector makes a proof, and its evidence is never empty', () => {
+    const plain = {
+      target: { kind: 'file', path: 'a' },
+      evidence: { label: 'whitespace' },
+    } as const;
+    // @ts-expect-error a plain object is not a proof
+    const _p: Proof = { ...plain, judgedAt: base };
+    // @ts-expect-error a rename proof names at least one change
+    const _e: Evidence = { label: 'rename', changes: [] };
+    // @ts-expect-error a lockfile proof names at least one manifest
+    const _l: Evidence = { label: 'lockfile', manifests: [] };
+    typechecks();
+  });
+
+  test('L1: a ledger line has exactly one place', () => {
+    // @ts-expect-error on the route means some stop explains it
+    const _a: Placement = { kind: 'on_route', stops: [] };
+    // @ts-expect-error a proven skip carries at least one proof
+    const _b: Placement = { kind: 'proven_skip', proofs: [] };
+    // @ts-expect-error a line can't be both off the route and on it
+    const _c: Placement = { kind: 'not_on_route', stops: [stopId('s')] };
     typechecks();
   });
 });

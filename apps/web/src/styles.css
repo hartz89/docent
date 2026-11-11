@@ -9,6 +9,12 @@
   --muted: #8e97a3;
   --faint: #5d6570;
   --brass: #d9b06a;
+  /* Brass as text, and as a filled button behind --brass-ink. Both are plain brass in dark; light
+     needs deeper ones so text and buttons keep their contrast on paper. */
+  --brass-text: #d9b06a;
+  --brass-fill: #d9b06a;
+  /* Hover on a filled button: lighter on dark, darker on light, so the ink keeps its contrast. */
+  --fill-hover: brightness(1.08);
   --brass-ink: #1b160d;
   --brass-tint: rgba(217, 176, 106, 0.09);
   --brass-soft: rgba(217, 176, 106, 0.16);
@@ -17,12 +23,42 @@
   --removed-tint: rgba(220, 110, 100, 0.08);
   --removed-mark: #d98a80;
   --danger: #e0786b;
+  --added-swatch: rgba(110, 190, 130, 0.35);
+  --removed-swatch: rgba(220, 110, 100, 0.35);
 
   --sans: "Instrument Sans Variable", "Instrument Sans", system-ui, sans-serif;
   --serif: "Newsreader Variable", "Newsreader", Georgia, serif;
   --mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
 
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* Light: warm paper and ink. The theme follows the system unless the reader picks one; theme.ts
+   and the inline script in index.html set data-theme on <html> before the first paint. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --ground: #fcfbf8;
+  --panel: #f5f3ee;
+  --panel-raised: #ffffff;
+  --border: #e5e1d8;
+  --border-strong: #d4cfc3;
+  --text: #1d2126;
+  --muted: #5e6570;
+  --faint: #767c86;
+  --brass: #b9842c;
+  --brass-text: #835710;
+  --brass-fill: #94661a;
+  --fill-hover: brightness(0.92);
+  --brass-ink: #ffffff;
+  --brass-tint: rgba(185, 132, 44, 0.075);
+  --brass-soft: rgba(185, 132, 44, 0.15);
+  --added-tint: rgba(46, 160, 80, 0.08);
+  --added-mark: #287a41;
+  --removed-tint: rgba(210, 60, 50, 0.07);
+  --removed-mark: #b8443a;
+  --danger: #a93d34;
+  --added-swatch: rgba(46, 160, 80, 0.3);
+  --removed-swatch: rgba(210, 60, 50, 0.28);
 }
 
 * {
@@ -52,7 +88,7 @@ button {
 }
 
 :focus-visible {
-  outline: 2px solid var(--brass);
+  outline: 2px solid var(--brass-text);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -120,7 +156,7 @@ code,
   font-family: var(--serif);
   font-size: 19px;
   font-style: italic;
-  color: var(--brass);
+  color: var(--brass-text);
   letter-spacing: 0.01em;
   padding-right: 20px;
   border-right: 1px solid var(--border);
@@ -176,6 +212,28 @@ code,
   height: 100%;
   background: var(--brass);
   transition: width 320ms var(--ease);
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background 140ms var(--ease),
+    color 140ms var(--ease);
+}
+
+.icon-button:hover {
+  background: var(--panel-raised);
+  color: var(--text);
 }
 
 .verdict-button {
@@ -248,12 +306,12 @@ code,
 .stop-button.done .stop-number {
   border-color: transparent;
   background: var(--brass-soft);
-  color: var(--brass);
+  color: var(--brass-text);
 }
 
 .stop-button[aria-current="step"] .stop-number {
-  border-color: var(--brass);
-  background: var(--brass);
+  border-color: var(--brass-fill);
+  background: var(--brass-fill);
   color: var(--brass-ink);
 }
 
@@ -266,7 +324,7 @@ code,
 }
 
 .stop-button[aria-current="step"] .stop-kind {
-  color: var(--brass);
+  color: var(--brass-text);
 }
 
 .stop-title {
@@ -283,7 +341,7 @@ code,
 
 .stop-flag {
   margin-left: 6px;
-  color: var(--brass);
+  color: var(--brass-text);
   font-size: 11px;
 }
 
@@ -353,7 +411,7 @@ code,
 .checks summary {
   cursor: pointer;
   padding: 4px 8px;
-  color: var(--brass);
+  color: var(--brass-text);
 }
 
 .checks ul {
@@ -447,7 +505,7 @@ code,
 }
 
 .line.cited .line-number {
-  color: var(--brass);
+  color: var(--brass-text);
 }
 
 .line-mark {
@@ -466,6 +524,17 @@ code,
 .line-text {
   white-space: pre;
   padding-right: 32px;
+}
+
+/* Each token carries its color for both themes (see highlight.ts). An unset variable makes the
+   color inherit, so plain text stays --text. */
+.line-text > span {
+  color: var(--token-dark);
+}
+
+/* :where() keeps this at the base rule's specificity, so it wins only by coming later. */
+:where(:root[data-theme="light"]) .line-text > span {
+  color: var(--token-light);
 }
 
 .legend {
@@ -491,11 +560,11 @@ code,
 }
 
 .swatch.added {
-  background: rgba(110, 190, 130, 0.35);
+  background: var(--added-swatch);
 }
 
 .swatch.removed {
-  background: rgba(220, 110, 100, 0.35);
+  background: var(--removed-swatch);
 }
 
 .swatch.cited {
@@ -590,7 +659,7 @@ code,
   font-variant: small-caps;
   text-transform: lowercase;
   letter-spacing: 0.1em;
-  color: var(--brass);
+  color: var(--brass-text);
   font-variant-caps: all-small-caps;
 }
 
@@ -651,7 +720,7 @@ code,
 }
 
 .chip[aria-pressed="true"] {
-  color: var(--brass);
+  color: var(--brass-text);
   border-color: var(--brass);
   background: var(--brass-tint);
 }
@@ -660,13 +729,13 @@ code,
   margin: 22px 0 0;
   padding: 14px 16px;
   border-radius: 8px;
-  border: 1px solid rgba(217, 176, 106, 0.45);
+  border: 1px solid color-mix(in srgb, var(--brass) 45%, transparent);
   background: var(--brass-tint);
 }
 
 .callout.danger {
-  border-color: rgba(224, 120, 107, 0.55);
-  background: rgba(224, 120, 107, 0.08);
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 
 .callout-label {
@@ -674,7 +743,7 @@ code,
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--brass);
+  color: var(--brass-text);
   margin-bottom: 4px;
 }
 
@@ -720,7 +789,7 @@ code,
 
 .question textarea:focus {
   outline: none;
-  border-color: var(--brass);
+  border-color: var(--brass-text);
 }
 
 .question-actions {
@@ -839,7 +908,7 @@ code,
   padding: 8px 16px;
   border-radius: 6px;
   border: 0;
-  background: var(--brass);
+  background: var(--brass-fill);
   color: var(--brass-ink);
   font-weight: 600;
   font-size: 13.5px;
@@ -848,7 +917,7 @@ code,
 }
 
 .primary-button:hover:not(:disabled) {
-  filter: brightness(1.08);
+  filter: var(--fill-hover);
 }
 
 .primary-button:disabled {
@@ -952,8 +1021,8 @@ kbd {
   font-size: 12.5px;
   padding: 12px 14px;
   border-radius: 8px;
-  background: rgba(224, 120, 107, 0.08);
-  border: 1px solid rgba(224, 120, 107, 0.4);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
   color: var(--text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -968,10 +1037,10 @@ kbd {
 @keyframes pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(217, 176, 106, 0.5);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--brass) 50%, transparent);
   }
   50% {
-    box-shadow: 0 0 0 5px rgba(217, 176, 106, 0);
+    box-shadow: 0 0 0 5px transparent;
   }
 }
 
@@ -988,6 +1057,7 @@ kbd {
   .progress-fill,
   .stop-button,
   .chip,
+  .icon-button,
   .primary-button {
     transition: none;
   }
