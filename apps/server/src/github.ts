@@ -187,13 +187,10 @@ export async function readPrHead(url: string): Promise<{
   if (!ref) throw new Error(`Not a GitHub pull request URL: ${url}`);
   const repo = `${ref.owner}/${ref.name}`;
   const view = JSON.parse(
-    await gh([
-      'pr',
-      'view',
-      url,
-      '--json',
-      'number,title,author,isCrossRepository,baseRefOid,headRefOid',
-    ]),
+    await gh(
+      ['pr', 'view', url, '--json', 'number,title,author,isCrossRepository,baseRefOid,headRefOid'],
+      LOOKUP_GH_TIMEOUT_MS,
+    ),
   ) as {
     number: number;
     title: string;
@@ -202,12 +199,15 @@ export async function readPrHead(url: string): Promise<{
     baseRefOid: string;
     headRefOid: string;
   };
-  const mergeBase = await gh([
-    'api',
-    `repos/${repo}/compare/${view.baseRefOid}...${view.headRefOid}`,
-    '--jq',
-    '.merge_base_commit.sha',
-  ]);
+  const mergeBase = await gh(
+    [
+      'api',
+      `repos/${repo}/compare/${view.baseRefOid}...${view.headRefOid}`,
+      '--jq',
+      '.merge_base_commit.sha',
+    ],
+    LOOKUP_GH_TIMEOUT_MS,
+  );
   return {
     repo,
     number: view.number,
@@ -287,9 +287,16 @@ export function git(dir: string, args: readonly string[], options: { maxBuffer?:
   );
 }
 
-async function gh(args: string[]): Promise<string> {
+/** The launcher's PR lookups give up (and kill gh) after this long. */
+const LOOKUP_GH_TIMEOUT_MS = 30_000;
+
+/** Runs gh. A `timeoutMs` kills it if it hangs; without one, it may take as long as it needs. */
+async function gh(args: string[], timeoutMs?: number): Promise<string> {
   try {
-    const { stdout } = await run('gh', args, { maxBuffer: 64 * 1024 * 1024 });
+    const { stdout } = await run('gh', args, {
+      maxBuffer: 64 * 1024 * 1024,
+      ...(timeoutMs ? { timeout: timeoutMs } : {}),
+    });
     return stdout;
   } catch (error) {
     const stderr = (error as { stderr?: string }).stderr?.trim();

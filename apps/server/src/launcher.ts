@@ -71,7 +71,8 @@ const LOOKUP_TIMEOUT_MS = 30_000;
  * Arms the confirm button. It stays disabled (no click, no Enter) until this tab is visible and
  * focused and has seen the reviewer's pointer or keys for half a second, and it disarms whenever
  * the tab loses focus. A page that pops up over this one and asks for a double click, closing
- * itself on the first, can't land the second click on an armed button.
+ * itself on the first, can't land the second click on an armed button. Every press or key while
+ * it's still disabled restarts the wait, so clicking or typing already under way never lands.
  */
 const ARM_SCRIPT = `const b = document.querySelector('button[type=submit]');
 let timer;
@@ -80,8 +81,10 @@ const arm = () => {
   if (document.visibilityState !== 'visible' || !document.hasFocus() || timer || !b.disabled) return;
   timer = setTimeout(() => { b.disabled = false; }, 500);
 };
+const rearm = () => { if (b.disabled) { disarm(); arm(); } };
 addEventListener('pointermove', arm);
-addEventListener('keydown', arm);
+addEventListener('pointerdown', rearm);
+addEventListener('keydown', rearm);
 addEventListener('blur', disarm);
 document.addEventListener('visibilitychange', disarm);`;
 const ARM_SCRIPT_HASH = `sha256-${createHash('sha256').update(ARM_SCRIPT).digest('base64')}`;
