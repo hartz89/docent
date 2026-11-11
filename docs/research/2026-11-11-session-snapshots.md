@@ -4,7 +4,7 @@
 
 **Result.** It works, and no path rewrite is needed. A session transcript loads from any file, in any working directory, and the fork answers questions about the PR correctly. Two things do need changing. A subagent's transcript has to be turned into a top-level one (three fields). And the snapshot should be slimmed down to user and assistant records: that removes most personal data by itself, and it made a fork about 37% cheaper. One more finding feeds backlog item 23: priming a snapshot once lets later questions read the prompt cache, at a fraction of the cost (measured on Haiku).
 
-Costs here are per-turn figures priced from each result's `usage`, as `apps/server/src/agent.ts` does. The SDK's `total_cost_usd` includes the parent session, and on three Haiku forks it was about 5x higher.
+Costs here are per-turn figures priced from each result's `usage`, as `apps/server/src/agent.ts` does. The SDK's `total_cost_usd` includes the parent session, and it was higher on most forks, up to about 12x.
 
 This follows the [session spike](2026-11-06-session-spike.md) and the [live question run](2026-11-08-question-path-live.md).
 
@@ -15,7 +15,7 @@ This follows the [session spike](2026-11-06-session-spike.md) and the [live ques
   - The subagent that built [PR #43](https://github.com/hartz89/docent/pull/43) (the light theme): 416 records, 3.1 MB, about 140k tokens of context, Opus.
 - **"Another machine."** A fresh clone of the repo at PR #43's head commit (`57ffe66`), under a made-up home folder at a different path. The worktree the author used had been deleted, so none of the old paths existed.
 - **Read-only, as Docent runs it.** Every fork used the same options as `readOnlyOptions` in `apps/server/src/agent.ts`: Read, Grep and Glob only, `dontAsk`, strict MCP config, no setting sources.
-- **What couldn't be simulated.** A truly separate `~/.claude`. A fresh `CLAUDE_CONFIG_DIR` has no login, so its first call fails with an API error. Writing into `~/.claude/projects` was refused by this session's permission check. Both load routes below avoid that folder entirely, so neither limit blocked a test. But every run used the same macOS user, the same login and the same Claude Code version.
+- **What couldn't be simulated.** A truly separate `~/.claude`. A fresh `CLAUDE_CONFIG_DIR` has no login, so its first call fails with an API error. Writing into `~/.claude/projects` was refused by this session's permission check. Neither load route below needs that folder, so neither limit blocked a test. But every run used the same macOS user, the same login and the same Claude Code version.
 
 ## What we checked
 
