@@ -9,7 +9,7 @@
 // problem here never gets in the author's way.
 //
 // Plain JavaScript on purpose: Node starts it in about 30 ms, where a .ts file takes about 50.
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -98,12 +98,15 @@ function recordFor(input, now = new Date()) {
 function writeRecord(record, root) {
   const dir = join(root, 'sessions');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // The mode above only applies to a folder this call creates.
+  chmodSync(dir, 0o700);
   const name = record.agentId
     ? `${record.sessionId}.agent-${record.agentId}.json`
     : `${record.sessionId}.json`;
   const path = join(dir, name);
   const temp = `${path}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+  // 'wx' never follows a link or reuses a file someone else put there.
+  writeFileSync(temp, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
   renameSync(temp, path);
   return path;
 }

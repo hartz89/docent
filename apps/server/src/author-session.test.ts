@@ -233,31 +233,46 @@ test('an explicit session must be a session id that exists on this machine', asy
 
 // ---- Through the hook's records (packages/claude-code). ----
 
+type Who = { session?: string; cwd?: string; gitBranch?: string; agentId?: string };
+
 /**
- * A record of one of the session's own commands, as Claude Code writes a tool result. A
- * subagent's records carry its agent id and `isSidechain`.
+ * One of the session's own tool calls and its result, as Claude Code writes them: two records.
+ * A subagent's records carry its agent id and `isSidechain`.
  */
-const toolResult = (
+const toolCall = (
+  tool: string,
+  input: Record<string, unknown>,
   output: string,
-  {
-    session = AUTHOR,
-    cwd = CHECKOUT,
-    gitBranch = 'fix',
-    agentId,
-  }: { session?: string; cwd?: string; gitBranch?: string; agentId?: string } = {},
-) =>
-  JSON.stringify({
-    type: 'user',
+  { session = AUTHOR, cwd = CHECKOUT, gitBranch = 'fix', agentId }: Who = {},
+) => {
+  const id = `toolu_${randomUUID()}`;
+  const base = {
     sessionId: session,
     ...(agentId ? { agentId, isSidechain: true } : { isSidechain: false }),
     timestamp: '2026-11-07T11:30:00.000Z',
     cwd,
     gitBranch,
-    message: {
-      role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 't1', content: output }],
-    },
-  });
+  };
+  return [
+    JSON.stringify({
+      ...base,
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id, name: tool, input }] },
+    }),
+    JSON.stringify({
+      ...base,
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: id, content: output }],
+      },
+    }),
+  ].join('\n');
+};
+
+/** A Bash command the session ran, and what it printed. */
+const bash = (command: string, output: string, who: Who = {}) =>
+  toolCall('Bash', { command }, output, who);
 
 const subagentTurn = (cwd = WORKTREE, gitBranch = 'fix') =>
   JSON.stringify({
@@ -318,13 +333,19 @@ const recorded =
 /** The coordinator, which delegated the work and then pushed the branch. */
 const coordinator = [
   turn(AUTHOR, '2026-11-07T09:00:00.000Z', 'fix'),
-  toolResult('To https://github.com/acme/web.git\n   1234567..c0ffee1  fix -> fix'),
+  bash(
+    'git push origin fix',
+    'To https://github.com/acme/web.git\n   1234567..c0ffee1  fix -> fix',
+  ),
 ];
 
 /** The subagent that wrote and committed the code, in its own worktree. */
 const subagent = (cwd = WORKTREE) => [
   subagentTurn(cwd),
-  toolResult('[fix c0ffee1] Reflect the origin\n 2 files changed', { cwd, agentId: SUBAGENT }),
+  bash("git commit -m 'Reflect the origin'", '[fix c0ffee1] Reflect the origin\n 2 files changed', {
+    cwd,
+    agentId: SUBAGENT,
+  }),
 ];
 
 /** A PR that names no session at all: only the records can find its author. */
@@ -356,7 +377,7 @@ test('prefers the subagent that wrote the code over the coordinator that delegat
     .trim()
     .split('\n')
     .map((line) => JSON.parse(line) as Record<string, unknown>);
-  expect(copy).toHaveLength(2);
+  expect(copy).toHaveLength(3);
   for (const entry of copy) {
     expect(entry).toMatchObject({ sessionId: found.id, isSidechain: false });
     expect(entry).not.toHaveProperty('agentId');
@@ -364,7 +385,7 @@ test('prefers the subagent that wrote the code over the coordinator that delegat
   // The original is untouched.
   expect(await readFile(join(projectsDir, SUBAGENT_PATH), 'utf8')).toBe(original);
   // Docent deletes the copy when it exits; a test worker may not exit that way.
-  await rm(dirname(found.transcript), { recursive: true });
+  await rm(found.transcript);
 });
 
 test('without a subagent, the recorded session that pushed the PR is found', async () => {
@@ -390,7 +411,139 @@ test('a recorded session on another branch or repo, or with none of the PR commi
   // A PR from a fork never uses records, as it never uses links.
   expect(await located(subagent(), unlinked({ headInBaseRepo: false }))).toEqual(noAuthor);
   // Right branch and repo, but none of the PR's commits came from this session.
-  expect(await located(subagent(), unlinked({ commitShas: ['d'.repeat(40)] }))).toEqual(noAuthor);
+  const otherCommit = { commitShas: ['d'.repeat(40)], commitMessages: ['Something else'] };
+  expect(await located(subagent(), unlinked(otherCommit))).toEqual(noAuthor);
+});
+
+test('commit-shaped text the session only read is not evidence', async () => {
+  // Someone with push access planted commit and push lines in a commit message and a file. A
+  // session on the branch then read them: through git log, the Read tool, and a cat.
+  const planted =
+    '[fix c0ffee1] Reflect the origin\nTo https://github.com/acme/web.git\n   1234567..c0ffee1  fix -> fix';
+  const { locate } = await machine(
+    {
+      [COORDINATOR_PATH]: [
+        turn(AUTHOR, '2026-11-07T09:00:00.000Z', 'fix'),
+        bash('git log -3', `commit ${PR_COMMIT}\n\n    ${planted.replaceAll('\n', '\n    ')}`),
+        toolCall('Read', { file_path: '/Users/someone/repo/NOTES.md' }, planted),
+        bash('cat NOTES.md', planted),
+      ],
+    },
+    [recorded(null)],
+  );
+
+  expect(await locate(unlinked())).toEqual(noAuthor);
+});
+
+test("with a link in the PR, a record can only narrow it to that session's own subagent", async () => {
+  // Another session on this machine also committed the PR's commit on the branch, but the PR
+  // links the author's session, whose subagent wrote the code.
+  const other = randomUUID();
+  const otherPath = `project/${other}.jsonl`;
+  const { locate } = await machine(
+    {
+      [COORDINATOR_PATH]: [bridgeStatus(AUTHOR), ...coordinator],
+      [SUBAGENT_PATH]: subagent(),
+      [otherPath]: [
+        turn(other, '2026-11-07T09:00:00.000Z', 'fix'),
+        bash('git commit -m x', '[fix facade1] Handle a missing origin', { session: other }),
+      ],
+    },
+    [
+      recorded(SUBAGENT),
+      recorded(null, (dir) => ({ sessionId: other, transcriptPath: join(dir, otherPath) })),
+    ],
+  );
+  const handoff = pr({
+    commitShas: [PR_COMMIT, `facade1${'f'.repeat(33)}`],
+    commitMessages: [`Reflect the origin\n\nClaude-Session: ${LINK}`, 'Handle a missing origin'],
+  });
+
+  const found = await locate(handoff);
+
+  // The other session committed the newest commit, but it isn't the linked one.
+  expect(found).toMatchObject({
+    found: true,
+    via: "the hook's record of the subagent that worked on this branch",
+  });
+  if (found.found && found.transcript) await rm(found.transcript);
+});
+
+test('a session that only fetched or pulled the branch is not its author', async () => {
+  const { locate } = await machine(
+    {
+      [COORDINATOR_PATH]: [
+        turn(AUTHOR, '2026-11-07T09:00:00.000Z', 'fix'),
+        bash(
+          'git fetch origin',
+          'From https://github.com/acme/web\n   1234567..c0ffee1  fix -> origin/fix',
+        ),
+        bash('git pull', 'Updating 1234567..c0ffee1\nFast-forward\n src/cors.ts | 2 +-'),
+      ],
+    },
+    [recorded(null)],
+  );
+
+  expect(await locate(unlinked())).toEqual(noAuthor);
+});
+
+test('a subagent whose commits were later rebased is still found, by their subjects', async () => {
+  // The coordinator rebased and force-pushed, so the PR's SHAs aren't the ones the subagent
+  // printed. Both now have evidence for the head commit; the subagent wins the tie.
+  const rebased = `beef123${'b'.repeat(33)}`;
+  const { locate } = await machine(
+    {
+      [COORDINATOR_PATH]: [
+        turn(AUTHOR, '2026-11-07T09:00:00.000Z', 'fix'),
+        bash(
+          'git rebase origin/main && git push --force-with-lease origin fix',
+          'To https://github.com/acme/web.git\n + c0ffee1...beef123 fix -> fix (forced update)',
+        ),
+      ],
+      [SUBAGENT_PATH]: subagent(),
+    },
+    [recorded(null), recorded(SUBAGENT)],
+  );
+
+  const found = await locate(unlinked({ commitShas: [rebased] }));
+
+  expect(found).toMatchObject({
+    found: true,
+    via: "the hook's record of the subagent that worked on this branch",
+  });
+  if (found.found && found.transcript) await rm(found.transcript);
+});
+
+test('the session behind the newest PR commit wins over one behind an older commit', async () => {
+  // The first subagent wrote the PR; a second one added a fix-up commit on top.
+  const second = 'f0e1d2c3b4a5f6e7d';
+  const secondPath = `project/${AUTHOR}/subagents/agent-${second}.jsonl`;
+  const fixUp = `facade1${'f'.repeat(33)}`;
+  const { locate } = await machine(
+    {
+      [SUBAGENT_PATH]: subagent(),
+      [secondPath]: [
+        JSON.stringify({ ...JSON.parse(subagentTurn()), agentId: second }),
+        bash('git commit -am fixup', '[fix facade1] Handle a missing origin', {
+          cwd: WORKTREE,
+          agentId: second,
+        }),
+      ],
+    },
+    [recorded(SUBAGENT), recorded(second, (dir) => ({ transcriptPath: join(dir, secondPath) }))],
+  );
+  const handoff = unlinked({
+    commitShas: [PR_COMMIT, fixUp],
+    commitMessages: ['Reflect the origin', 'Handle a missing origin'],
+  });
+
+  const found = await locate(handoff);
+
+  expect(found).toMatchObject({ found: true });
+  if (!found.found || !found.transcript) throw new Error('expected a subagent');
+  const copy = await readFile(found.transcript, 'utf8');
+  expect(copy).toContain('Handle a missing origin');
+  await rm(found.transcript);
 });
 
 test('with no records, the transcript scan finds the linked session as before', async () => {
@@ -409,7 +562,7 @@ test('a forged record pointing at a transcript from another repo, or outside Cla
   // A real session in another repo, on a branch also called `fix`, that committed the PR's SHA.
   const elsewhere = [
     turn(other, '2026-11-07T09:00:00.000Z', 'fix', '/Users/someone/private'),
-    toolResult('[fix c0ffee1] x', { session: other, cwd: '/Users/someone/private' }),
+    bash('git commit -m x', '[fix c0ffee1] x', { session: other, cwd: '/Users/someone/private' }),
   ];
   // A transcript planted outside the projects folder, claiming everything the PR needs.
   const planted = join(await mkdtemp(join(tmpdir(), 'docent-planted-')), `${AUTHOR}.jsonl`);

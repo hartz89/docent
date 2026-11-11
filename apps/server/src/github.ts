@@ -122,7 +122,7 @@ export function githubSource(url: string, cacheDir: string): PrSource {
           JSON.parse(out) as {
             body: string | null;
             html_url: string;
-            user: { login: string } | null;
+            user: { login: string; type?: string } | null;
           }[][],
       ),
     ]);
@@ -141,6 +141,7 @@ export function githubSource(url: string, cacheDir: string): PrSource {
         commentPages.flat().map((c) => ({
           body: c.body ?? '',
           login: c.user?.login ?? '',
+          isBot: c.user?.type === 'Bot',
           url: c.html_url,
         })),
         view.author.login,

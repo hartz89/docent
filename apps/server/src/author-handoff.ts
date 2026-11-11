@@ -12,7 +12,7 @@ export type AuthorHandoff = {
 };
 
 /** A PR conversation comment, as GitHub's issue comments API lists them. */
-export type PrComment = { body: string; login: string; url: string };
+export type PrComment = { body: string; login: string; isBot: boolean; url: string };
 
 /** The first line of every handoff comment, which tags it with its commit. */
 const MARKER = /^<!--\s*docent:author-handoff\s+sha=([0-9a-f]{40})\s*-->/;
@@ -29,7 +29,7 @@ export function findHandoff(
   prAuthor: string,
 ): AuthorHandoff | null {
   for (const comment of [...comments].reverse()) {
-    if (!sameAccount(comment.login, prAuthor)) continue;
+    if (!sameAccount(comment, prAuthor)) continue;
     const body = comment.body.replace(/\r\n/g, '\n').trimStart();
     const commit = MARKER.exec(body)?.[1];
     if (!commit) continue;
@@ -46,15 +46,17 @@ export function findHandoff(
 }
 
 /**
- * GitHub names an app as `app/<slug>` on a PR's author and `<slug>[bot]` on its comments.
+ * Whether the comment's author is the PR's author. GitHub names an app `app/<slug>` as a PR's
+ * author and `<slug>[bot]`, of type Bot, on its comments. A person matches only their own
+ * login, and only as a person, so a user named like an app's slug never passes for the app, or
+ * the other way round.
  */
-function sameAccount(commenter: string, prAuthor: string): boolean {
-  const norm = (login: string) =>
-    login
-      .toLowerCase()
-      .replace(/^app\//, '')
-      .replace(/\[bot\]$/, '');
-  return norm(commenter) !== '' && norm(commenter) === norm(prAuthor);
+function sameAccount(comment: PrComment, prAuthor: string): boolean {
+  const author = prAuthor.toLowerCase();
+  const login = comment.login.toLowerCase();
+  if (!login) return false;
+  if (author.startsWith('app/')) return comment.isBot && login === `${author.slice(4)}[bot]`;
+  return !comment.isBot && login === author;
 }
 
 /**

@@ -8,8 +8,14 @@ const HEAD = 'a'.repeat(40);
 const OLDER = 'b'.repeat(40);
 
 /** A handoff comment as the author-handoff skill writes it. */
-const handoffComment = (text: string, sha = HEAD, login = 'docent-builder[bot]'): PrComment => ({
+const handoffComment = (
+  text: string,
+  sha = HEAD,
+  login = 'docent-builder[bot]',
+  isBot = login.endsWith('[bot]'),
+): PrComment => ({
   login,
+  isBot,
   url: 'https://github.com/acme/web/pull/7#issuecomment-1',
   body: `<!-- docent:author-handoff sha=${sha} -->
 <details>
@@ -22,7 +28,7 @@ ${text}
 test("finds the newest handoff from the PR's author, without its <details> wrapper", () => {
   const comments = [
     handoffComment('**Intent:** the first version.', OLDER),
-    { login: 'someone-else', url: 'u', body: 'Looks good!' },
+    { login: 'someone-else', isBot: false, url: 'u', body: 'Looks good!' },
     handoffComment('**Intent:** reflect the origin.'),
   ];
 
@@ -40,8 +46,23 @@ test("a handoff-shaped comment from anyone but the PR's author is ignored", () =
   expect(findHandoff(comments, 'app/docent-builder')).toBeNull();
 });
 
+test('a person and an app never pass for each other, even with matching names', () => {
+  // A user who registered the app's slug as their login, and an app named like a person.
+  const fromUser = [handoffComment('**Intent:** trust me.', HEAD, 'docent-builder', false)];
+  const fromApp = [handoffComment('**Intent:** trust me.', HEAD, 'someone[bot]', true)];
+
+  expect(findHandoff(fromUser, 'app/docent-builder')).toBeNull();
+  expect(findHandoff(fromApp, 'someone')).toBeNull();
+  // Each still matches itself.
+  expect(findHandoff(fromUser, 'docent-builder')).not.toBeNull();
+  expect(findHandoff(fromApp, 'app/someone')).not.toBeNull();
+});
+
 test('a long handoff is cut, so it cannot flood the prompt', () => {
-  const found = findHandoff([handoffComment('x'.repeat(MAX_HANDOFF_CHARS * 2))], 'docent-builder');
+  const found = findHandoff(
+    [handoffComment('x'.repeat(MAX_HANDOFF_CHARS * 2))],
+    'app/docent-builder',
+  );
 
   expect(found?.text.length).toBe(MAX_HANDOFF_CHARS + 1);
 });

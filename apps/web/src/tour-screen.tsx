@@ -658,12 +658,12 @@ function HandoffNote({ handoff, head }: { handoff: Handoff; head: string }) {
   const when =
     handoff.commit === head
       ? 'written for the head commit'
-      : `written for ${handoff.commit.slice(0, 7)}, before the latest commits`;
+      : `written for ${handoff.commit.slice(0, 7)}, not the head commit`;
   return (
     <section className="callout handoff" aria-label="From the author's handoff">
       <div className="callout-label">From the author's handoff</div>
       <p className="handoff-caveat">
-        The author's claims, not checked by Docent · {when}
+        The author's claims, as they wrote them · the tour checks them against the code · {when}
         {handoff.url.startsWith('https://github.com/') && (
           <>
             {' · '}

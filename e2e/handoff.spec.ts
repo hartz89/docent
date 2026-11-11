@@ -25,7 +25,7 @@ test("the intent stop shows the author's handoff, attributed and marked as claim
     await page.goto(docent.url);
     const note = page.getByRole('region', { name: "From the author's handoff" });
 
-    await expect(note).toContainText("The author's claims, not checked by Docent");
+    await expect(note).toContainText("The author's claims, as they wrote them");
     await expect(note).toContainText('written for the head commit');
     await expect(note.locator('strong')).toHaveText('Intent:');
     await expect(note.locator('code')).toHaveText('credentials');

@@ -93,9 +93,11 @@ A record only says where to look. Anything that can write to the data folder cou
 
 1. The transcript is inside `~/.claude/projects`, at the exact path Claude Code uses for that session or subagent, and its records carry those ids.
 2. One of its records shows it on the PR's head branch, in a checkout whose `origin` is the PR's repo. The PR's branch must be in that repo, not a fork.
-3. It did work in the PR: one of its own command outputs shows a commit or a push of one of the PR's commits.
+3. It did work in the PR. One of its own `git commit` or `git push` commands printed one of the PR's commits, or a commit with the same subject (a later rebase changes SHAs but keeps subjects). Only the output of those commands counts. Text the session merely read, such as `git log`, a file or a fetch, never does.
 
-Among the sessions that pass, Docent picks the one that committed or pushed the newest PR commit. A tie goes to a subagent over the coordinator that delegated to it. If none pass, Docent falls back to the session link in the PR.
+Among the sessions that pass, Docent picks the one that committed or pushed the newest PR commit. A tie goes to a subagent over the coordinator that delegated to it, then to the original session over a later fork of it.
+
+When the PR has a `Claude-Session:` link that Docent can tie to the PR, records can only narrow that session down to one of its own subagents; they never pick a different session. If no record passes, Docent uses the linked session, as before.
 
 A subagent's transcript can't be forked as it is. Docent forks a private copy instead, converted to look like a top-level session, and deletes the copy when it exits. Your transcripts are only ever read.
 
