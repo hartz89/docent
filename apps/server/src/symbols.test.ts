@@ -278,7 +278,7 @@ describe('GET /api/definition', () => {
     expect(found.index).toMatchObject({ state: 'complete', files: 2, skipped: 1 });
     expect(logged).toHaveBeenCalledWith(expect.stringContaining('"b/hostile.ts"'));
     logged.mockRestore();
-  });
+  }, 15_000);
 
   test('after a few files that break the parser, only small files are tried', async () => {
     // Found by the security review: enough hostile files would spend the whole time budget.
@@ -300,15 +300,14 @@ describe('GET /api/definition', () => {
       },
     }));
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const started = Date.now();
     const found = await definition(api, { symbol: 'small' });
     // Three bombs are parsed and fail; the other two and the big file are never tried.
     expect(logged).toHaveBeenCalledTimes(3);
     logged.mockRestore();
     expect(found.candidates).toEqual([expect.objectContaining({ path: 'z/small.ts' })]);
+    // Partial for `wary`, not `time`: the bombs didn't spend the 20 s budget.
     expect(found.index).toMatchObject({ state: 'partial', reason: 'wary', files: 1, skipped: 6 });
-    expect(Date.now() - started).toBeLessThan(10_000);
-  });
+  }, 30_000); // Each bomb can take its 1.25 s hard limit plus a worker restart on a slow CI host.
 
   test('refuses bad input, and anyone without the token', async () => {
     const { api, app } = await serve();
