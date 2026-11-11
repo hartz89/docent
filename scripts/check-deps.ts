@@ -52,10 +52,7 @@ export function licenseProblems(
   packages: readonly { name: string; version: string; license: string }[],
 ): string[] {
   return packages
-    .filter(
-      ({ name, license }) =>
-        !PERMISSIVE.has(license) && !name.startsWith('@docent/') && !(name in LICENSE_EXCEPTIONS),
-    )
+    .filter(({ name, license }) => !PERMISSIVE.has(license) && !(name in LICENSE_EXCEPTIONS))
     .map(
       ({ name, version, license }) =>
         `${name}@${version} is licensed ${license}. Replace it, or add it to LICENSE_EXCEPTIONS in scripts/check-deps.ts with the reason it's fine.`,
@@ -77,8 +74,12 @@ export function checkDeps(
       }
     }
   }
+  // The workspace's own @docent/* packages have no license field and never ship as packages.
+  // Only this check skips them: on npm, nobody owns the @docent scope yet.
   const packages = Object.entries(licenses).flatMap(([license, entries]) =>
-    entries.map((entry) => ({ name: entry.name, version: entry.versions.join(','), license })),
+    entries
+      .filter((entry) => !entry.name.startsWith('@docent/'))
+      .map((entry) => ({ name: entry.name, version: entry.versions.join(','), license })),
   );
   problems.push(...licenseProblems(packages));
   return problems.sort();
