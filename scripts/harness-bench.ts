@@ -243,7 +243,7 @@ type Outcome = {
 };
 
 /** Runs one task in a fresh copy. `budgetUsd` caps this session's spend. */
-function runTask(
+export function runTask(
   task: Task,
   harness: string,
   ref: string,
