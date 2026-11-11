@@ -1,6 +1,7 @@
-// Keeps the always-loaded agent context small. Every session starts with the root CLAUDE.md
-// and everything it @-imports (AGENTS.md, and so on), so each token there is paid on every turn.
-// This check fails when that set grows past a budget.
+// Keeps the always-loaded agent context small. Every session starts with the root CLAUDE.md,
+// .claude/CLAUDE.md, the .claude/rules files that have no `paths:`, and everything those
+// @-import (AGENTS.md, and so on). Each token there is paid on every turn. This check fails when
+// that set grows past a budget. CLAUDE.local.md is left out: it's per-machine, not the repo's.
 //
 // Tokens are estimated as characters / 4, rounded up per file. That's the usual rule of thumb
 // for English text, and it's deterministic and needs no API call. It isn't the model's real
@@ -10,7 +11,7 @@
 // Run: node scripts/check-context-footprint.ts (part of pnpm verify).
 // Background: docs/process/harness-evals.md
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 
 /** About 15% over the 1,368 tokens measured when the check was added (2026-11-10). */
@@ -34,12 +35,29 @@ export function importsIn(markdown: string): string[] {
 
 export type Footprint = { files: { path: string; tokens: number }[]; total: number };
 
-/** The root CLAUDE.md plus every repo file it imports, directly or not, each counted once. */
+/** Rule files under .claude/rules load at start unless their frontmatter scopes them with `paths:`. */
+function unscopedRules(root: string): string[] {
+  const dir = join(root, '.claude/rules');
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { recursive: true, encoding: 'utf8' })
+    .filter((name) => name.endsWith('.md'))
+    .sort()
+    .map((name) => join(dir, name))
+    .filter((path) => !/^paths:/m.test(frontmatter(readFileSync(path, 'utf8'))));
+}
+
+function frontmatter(markdown: string): string {
+  if (!markdown.startsWith('---\n')) return '';
+  const end = markdown.indexOf('\n---', 4);
+  return end === -1 ? '' : markdown.slice(4, end);
+}
+
+/** The files that load at start plus every repo file they import, each counted once. */
 export function measureFootprint(root: string): Footprint {
   const seen = new Set<string>();
   const files: { path: string; tokens: number }[] = [];
   const visit = (abs: string, hops: number) => {
-    if (seen.has(abs) || !existsSync(abs)) return;
+    if (seen.has(abs) || !existsSync(abs) || !statSync(abs).isFile()) return;
     seen.add(abs);
     const text = readFileSync(abs, 'utf8');
     files.push({ path: relative(root, abs), tokens: estimateTokens(text) });
@@ -50,7 +68,13 @@ export function measureFootprint(root: string): Footprint {
       if (!target.startsWith('~') && !relative(root, next).startsWith('..')) visit(next, hops + 1);
     }
   };
-  visit(join(root, 'CLAUDE.md'), 0);
+  for (const start of [
+    join(root, 'CLAUDE.md'),
+    join(root, '.claude/CLAUDE.md'),
+    ...unscopedRules(root),
+  ]) {
+    visit(start, 0);
+  }
   return { files, total: files.reduce((sum, f) => sum + f.tokens, 0) };
 }
 

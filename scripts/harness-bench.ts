@@ -9,7 +9,8 @@
 // Design: docs/process/harness-evals.md
 
 import { type SpawnSyncReturns, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -20,11 +21,16 @@ const root = join(import.meta.dirname, '..');
 /**
  * Claude Code stops a session at the end of the turn that crosses its budget, so a session can
  * overspend by one turn. Each session's budget leaves this much of the cap for that last turn.
+ * A single turn can cost more than this (a big cache write on opus, say), so the cap can still
+ * overshoot by part of one turn.
  */
 const LAST_TURN_RESERVE_USD = 0.25;
 
 /** A session that runs longer than this is stopped and fails. */
 const SESSION_TIMEOUT_MS = 10 * 60_000;
+
+/** A copy of the repo, and the hash of every file in it before the session started. */
+export type Copy = { dir: string; before: Map<string, string> };
 
 type Task = {
   id: string;
@@ -32,46 +38,62 @@ type Task = {
   /** Write tasks get edit tools and a sandboxed Bash. Read tasks get Read, Grep and Glob only. */
   writes: boolean;
   /** Returns what went wrong. An empty list is a pass. */
-  grade: (copy: string, answer: string) => string[];
+  grade: (copy: Copy, answer: string) => string[];
 };
 
+/**
+ * The answer with code fences, surrounding quotes, backticks and a final period removed. A reply
+ * of more than one line stays multi-line, so an exact match fails on it.
+ */
+export function bareAnswer(answer: string): string {
+  return answer
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('```'))
+    .join('\n')
+    .trim()
+    .replace(/^[`"'*\s]+|[`"'*.\s]+$/g, '');
+}
+
+/** An answer task: the reply, stripped by bareAnswer, must match `expected` exactly. */
+function answerTask(id: string, prompt: string, expected: RegExp, wanted: string): Task {
+  return {
+    id,
+    prompt,
+    writes: false,
+    grade: (_copy, answer) =>
+      expected.test(bareAnswer(answer)) ? [] : [`did not answer ${wanted}`],
+  };
+}
+
 export const tasks: Task[] = [
-  {
-    id: 'find-core-boundary',
-    writes: false,
-    prompt:
-      'Which file in this repo defines the check that stops packages/core from importing ' +
+  answerTask(
+    'find-core-boundary',
+    'Which file in this repo defines the check that stops packages/core from importing ' +
       'frameworks or Node modules? Reply with only its path, relative to the repo root.',
-    grade: (_copy, answer) => (/\bbiome\.json\b/.test(answer) ? [] : ['did not name biome.json']),
-  },
-  {
-    id: 'find-pairing-check',
-    writes: false,
-    prompt:
-      'Which script checks that every folder with an AGENTS.md also has a CLAUDE.md? ' +
+    /^(\.\/)?biome\.json$/,
+    'biome.json',
+  ),
+  answerTask(
+    'find-pairing-check',
+    'Which script checks that every folder with an AGENTS.md also has a CLAUDE.md? ' +
       'Reply with only its path, relative to the repo root.',
-    grade: (_copy, answer) =>
-      answer.includes('scripts/check-agents-md.ts')
-        ? []
-        : ['did not name scripts/check-agents-md.ts'],
-  },
-  {
-    id: 'pr-tier',
-    writes: false,
-    prompt:
-      'A pull request changes only one file: docs/research/2026-11-10-notes.md. Which risk tier ' +
+    /^(\.\/)?scripts\/check-agents-md\.ts$/,
+    'scripts/check-agents-md.ts',
+  ),
+  answerTask(
+    'pr-tier',
+    'A pull request changes only one file: docs/research/2026-11-10-notes.md. Which risk tier ' +
       'is it under this repo\'s rules? Reply with only the tier, like "tier 1".',
-    grade: (_copy, answer) => (/^\W*(tier\s*)?0\b/i.test(answer) ? [] : ['did not answer tier 0']),
-  },
-  {
-    id: 'pnpm-exec',
-    writes: false,
-    prompt:
-      'You want to print the version of the TypeScript compiler this repo has installed. Reply ' +
+    /^(tier\s*)?0$/i,
+    'tier 0',
+  ),
+  answerTask(
+    'pnpm-exec',
+    'You want to print the version of the TypeScript compiler this repo has installed. Reply ' +
       "with only the shell command you would run. Don't run it.",
-    grade: (_copy, answer) =>
-      /^\W*pnpm exec tsc (-v|--version)\b/.test(answer) ? [] : ['did not use "pnpm exec tsc"'],
-  },
+    /^pnpm exec tsc (-v|--version)$/,
+    '"pnpm exec tsc --version"',
+  ),
   {
     id: 'agent-notes',
     writes: true,
@@ -79,19 +101,22 @@ export const tasks: Task[] = [
       'Add agent notes for the scripts/ folder. They should say one thing: scripts run directly ' +
       "with node, with no build step. Follow this repo's rules for agent notes. Don't commit.",
     grade: (copy) => {
+      // Checked first: grading runs repo code, and it must be the repo's own, not the agent's.
+      const outside = unexpectedChanges(copy, ['scripts/AGENTS.md', 'scripts/CLAUDE.md']);
+      if (outside.length > 0) return outside;
       const failures: string[] = [];
-      const notes = join(copy, 'scripts/AGENTS.md');
+      const notes = join(copy.dir, 'scripts/AGENTS.md');
       if (!existsSync(notes) || !/node/i.test(readFileSync(notes, 'utf8'))) {
         failures.push('scripts/AGENTS.md is missing or never mentions node');
       }
-      const claude = join(copy, 'scripts/CLAUDE.md');
+      const claude = join(copy.dir, 'scripts/CLAUDE.md');
       if (!existsSync(claude) || readFileSync(claude, 'utf8').trim() !== '@AGENTS.md') {
         failures.push('scripts/CLAUDE.md is missing or is not exactly "@AGENTS.md"');
       }
-      if (run('node', ['scripts/check-agents-md.ts'], copy).status !== 0) {
+      if (run('node', ['scripts/check-agents-md.ts'], copy.dir).status !== 0) {
         failures.push('check-agents-md fails');
       }
-      return [...failures, ...unexpectedChanges(copy, ['scripts/AGENTS.md', 'scripts/CLAUDE.md'])];
+      return failures;
     },
   },
   {
@@ -103,22 +128,24 @@ export const tasks: Task[] = [
       'range from min to max. Add tests in packages/core/src/clamp.test.ts. You are done when ' +
       "pnpm verify passes. Don't commit.",
     grade: (copy) => {
-      const failures = unexpectedChanges(copy, ['packages/core/']);
-      if (!existsSync(join(copy, 'packages/core/src/clamp.test.ts'))) {
-        return [...failures, 'packages/core/src/clamp.test.ts is missing'];
+      // Checked first: only src/ may change, so verify runs the repo's own config and scripts.
+      // The agent's tests in src/ do run, outside the sandbox. They're small and readable.
+      const outside = unexpectedChanges(copy, ['packages/core/src/', 'packages/core/SPEC.md']);
+      if (outside.length > 0) return outside;
+      if (!existsSync(join(copy.dir, 'packages/core/src/clamp.test.ts'))) {
+        return ['packages/core/src/clamp.test.ts is missing'];
       }
-      if (run('pnpm', ['verify'], copy).status !== 0) failures.push('pnpm verify fails');
+      const failures: string[] = [];
+      if (run('pnpm', ['verify'], copy.dir).status !== 0) failures.push('pnpm verify fails');
       // The tests must catch a broken clamp, not just pass.
       writeFileSync(
-        join(copy, 'packages/core/src/clamp.ts'),
+        join(copy.dir, 'packages/core/src/clamp.ts'),
         'export function clamp(value: number, _min: number, _max: number): number {\n  return value;\n}\n',
       );
-      const mutant = run(
-        'pnpm',
-        ['exec', 'vitest', 'run', '--project', 'core', 'clamp.test.ts'],
-        copy,
-      );
-      if (mutant.status === 0) failures.push('the tests still pass with a clamp that does nothing');
+      const vitest = ['exec', 'vitest', 'run', '--project', 'core', 'clamp.test.ts'];
+      if (run('pnpm', vitest, copy.dir).status === 0) {
+        failures.push('the tests still pass with a clamp that does nothing');
+      }
       return failures;
     },
   },
@@ -136,16 +163,43 @@ function mustRun(cmd: string, args: string[], cwd: string, input?: Buffer): Buff
   return result.stdout;
 }
 
-/** Changed or new files in the copy that don't start with one of the allowed prefixes. */
-function unexpectedChanges(copy: string, allowed: string[]): string[] {
-  const status = mustRun('git', ['status', '--porcelain', '--untracked-files=all'], copy);
-  const changed = status
-    .toString()
-    .split('\n')
-    .filter((line) => line.trim() !== '')
-    .map((line) => line.slice(3));
-  const extra = changed.filter((file) => !allowed.some((prefix) => file.startsWith(prefix)));
-  return extra.length === 0 ? [] : [`changed files outside the task: ${extra.join(', ')}`];
+/** Build output and installed packages, which tools make and graders ignore. */
+function isGenerated(name: string): boolean {
+  return ['node_modules', 'dist', '.git'].includes(name) || name.endsWith('.tsbuildinfo');
+}
+
+/**
+ * Every file in the copy, by path, with its content hash. Kept in this process's memory, so
+ * nothing the session does to the copy (a commit, an edit to .git) can hide a change.
+ */
+function snapshot(dir: string): Map<string, string> {
+  const files = new Map<string, string>();
+  const walk = (rel: string) => {
+    for (const entry of readdirSync(join(dir, rel), { withFileTypes: true })) {
+      if (isGenerated(entry.name)) continue;
+      const path = rel === '' ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walk(path);
+      else
+        files.set(
+          path,
+          createHash('sha256')
+            .update(readFileSync(join(dir, path)))
+            .digest('hex'),
+        );
+    }
+  };
+  walk('');
+  return files;
+}
+
+/** Files added, changed or deleted since the copy was made that don't start with an allowed prefix. */
+function unexpectedChanges(copy: Copy, allowed: string[]): string[] {
+  const after = snapshot(copy.dir);
+  const changed = [...new Set([...copy.before.keys(), ...after.keys()])].filter(
+    (path) => copy.before.get(path) !== after.get(path),
+  );
+  const extra = changed.filter((path) => !allowed.some((prefix) => path.startsWith(prefix)));
+  return extra.length === 0 ? [] : [`changed files outside the task: ${extra.sort().join(', ')}`];
 }
 
 /**
@@ -153,15 +207,20 @@ function unexpectedChanges(copy: string, allowed: string[]): string[] {
  * own with one commit and no remote. It shares nothing with this checkout's .git, so nothing
  * done in it can reach this repo's branches, stash or GitHub.
  */
-export function makeCopy(ref: string, install: boolean): string {
-  const copy = mkdtempSync(join(tmpdir(), 'docent-bench-'));
-  mustRun('tar', ['-x', '-C', copy], copy, mustRun('git', ['archive', ref], root));
-  mustRun('git', ['init', '-q', '-b', 'bench'], copy);
-  mustRun('git', ['add', '-A'], copy);
-  const who = ['-c', 'user.name=bench', '-c', 'user.email=bench@localhost'];
-  mustRun('git', [...who, 'commit', '-q', '--no-verify', '-m', ref], copy);
-  if (install) mustRun('pnpm', ['install', '--frozen-lockfile', '--prefer-offline'], copy);
-  return copy;
+export function makeCopy(ref: string, install: boolean): Copy {
+  const dir = mkdtempSync(join(tmpdir(), 'docent-bench-'));
+  try {
+    mustRun('tar', ['-x', '-C', dir], dir, mustRun('git', ['archive', ref], root));
+    mustRun('git', ['init', '-q', '-b', 'bench'], dir);
+    mustRun('git', ['add', '-A'], dir);
+    const who = ['-c', 'user.name=bench', '-c', 'user.email=bench@localhost'];
+    mustRun('git', [...who, 'commit', '-q', '--no-verify', '-m', ref], dir);
+    if (install) mustRun('pnpm', ['install', '--frozen-lockfile', '--prefer-offline'], dir);
+    return { dir, before: snapshot(dir) };
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 type SessionResult = {
@@ -198,30 +257,24 @@ function runTask(
     args.push('--max-budget-usd', budgetUsd.toFixed(2), '--no-session-persistence');
     // Project settings only, so the copy's own .claude/settings.json is part of the harness,
     // and this machine's user settings are not.
-    args.push(
-      '--setting-sources',
-      'project',
-      '--strict-mcp-config',
-      '--permission-mode',
-      'dontAsk',
-    );
+    args.push('--setting-sources', 'project', '--strict-mcp-config');
+    args.push('--permission-mode', 'dontAsk');
     if (task.writes) {
-      // Bash runs in Claude Code's sandbox: writes only inside the copy, and no network.
-      const sandbox = { sandbox: { enabled: true, autoAllowBashIfSandboxed: true } };
+      // Bash always runs in Claude Code's sandbox: writes only inside the copy, and no network.
+      // allowUnsandboxedCommands: false stops the model from retrying a command outside it.
+      const sandbox = {
+        sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false },
+      };
       args.push('--settings', JSON.stringify(sandbox), '--tools', 'Read,Grep,Glob,Edit,Write,Bash');
       args.push('--allowedTools', 'Edit(./**)', 'Write(./**)');
-      args.push(
-        '--disallowedTools',
-        'Bash(git push:*)',
-        'Bash(gh:*)',
-        'Bash(node scripts/as-agent.ts:*)',
-      );
+      args.push('--disallowedTools', 'Bash(git push:*)', 'Bash(gh:*)');
+      args.push('Bash(node scripts/as-agent.ts:*)');
     } else {
       args.push('--tools', 'Read,Grep,Glob');
     }
     const started = Date.now();
     const session = spawnSync('claude', args, {
-      cwd: copy,
+      cwd: copy.dir,
       encoding: 'utf8',
       timeout: SESSION_TIMEOUT_MS,
       maxBuffer: 64 * 1024 * 1024,
@@ -248,11 +301,15 @@ function runTask(
       (usage.output_tokens ?? 0);
     // A session cut short (by its budget, say) fails, whatever state it left the copy in.
     const failures = parsed.is_error ? [`session ended early (${parsed.subtype})`] : [];
-    failures.push(...task.grade(copy, (parsed.result ?? '').trim()));
+    try {
+      failures.push(...task.grade(copy, parsed.result ?? ''));
+    } catch (error) {
+      failures.push(`grader error: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const turns = parsed.num_turns ?? 0;
     return { ...base, failures, costUsd: parsed.total_cost_usd, tokens, turns };
   } finally {
-    rmSync(copy, { recursive: true, force: true });
+    rmSync(copy.dir, { recursive: true, force: true });
   }
 }
 
@@ -301,11 +358,14 @@ function main(): number {
     { name: 'branch', ref: values.head },
   ];
   // Resolve refs once, so both arms of every task see the same commits.
-  for (const h of harnesses)
+  for (const h of harnesses) {
     h.ref = mustRun('git', ['rev-parse', '--verify', `${h.ref}^{commit}`], root)
       .toString()
       .trim();
+  }
 
+  // No session may take more than twice its fair share, so one runaway can't starve the rest.
+  const sessionCap = (2 * maxUsd) / (runs * selected.length * harnesses.length);
   const outcomes: Outcome[] = [];
   const skipped: string[] = [];
   let spent = 0;
@@ -315,12 +375,28 @@ function main(): number {
       // Alternate which harness goes first, so neither always gets a warm prompt cache.
       const pair = order++ % 2 === 0 ? harnesses : [...harnesses].reverse();
       for (const h of pair) {
-        const budget = maxUsd - spent - LAST_TURN_RESERVE_USD;
+        const budget = Math.min(sessionCap, maxUsd - spent - LAST_TURN_RESERVE_USD);
         if (budget < 0.05) {
           skipped.push(`${task.id} (${h.name})`);
           continue;
         }
-        const outcome = runTask(task, h.name, h.ref, values.model, budget);
+        let outcome: Outcome;
+        try {
+          outcome = runTask(task, h.name, h.ref, values.model, budget);
+        } catch (error) {
+          // Making the copy failed, so no session ran and nothing was spent.
+          const why = error instanceof Error ? error.message : String(error);
+          const failures = [`setup failed: ${why.split('\n')[0]}`];
+          outcome = {
+            task: task.id,
+            harness: h.name,
+            failures,
+            costUsd: 0,
+            tokens: 0,
+            turns: 0,
+            seconds: 0,
+          };
+        }
         spent += outcome.costUsd;
         outcomes.push(outcome);
         const status =
@@ -333,9 +409,9 @@ function main(): number {
   const footprint = (ref: string) => {
     const copy = makeCopy(ref, false);
     try {
-      return measureFootprint(copy).total;
+      return measureFootprint(copy.dir).total;
     } finally {
-      rmSync(copy, { recursive: true, force: true });
+      rmSync(copy.dir, { recursive: true, force: true });
     }
   };
   const [base, branch] = harnesses as [
@@ -355,10 +431,19 @@ function main(): number {
       console.log(`| ${task.id} | ${h.name} ${summarize(mine)}`);
     }
   }
+  // Totals cover only tasks both harnesses ran, so a skip can't skew the comparison.
+  const paired = selected
+    .map((t) => t.id)
+    .filter((id) =>
+      harnesses.every((h) => outcomes.some((o) => o.task === id && o.harness === h.name)),
+    );
   for (const h of harnesses) {
-    console.log(`| **all** | ${h.name} ${summarize(outcomes.filter((o) => o.harness === h.name))}`);
+    const mine = outcomes.filter((o) => o.harness === h.name && paired.includes(o.task));
+    console.log(`| **all** | ${h.name} ${summarize(mine)}`);
   }
-  console.log('\nCost, tokens, turns and time are means per run.');
+  console.log(
+    '\nCost, tokens, turns and time are means per run. Totals cover tasks both sides ran.',
+  );
   const failed = outcomes.filter((o) => o.failures.length > 0);
   for (const o of failed) console.log(`- ${o.task} (${o.harness}): ${o.failures.join('; ')}`);
   if (skipped.length > 0) console.log(`- Skipped, budget spent: ${skipped.join(', ')}`);

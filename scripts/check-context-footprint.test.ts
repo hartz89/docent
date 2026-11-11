@@ -52,4 +52,20 @@ describe('measureFootprint', () => {
     });
     expect(measureFootprint(root).files.map((f) => f.path)).toEqual(['CLAUDE.md']);
   });
+
+  test('counts .claude/CLAUDE.md and unscoped rules, not rules scoped by paths', () => {
+    const root = tree({
+      'CLAUDE.md': 'root',
+      '.claude/CLAUDE.md': 'more',
+      '.claude/rules/always.md': '---\ndescription: x\n---\nalways',
+      '.claude/rules/nested/plain.md': 'plain',
+      '.claude/rules/tests.md': '---\npaths:\n  - "**/*.test.ts"\n---\nonly for tests',
+    });
+    expect(measureFootprint(root).files.map((f) => f.path)).toEqual([
+      'CLAUDE.md',
+      '.claude/CLAUDE.md',
+      '.claude/rules/always.md',
+      '.claude/rules/nested/plain.md',
+    ]);
+  });
 });
