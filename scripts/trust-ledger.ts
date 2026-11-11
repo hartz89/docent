@@ -96,6 +96,8 @@ export interface Pr {
   repairs: Repair[];
   /** Later merged PRs that reverted or fixed this one. */
   repairedBy: Repair[];
+  /** This PR reverted or fixed an earlier merged PR, so it doesn't count as a clean merge. */
+  isRepair: boolean;
 }
 
 // --- Tier: label, then description, then the 2026-11-10 backtest ---
@@ -170,7 +172,7 @@ export function repairsIn(title: string, body: string): Repair[] {
     .filter((line) => !/^\s*[|>]/.test(line))
     .join('\n')
     .replace(/`[^`\n]*`|"[^"\n]*"|“[^”\n]*”/g, '');
-  for (const m of prose.matchAll(/\bfix(?:es|ed)?\b([^.\n#]{0,80})#(\d+)/gi)) {
+  for (const m of prose.matchAll(/\bfix(?:es|ed)?\b([^.;\n#]{0,80})#(\d+)/gi)) {
     if (!/\bgaps?\b/i.test(m[1] ?? '')) add(m[2], 'fixed');
   }
   return found;
@@ -208,7 +210,10 @@ export function reportsProblem(text: string): boolean {
         .slice(0, m.index)
         .split(/[.!?\n]/)
         .at(-1) ?? '';
-    if (!/\b(?:no|not|nothing|without)\b/i.test(sentence)) return true;
+    // An empty section, as in "### Must fix\n\nNone." or "Should-fix items: none".
+    const after = text.slice(m.index + m[0].length);
+    const emptySection = /^[^\w]*(?:items?|findings?)?[^\w]*none\b/i.test(after);
+    if (!/\b(?:no|not|nothing|without)\b/i.test(sentence) && !emptySection) return true;
   }
   return false;
 }
@@ -242,14 +247,16 @@ export function buildLedger(gh: Gh, backtest: Record<string, Tier> = loadBacktes
     const escalation = events.find(
       (e) => e.event === 'labeled' && e.label?.name === ESCALATION_LABEL,
     );
-    const merged = events.find((e) => e.event === 'merged');
     const closedUnmerged = pull.state === 'closed' && !pull.merged_at;
+    // Merging isn't a signal: before the agent apps existed (#1 to #11), agents merged
+    // through the maintainer's login.
     const waitedForMaintainer =
       !!escalation ||
       events.some(
-        (e) => e.event === 'review_requested' && isMaintainer(e.requested_reviewer?.login),
-      ) ||
-      (!!merged && isMaintainer(loginOf(merged)));
+        (e) =>
+          (e.event === 'review_requested' && isMaintainer(e.requested_reviewer?.login)) ||
+          (e.event === 'reviewed' && isMaintainer(loginOf(e)) && !isAgentReview(e)),
+      );
 
     return {
       number: pull.number,
@@ -265,10 +272,11 @@ export function buildLedger(gh: Gh, backtest: Record<string, Tier> = loadBacktes
         agentReviews.some((e) => e.state === 'changes_requested' || reportsProblem(e.body ?? '')),
       reviewedByAgent: agentReviews.length > 0,
       waitedForMaintainer,
-      override: waitedForMaintainer ? overrideOf(events, inline, closedUnmerged) : null,
+      override: waitedForMaintainer ? overrideOf(events, inline) : null,
       escalatedAt: escalation ? timeOf(escalation) : null,
       repairs: repairsIn(pull.title, body),
       repairedBy: [],
+      isRepair: false,
     };
   });
 
@@ -277,12 +285,9 @@ export function buildLedger(gh: Gh, backtest: Record<string, Tier> = loadBacktes
 }
 
 /** How the maintainer changed or rejected a PR that waited for him, or null if he didn't. */
-function overrideOf(
-  events: ApiEvent[],
-  inline: ApiReviewComment[],
-  closedUnmerged: boolean,
-): string | null {
-  if (closedUnmerged) return 'closed without merging';
+function overrideOf(events: ApiEvent[], inline: ApiReviewComment[]): string | null {
+  const closedByHim = events.some((e) => e.event === 'closed' && isMaintainer(loginOf(e)));
+  if (closedByHim && !events.some((e) => e.event === 'merged')) return 'closed without merging';
   if (
     events.some(
       (e) => e.event === 'reviewed' && isMaintainer(loginOf(e)) && e.state === 'changes_requested',
@@ -343,6 +348,7 @@ function linkRepairs(prs: Pr[]): void {
         how === 'reverted' &&
         target.repairs.some((x) => x.how === 'fixed' && reverted.has(x.number));
       if (!fixesAnotherRevertedHere) target.repairedBy.push({ number: pr.number, how });
+      pr.isRepair = true;
     }
   }
 }
@@ -365,34 +371,40 @@ interface Row {
   escapes: number;
   reviewed: number;
   flagged: number;
-  missed: number;
+  /** Escapes in PRs the reviewer saw, and how many of those it flagged. */
+  reviewedEscapes: number;
+  caughtEscapes: number;
   cleanRun: number;
 }
 
 function rowFor(prs: Pr[]): Row {
   const merged = mergedInOrder(prs);
   const escaped = merged.filter((p) => p.repairedBy.length > 0);
+  const reviewedEscapes = escaped.filter((p) => p.reviewedByAgent);
   const lastEscape = escaped.at(-1);
+  const sinceLastEscape = lastEscape ? merged.slice(merged.indexOf(lastEscape) + 1) : merged;
   return {
     merged: merged.length,
     escapes: escaped.length,
     reviewed: merged.filter((p) => p.reviewedByAgent).length,
     flagged: merged.filter((p) => p.reviewerFlagged).length,
-    missed: escaped.filter((p) => !p.reviewerFlagged).length,
-    cleanRun: lastEscape ? merged.length - 1 - merged.indexOf(lastEscape) : merged.length,
+    reviewedEscapes: reviewedEscapes.length,
+    caughtEscapes: reviewedEscapes.filter((p) => p.reviewerFlagged).length,
+    // The fix and revert of an escape are part of the incident, not clean merges.
+    cleanRun: sinceLastEscape.filter((p) => !p.isRepair && p.repairedBy.length === 0).length,
   };
 }
 
 function table(groupName: string, groups: [string, Pr[]][]): string {
   const lines = [
-    `| ${groupName} | Merged | Escapes | Failure rate | Agent-reviewed | Reviewer flagged | Catch rate | Clean merges since last escape |`,
+    `| ${groupName} | Merged | Escapes | Failure rate | Agent-reviewed | Reviewer flagged | Escapes the reviewer flagged | Clean merges since last escape |`,
     '|---|---|---|---|---|---|---|---|',
   ];
   for (const [name, members] of groups) {
     const r = rowFor(members);
-    const known = r.flagged + r.missed;
+    if (r.merged === 0) continue;
     lines.push(
-      `| ${name} | ${r.merged} | ${r.escapes} | ${pct(r.escapes, r.merged)} | ${r.reviewed} | ${r.flagged} | ${pct(r.flagged, known)} | ${r.cleanRun} |`,
+      `| ${name} | ${r.merged} | ${r.escapes} | ${pct(r.escapes, r.merged)} | ${r.reviewed} | ${r.flagged} | ${r.caughtEscapes} of ${r.reviewedEscapes} | ${r.cleanRun} |`,
     );
   }
   return lines.join('\n');
@@ -425,7 +437,7 @@ export function renderReport(prs: Pr[]): string {
     `${prs.length} PRs (${link(prs[0]?.number ?? 0)} to ${link(prs.at(-1)?.number ?? 0)}), ${merged.length} merged.`,
     '',
     `- **Escapes:** ${all.escapes} of ${all.merged} merged PRs were later reverted or fixed (${pct(all.escapes, all.merged)}, the change failure rate).`,
-    `- **Review catch rate:** the reviewer flagged problems in ${all.flagged} merged PRs, and missed ${all.missed} that escaped (${pct(all.flagged, all.flagged + all.missed)} caught).`,
+    `- **Review catch rate:** of ${all.reviewedEscapes} escapes in PRs the reviewer saw, it had flagged ${all.caughtEscapes} (${pct(all.caughtEscapes, all.reviewedEscapes)}). Overall it flagged problems in ${all.flagged} of the ${all.reviewed} merged PRs it reviewed.`,
     `- **Override rate:** the maintainer changed or rejected ${overridden.length} of ${waited.length} PRs that waited for him (${pct(overridden.length, waited.length)}).`,
     escalated.length === 0
       ? `- **Escalations:** none yet; no PR has carried the \`${ESCALATION_LABEL}\` label.`
@@ -517,8 +529,9 @@ export function renderReport(prs: Pr[]): string {
     '**How to read this.**',
     '- An **escape** is a merged PR that a later PR reverted, or said it fixed. A fix reverted along with the PR it fixed is the same incident, not a second escape.',
     "- The **reviewer** is the fresh-context agent review: the reviewer app, or, before it existed, a review posted through the maintainer's login. It **flagged** a PR when it requested changes, left an inline comment, or named a must-fix, should-fix, blocker or real bug, at any time, even after merge.",
-    "- **Catch rate** is flagged PRs out of flagged PRs plus escapes the reviewer didn't flag.",
-    '- A PR **waited for the maintainer** when it requested his review, carried the escalation label, or he merged it himself. He **changed** it when he requested changes, or remarked and more commits followed; he **rejected** it when it closed unmerged.',
+    '- **Catch rate** is, of the escapes in PRs the reviewer saw, how many it had flagged.',
+    '- **Clean merges since last escape** leave out the fixes and reverts of an escape: they belong to the incident.',
+    '- A PR **waited for the maintainer** when it requested his review, carried the escalation label, or he reviewed it himself. He **changed** it when he requested changes, or remarked and more commits followed; he **rejected** it when he closed it unmerged.',
     '- **Kind** is the riskiest area a PR touches, in this order: identity & GitHub config, harness & permissions, server, core, evals, web, tooling & deps, e2e, docs & backlog.',
   );
   return `${out.join('\n')}\n`;

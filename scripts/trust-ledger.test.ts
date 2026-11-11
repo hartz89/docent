@@ -81,7 +81,7 @@ describe('the trust ledger, from recorded GitHub history', () => {
     });
 
     expect(report(snapshot())).toContain(
-      '- **Review catch rate:** the reviewer flagged problems in 2 merged PRs, and missed 0 that escaped (100% caught).',
+      '- **Review catch rate:** of 1 escapes in PRs the reviewer saw, it had flagged 1 (100%). Overall it flagged problems in 2 of the 7 merged PRs it reviewed.',
     );
   });
 
@@ -98,7 +98,8 @@ describe('the trust ledger, from recorded GitHub history', () => {
       [33, '1', 'description'],
       [42, '1', 'description'],
     ]);
-    expect(report(snapshot())).toContain('| 1 | 6 | 1 | 17% | 6 | 2 | 100% | 4 |');
+    // Since #29, only #33 and #42 are clean: #30 and #31 are its fix and revert.
+    expect(report(snapshot())).toContain('| 1 | 6 | 1 | 17% | 6 | 2 | 1 of 1 | 2 |');
   });
 
   test('a tier label wins over the description', () => {
@@ -113,8 +114,11 @@ describe('the trust ledger, from recorded GitHub history', () => {
   test("the maintainer's remark on #1, followed by more commits, counts as an override", () => {
     const text = report(snapshot());
     expect(text).toContain(
-      '- **Override rate:** the maintainer changed or rejected 1 of 3 PRs that waited for him (33%).',
+      '- **Override rate:** the maintainer changed or rejected 1 of 1 PRs that waited for him (100%).',
     );
+    // #6 and #11 merged through his login before the agent apps existed, but agents did the
+    // merging, so they didn't wait for him.
+    expect(prIn(ledger(snapshot()), 6).waitedForMaintainer).toBe(false);
     expect(text).toContain(
       'Land changes through GitHub PRs from worktrees | 2 | commented, then more commits followed |',
     );
@@ -134,7 +138,9 @@ describe('the trust ledger, from recorded GitHub history', () => {
         created_at: '2026-11-10T05:00:00Z',
         actor: { login: 'x' },
       },
-      ...timeline.filter((e) => e.event !== 'merged'),
+      ...timeline
+        .filter((e) => e.event !== 'merged')
+        .map((e) => (e.event === 'closed' ? { ...e, actor: { login: 'hartz89' } } : e)),
     ];
 
     const text = report(saved);
@@ -155,6 +161,8 @@ describe('reading review and PR text', () => {
     ['### must-fix\n\n1. The checked radio is under 3:1.', true],
     ['Verdict: no must-fix or should-fix findings. Five nits below.', false],
     ['Approving. I found no real bugs.', false],
+    ['### Must fix\n\nNone.\n\n### Nits\n\n1. A typo.', false],
+    ['**Should-fix items:** none.', false],
     ['Fresh-context review. No bugs found; approving.', false],
   ])('reportsProblem(%j) is %s', (text, expected) => {
     expect(reportsProblem(text)).toBe(expected);
@@ -174,6 +182,7 @@ describe('reading review and PR text', () => {
     ],
     ['Web: chat', 'This also fixes the gap noted in [#25](https://x).', []],
     ['Docs', 'PRs like #19 fell to 2a. Review findings were fixed.', []],
+    ['Docs', 'Typo fixed; see #12 for context.', []],
     // A pasted ledger, or prose quoting a fix, doesn't make this PR a fix.
     ['Ledger', '| [#29](…) Wrap | 1 | web | fixed in [#30](…) |\n> fixes #12', []],
     ['Ledger', 'As in #30\'s "fix the bug the reviewer found in #29", and `fixes #3`.', []],
