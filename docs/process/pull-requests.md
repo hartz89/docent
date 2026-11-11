@@ -2,7 +2,7 @@
 
 PRs are sorted into risk tiers, and humans review a sample of them. Trust is earned through metrics: as defects stop escaping in a tier, review in that tier becomes rarer. This is a trial, based on [Ship / Show / Ask](https://martinfowler.com/articles/ship-show-ask.html); see [`../north-stars.md`](../north-stars.md).
 
-Tiers set how deep the review goes. They don't decide who approves: no path waits for the maintainer's approval. The one thing they have to do by hand is push a change to `.github/workflows/`, because the builder app has no Workflows permission.
+Tiers set how deep the review goes. They don't decide who approves: no path waits for the maintainer's approval. The one thing the maintainer has to do by hand is push a change to `.github/workflows/`, because the builder app has no Workflows permission.
 
 | Tier | What it covers | Review |
 | ---- | -------------- | ------ |

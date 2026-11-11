@@ -19,7 +19,8 @@
         "dismiss_stale_reviews_on_push": true,
         "require_last_push_approval": false,
         "required_review_thread_resolution": false,
-        "require_extra_approval_for_unattributed_changes": true
+        "require_extra_approval_for_unattributed_changes": true,
+        "required_reviewers": []
       }
     },
     {
@@ -31,7 +32,8 @@
             "context": "check",
             "integration_id": 15368
           }
-        ]
+        ],
+        "do_not_enforce_on_create": false
       }
     },
     {
