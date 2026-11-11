@@ -4,7 +4,7 @@
 // Run: node scripts/check-deps.ts (part of pnpm verify). Reads the installed tree, no network.
 
 import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const PERMISSIVE = new Set(['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC']);
@@ -44,6 +44,24 @@ type Manifest = {
 };
 type LicenseEntry = { name: string; versions: string[] };
 
+/**
+ * One message per package whose license isn't permissive or excepted. `scripts/pack.ts` runs it too,
+ * over the shrinkwrap npm resolves, since that tree is the one users install.
+ */
+export function licenseProblems(
+  packages: readonly { name: string; version: string; license: string }[],
+): string[] {
+  return packages
+    .filter(
+      ({ name, license }) =>
+        !PERMISSIVE.has(license) && !name.startsWith('@docent/') && !(name in LICENSE_EXCEPTIONS),
+    )
+    .map(
+      ({ name, version, license }) =>
+        `${name}@${version} is licensed ${license}. Replace it, or add it to LICENSE_EXCEPTIONS in scripts/check-deps.ts with the reason it's fine.`,
+    );
+}
+
 /** Returns one short message per problem. An empty list means everything is pinned and permitted. */
 export function checkDeps(
   manifests: Record<string, Manifest>,
@@ -59,15 +77,10 @@ export function checkDeps(
       }
     }
   }
-  for (const [license, entries] of Object.entries(licenses)) {
-    if (PERMISSIVE.has(license)) continue;
-    for (const entry of entries) {
-      if (entry.name.startsWith('@docent/') || entry.name in LICENSE_EXCEPTIONS) continue;
-      problems.push(
-        `${entry.name}@${entry.versions.join(',')} is licensed ${license}. Replace it, or add it to LICENSE_EXCEPTIONS in scripts/check-deps.ts with the reason it's fine.`,
-      );
-    }
-  }
+  const packages = Object.entries(licenses).flatMap(([license, entries]) =>
+    entries.map((entry) => ({ name: entry.name, version: entry.versions.join(','), license })),
+  );
+  problems.push(...licenseProblems(packages));
   return problems.sort();
 }
 
@@ -81,9 +94,9 @@ if (import.meta.main) {
     ),
   ]) {
     const path = join(dir, 'package.json');
-    try {
+    if (existsSync(join(root, path))) {
       manifests[path] = JSON.parse(readFileSync(join(root, path), 'utf8'));
-    } catch {}
+    }
   }
   const licenses = JSON.parse(
     execFileSync('pnpm', ['licenses', 'list', '--prod', '--json', '--recursive'], {

@@ -23,12 +23,12 @@ It runs locally, on your own agent subscription. There's no hosted service, and 
 ### Your first review
 
 ```bash
-npx @docent/docent review https://github.com/owner/repo/pull/123
+npx @<scope>/docent review https://github.com/owner/repo/pull/123
 ```
 
-Docent fetches the PR, writes the tour, and opens it in your browser. Press Ctrl-C in the terminal when you're done. Run `npx @docent/docent --help` for the options.
+Docent fetches the PR, writes the tour, and opens it in your browser. Press Ctrl-C in the terminal when you're done. Run `npx @<scope>/docent --help` for the options. (`<scope>` is a placeholder until the first release picks the npm scope.)
 
-The first run downloads about 350 MB, mostly the Claude Code runtime that comes with Anthropic's Agent SDK. npm keeps it cached after that.
+The first run installs about 350 MB, mostly the Claude Code runtime that comes with Anthropic's Agent SDK. npm keeps it cached after that.
 
 To ask questions of the PR author's own agent session, that session needs to be on your machine. Docent finds it from the `Claude-Session:` link in the PR, or you can name it with `--session <id>`. Without it, the guide answers instead.
 

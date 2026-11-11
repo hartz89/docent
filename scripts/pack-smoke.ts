@@ -52,6 +52,7 @@ try {
   });
   const lines: string[] = [];
   const url = await new Promise<string>((done, fail) => {
+    setTimeout(() => fail(new Error(`No URL within 60s:\n${lines.join('\n')}`)), 60_000).unref();
     child?.once('exit', (code) => fail(new Error(`docent exited early with code ${code}`)));
     if (!child?.stdout) return fail(new Error('No stdout'));
     createInterface({ input: child.stdout }).on('line', (line) => {

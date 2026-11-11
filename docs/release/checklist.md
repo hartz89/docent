@@ -11,7 +11,7 @@ The maintainer's steps for putting Docent on npm. Agents prepare everything up t
 ## Once, before the first release
 
 1. **Decide the npm scope.** It's the open question in [`backlog/decisions.md`](../../backlog/decisions.md), "npm scope for publishing". Create that org or user scope on npmjs.com yourself.
-2. **Set the scope in code.** It lives in one place: `NPM_SCOPE` at the top of [`scripts/pack.ts`](../../scripts/pack.ts). Then replace the placeholder `@docent/docent` in `README.md` and in this file (`grep -rn "@docent/docent" README.md docs/release`). The workspace's own `@docent/core`, `@docent/server` and `@docent/web` names are internal and can stay.
+2. **Set the scope in code.** It lives in one place: `NPM_SCOPE` at the top of [`scripts/pack.ts`](../../scripts/pack.ts). Then replace the placeholder `@<scope>/docent` in `README.md`, and `@docent/docent` in this file (`grep -rn "<scope>\|@docent/docent" README.md docs/release`). The workspace's own `@docent/core`, `@docent/server` and `@docent/web` names are internal and can stay.
 3. **Turn on private vulnerability reporting,** so the link in `SECURITY.md` works: the repo's Settings → Code security → "Private vulnerability reporting". Or run `gh api -X PUT repos/hartz89/docent/private-vulnerability-reporting`.
 4. **Add the workflow.** Copy [`release.yml`](release.yml) to `.github/workflows/release.yml` and land it through a PR. The builder can't push workflows, so this one is yours.
 5. **Create the `npm-release` environment** on GitHub (Settings → Environments). Add yourself as a required reviewer, and limit it to tags matching `v*`. Every publish then waits for your click.

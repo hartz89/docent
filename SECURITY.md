@@ -12,7 +12,7 @@ Docent runs on your own machine, with your own logins. This page says what it to
 ## What Docent reads
 
 - **The pull request,** through your `gh` login: its title, description, author, diff and commit messages.
-- **The PR's code.** Docent fetches the base and head commits into a cache folder (`~/Library/Caches/docent` on macOS, `~/.cache/docent` elsewhere, or `DOCENT_CACHE_DIR`). Finished tours are cached there too.
+- **The PR's code.** Docent fetches the base and head commits into a cache folder (`~/Library/Caches/docent` on macOS, `$XDG_CACHE_HOME/docent` or `~/.cache/docent` elsewhere, or `DOCENT_CACHE_DIR` if you set it). Finished tours are cached there too.
 - **Your Claude Code transcripts** in `~/.claude/projects`, only to find the PR author's session so it can answer your questions. A public `Claude-Session:` link in a PR is never enough on its own: the transcript itself has to show work on that PR's branch, in that repo.
 
 Everything it reads from the PR is treated as data, never as instructions. That includes code, comments and the PR description, which can all carry text written to steer an AI.
@@ -39,7 +39,7 @@ Treat the printed link like a password while Docent is running. Anyone who has i
 
 ## Supply chain
 
-The npm package pins its whole dependency tree with a shrinkwrap, and releases are published from GitHub Actions with npm provenance, so you can check where a version was built.
+The npm package pins its whole dependency tree with a shrinkwrap. Docent isn't on npm yet. When it is, releases will be published only from GitHub Actions, with npm provenance, so you can check where each version was built.
 
 ## Reporting a problem
 

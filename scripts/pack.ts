@@ -24,6 +24,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { build } from 'rolldown';
+import { licenseProblems } from './check-deps.ts';
 
 /**
  * The npm scope the package ships under. The unscoped `docent` name is taken, and the real scope
@@ -123,11 +124,31 @@ execFileSync(
     '--ignore-scripts',
     '--no-audit',
     '--no-fund',
+    '--registry=https://registry.npmjs.org/',
     `--before=${before}`,
   ],
   { cwd: out, env: npmEnv, stdio: ['ignore', 'ignore', 'inherit'] },
 );
 renameSync(join(out, 'package-lock.json'), join(out, 'npm-shrinkwrap.json'));
+
+// pnpm verify checks licenses on the repo's tree; this checks the tree users actually get.
+const shrinkwrap = JSON.parse(readFileSync(join(out, 'npm-shrinkwrap.json'), 'utf8')) as {
+  packages: Record<string, { name?: string; version?: string; license?: string }>;
+};
+const unlicensed = licenseProblems(
+  Object.entries(shrinkwrap.packages)
+    .filter(([path]) => path !== '')
+    .map(([path, entry]) => ({
+      name: entry.name ?? path.slice(path.lastIndexOf('node_modules/') + 'node_modules/'.length),
+      version: entry.version ?? '?',
+      license: entry.license ?? 'Unknown',
+    })),
+);
+if (unlicensed.length > 0) {
+  console.error(`pack: ${unlicensed.length} license problem(s) in the shrinkwrap`);
+  for (const problem of unlicensed) console.error(`  - ${problem}`);
+  process.exit(1);
+}
 
 const [packed] = JSON.parse(
   execFileSync('npm', ['pack', '--json', '--pack-destination', join(root, 'dist')], {
