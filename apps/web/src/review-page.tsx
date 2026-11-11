@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { api, followTour } from './api.ts';
 import { HealthPage } from './health-page.tsx';
 import { StatusScreen } from './status-screen.tsx';
+import { ThemeToggle } from './theme.tsx';
 import { TourScreen } from './tour-screen.tsx';
 
 export type Snapshot = ReviewSnapshot;
@@ -54,6 +55,12 @@ export function ReviewPage() {
   useEffect(() => {
     if (missingPr && tour && !stillReading) void refetch();
   }, [missingPr, tour, stillReading, refetch]);
+  // Who answers questions is settled by the time the tour is ready; fetch it then if we missed it.
+  const unknownAuthor = data !== undefined && data !== null && data.author === null;
+  const isReady = tour?.state === 'ready';
+  useEffect(() => {
+    if (unknownAuthor && isReady) void refetch();
+  }, [unknownAuthor, isReady, refetch]);
 
   if (snapshot.isPending) return <div className="app" />;
   if (snapshot.isError) {
@@ -89,6 +96,7 @@ function TopBarShell({ snapshot }: { snapshot: Snapshot }) {
           </div>
         )}
       </div>
+      <ThemeToggle />
     </header>
   );
 }

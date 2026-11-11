@@ -3,9 +3,13 @@
 // with the app: it's about a quarter of the bundle, and nothing needs it until code is on screen.
 import type { HighlighterCore } from 'shiki/core';
 
-export type Token = { text: string; color: string | undefined };
+/** A run of text with its color in each theme. The page picks one in CSS, so switching themes
+ * doesn't re-highlight anything. */
+export type Token = { text: string; dark: string | undefined; light: string | undefined };
 
-const THEME = 'vitesse-dark';
+// github-light-default for light: measured on a real file, vitesse-light left 85% of characters
+// under 4.5:1 contrast on the light ground, and this one 22% (only its comment grey, at 4.39).
+const THEMES = { dark: 'vitesse-dark', light: 'github-light-default' } as const;
 /** Past this size, plain text renders faster than a reviewer can notice the colors missing. */
 const MAX_HIGHLIGHT_CHARS = 400_000;
 
@@ -18,12 +22,13 @@ type Shiki = {
 let shiki: Promise<Shiki> | undefined;
 
 async function loadShiki(): Promise<Shiki> {
-  const [{ createHighlighterCore }, { createJavaScriptRegexEngine }, langs, theme] =
+  const [{ createHighlighterCore }, { createJavaScriptRegexEngine }, langs, dark, light] =
     await Promise.all([
       import('shiki/core'),
       import('shiki/engine/javascript'),
       import('shiki/langs'),
       import('shiki/themes/vitesse-dark.mjs'),
+      import('shiki/themes/github-light-default.mjs'),
     ]);
 
   const byExtension = new Map<string, string>();
@@ -37,7 +42,7 @@ async function loadShiki(): Promise<Shiki> {
   byExtension.set('yml', 'yaml');
 
   const core = await createHighlighterCore({
-    themes: [theme.default],
+    themes: [dark.default, light.default],
     langs: [],
     engine: createJavaScriptRegexEngine({ forgiving: true }),
   });
@@ -62,7 +67,8 @@ async function loadShiki(): Promise<Shiki> {
 
 /** Splits a file into lines of colored tokens. Unknown languages come back as plain lines. */
 export async function highlight(path: string, text: string): Promise<Token[][]> {
-  const plain = () => text.split(/\r?\n/).map((line) => [{ text: line, color: undefined }]);
+  const plain = () =>
+    text.split(/\r?\n/).map((line) => [{ text: line, dark: undefined, light: undefined }]);
   if (text.length > MAX_HIGHLIGHT_CHARS) return plain();
   try {
     // Only a failed load clears the cache, so one file that fails to tokenize doesn't throw away
@@ -75,8 +81,14 @@ export async function highlight(path: string, text: string): Promise<Token[][]> 
     const { core, languageFor, load } = await shiki;
     const lang = languageFor(path);
     if (!lang || !(await load(lang))) return plain();
-    const { tokens } = core.codeToTokens(text, { lang, theme: THEME });
-    return tokens.map((line) => line.map((token) => ({ text: token.content, color: token.color })));
+    const lines = core.codeToTokensWithThemes(text, { lang, themes: THEMES });
+    return lines.map((line) =>
+      line.map((token) => ({
+        text: token.content,
+        dark: token.variants.dark?.color,
+        light: token.variants.light?.color,
+      })),
+    );
   } catch {
     return plain();
   }

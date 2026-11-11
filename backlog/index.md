@@ -95,6 +95,7 @@ Version one is the brief's loop: open a PR, take the tour, ask a question, leave
     Model-backed jobs run on a label or in a merge queue, since fork PRs get no secrets.
 21. **First scheduled maintenance agents:** dependency updates, architecture audits against the guards, and doc drift checks (does AGENTS.md still match the code?).
 22. **Briefs.** Briefs are triggered by how much the repo changed, not by the calendar. Add a skill that writes them, and keep notes on what the maintainer finds useful.
+23. **Cheaper questions on long author sessions.** A question forked from a 250k-token session cost $1.63, and a second question two minutes later cost the same: each fork wrote about 196k tokens of prompt cache instead of reading the last fork's. Find out why the cache isn't reused, and try forking at the PR's last message or a cheaper model for questions. A size check now skips forks estimated over `--fork-budget` (default $2), so the remaining work is making them cheap, not just bounded. Evidence: [`docs/research/2026-11-08-question-path-live.md`](../docs/research/2026-11-08-question-path-live.md). _Outcome: asking the author costs cents, not dollars._
 
 ## After v1
 
