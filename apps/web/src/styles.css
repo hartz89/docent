@@ -1073,3 +1073,272 @@ kbd {
     transform: none;
   }
 }
+
+/* ---------- The verdict ---------- */
+
+.verdict {
+  margin-top: 26px;
+}
+
+.verdict-label {
+  display: block;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.verdict-optional {
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--muted);
+}
+
+.verdict-choices {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 22px;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.verdict-choice {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  column-gap: 12px;
+  align-items: center;
+  padding: 11px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--ground);
+  cursor: pointer;
+  transition:
+    border-color 140ms var(--ease),
+    background 140ms var(--ease);
+}
+
+.verdict-choice:hover {
+  border-color: var(--muted);
+}
+
+.verdict-choice input {
+  grid-row: span 2;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--faint);
+  transition:
+    border-color 140ms var(--ease),
+    box-shadow 140ms var(--ease);
+  cursor: pointer;
+}
+
+.verdict-choice input:focus-visible {
+  outline: 2px solid var(--brass-text);
+  outline-offset: 2px;
+}
+
+.verdict-choice input:checked {
+  border-color: var(--brass-fill);
+  box-shadow: inset 0 0 0 3.5px var(--ground);
+  background: var(--brass-fill);
+}
+
+/* --brass-fill, not --brass: plain brass is under 3:1 on light paper, and this is what shows the
+   choice. */
+.verdict-choice:has(input:checked) {
+  border-color: var(--brass-fill);
+  background: var(--brass-tint);
+}
+
+.verdict-choice-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.verdict-choice-hint {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.verdict textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--ground);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.verdict textarea:focus {
+  outline: none;
+  border-color: var(--brass-text);
+}
+
+.verdict-preview {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px dashed var(--border-strong);
+}
+
+.verdict-preview-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.verdict-preview p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.verdict-preview strong {
+  color: var(--text);
+}
+
+.verdict-quote {
+  margin: 10px 0 0;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--border-strong);
+  font-family: var(--serif);
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.verdict-error {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  font-size: 13.5px;
+}
+
+.verdict-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.verdict-actions .primary-button {
+  flex-shrink: 0;
+}
+
+.verdict.posted {
+  padding: 18px 18px 16px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--brass) 45%, transparent);
+  background: var(--brass-tint);
+}
+
+.verdict-posted-head {
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  gap: 12px;
+  align-items: center;
+}
+
+.verdict-posted-mark {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--brass-fill);
+  color: var(--brass-ink);
+  font-weight: 700;
+  animation: verdict-mark 420ms var(--ease);
+}
+
+.verdict-posted-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.verdict-posted-meta {
+  margin: 1px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.verdict.posted .verdict-quote {
+  margin-top: 14px;
+}
+
+.verdict-link {
+  display: inline-block;
+  margin-top: 14px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--brass-text);
+  text-decoration: none;
+}
+
+.verdict-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.verdict-button.posted {
+  border-color: color-mix(in srgb, var(--brass) 45%, transparent);
+  color: var(--brass-text);
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 140ms var(--ease);
+}
+
+.verdict-button.posted:hover {
+  border-color: var(--brass-text);
+}
+
+@keyframes verdict-mark {
+  from {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .verdict-posted-mark {
+    animation: none;
+  }
+
+  .verdict-choice,
+  .verdict-choice input,
+  .verdict-button.posted {
+    transition: none;
+  }
+}
