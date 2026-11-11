@@ -1,6 +1,9 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { generateKeyPairSync, verify } from 'node:crypto';
+import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'vitest';
@@ -732,5 +735,78 @@ describe('as-agent review and reply forms', () => {
     expect(await asAgent(['reviewer', '--', ...post(REVIEWS, big)], deps)).toBe(1);
     expect(calls).toEqual([]);
     expect(logs()[0]).toContain('is over 1000000 bytes');
+  });
+});
+
+describe('as-agent as a process', () => {
+  /**
+   * The real runner, launched the way agents launch it, with nothing real behind it. The key is
+   * the throwaway one above. A preload swaps the global fetch for one that only reaches a fake
+   * GitHub on localhost, so the runner itself is unchanged. The command is a real git push, but
+   * "origin" isn't configured, so git reads it as a local path, refuses that transport, and exits
+   * 128 without touching the network.
+   */
+  async function launch(command: string[]) {
+    const calls: string[] = [];
+    const server = createServer((req, res) => {
+      calls.push(`${req.method} ${req.url}`);
+      const reply = (status: number, body?: object) => {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(body && JSON.stringify(body));
+      };
+      if (req.url === '/repos/hartz89/docent/installation') reply(200, { id: 222 });
+      else if (req.url === '/app/installations/222/access_tokens') reply(201, { token: TOKEN });
+      else if (req.url?.startsWith('/users/')) reply(200, BOT);
+      else if (req.url === '/installation/token') reply(204);
+      else reply(404, { message: 'Not Found' });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const preload = join(dir, 'fake-github.mjs');
+    writeFileSync(
+      preload,
+      [
+        'const real = globalThis.fetch;',
+        'globalThis.fetch = (input, init) => {',
+        '  const url = String(input);',
+        "  const api = 'https://api.github.com/';",
+        '  if (!url.startsWith(api)) throw new Error("test refuses to fetch " + url);',
+        `  return real('http://127.0.0.1:${port}/' + url.slice(api.length), init);`,
+        '};',
+      ].join('\n'),
+    );
+    const repo = join(dir, 'repo');
+    // A repo with branch x, made without the developer's git config (signing, hooks and the like).
+    const git = (args: string[]) =>
+      execFileSync(REAL_GIT, args, {
+        env: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+      });
+    git(['init', '-q', '-b', 'x', repo]);
+    const who = ['-c', 'user.name=test', '-c', 'user.email=test@example.com'];
+    git(['-C', repo, ...who, 'commit', '-q', '--allow-empty', '-m', 'x']);
+    const runner = join(import.meta.dirname, 'as-agent.ts');
+    const child = spawn(process.execPath, ['--import', preload, runner, ...command], {
+      cwd: repo,
+      env: { HOME: dir, PATH: '/usr/bin:/bin', DOCENT_BUILDER_APP_KEY: pem },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    // Whoever reads the output goes away at once, as `| head` does after its lines.
+    child.stdout.destroy();
+    child.stderr.destroy();
+    const [code, signal] = await once(child, 'close');
+    server.close();
+    return { code, signal, calls };
+  }
+
+  test('revokes the token and exits normally when its output reader closes early', async () => {
+    const { code, signal, calls } = await launch(['builder', '--', 'git', 'push', 'origin', 'x']);
+    // git's own exit code. A crash on the closed pipe would exit 1, before the revoke.
+    expect({ code, signal }).toEqual({ code: 128, signal: null });
+    expect(calls).toEqual([
+      'GET /repos/hartz89/docent/installation',
+      'POST /app/installations/222/access_tokens',
+      'GET /users/docent-builder-hartz89%5Bbot%5D',
+      'DELETE /installation/token',
+    ]);
   });
 });
