@@ -65,7 +65,8 @@ test('serve --stop stops the launcher on that port, by the PID it wrote', async 
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   const exited = once(launcher, 'exit');
-  const port = await new Promise<string>((resolve) => {
+  const port = await new Promise<string>((resolve, reject) => {
+    launcher.once('exit', (code) => reject(new Error(`docent serve exited early with ${code}`)));
     createInterface({ input: launcher.stdout }).on('line', (line) => {
       const match = /listening at http:\/\/127\.0\.0\.1:(\d+)/.exec(line);
       if (match?.[1]) resolve(match[1]);

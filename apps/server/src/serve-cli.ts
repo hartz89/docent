@@ -65,10 +65,10 @@ else await serve();
 
 async function serve() {
   const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url));
-  if (!existsSync(webRoot)) {
-    console.error(`Web app not built (missing ${webRoot}). Run: pnpm build`);
-    process.exit(1);
-  }
+  // Checked per review, not at startup, so a launcher started at login before a build doesn't
+  // crash-loop; the confirm click says what's missing instead.
+  const webMissing = `Web app not built (missing ${webRoot}). Run: pnpm build`;
+  if (!existsSync(webRoot)) console.error(webMissing);
   const model = values.model ?? process.env.DOCENT_MODEL ?? DEFAULT_MODEL;
   const allowedRepos = config.allowedRepos ?? (await ownRepo());
   const fixture = values.fixture;
@@ -111,6 +111,7 @@ async function serve() {
     configPath: configPath(),
     preview,
     start: async (pr) => {
+      if (!existsSync(webRoot)) throw new Error(webMissing);
       const review = fixture
         ? new Review({
             source: fixtureSource(fixture),
