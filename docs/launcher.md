@@ -81,7 +81,7 @@ launchctl bootout gui/$(id -u)/dev.docent.launcher                              
 
 If the port is already taken (say, you ran `docent serve` by hand while launchd's copy runs), the launcher says so and exits 0, so launchd doesn't keep retrying. A bad config file exits 1, and launchd retries every 10 seconds or so; the reason is in `/tmp/docent-launcher.log`.
 
-`docent serve --stop` also works. It sends SIGTERM to the PID the launcher wrote to `<cache>/launcher-<port>.pid`, after checking that PID still runs `cli.js serve`. The launcher exits cleanly, so launchd leaves it stopped until the next login.
+`docent serve --stop` also works. It sends SIGTERM to the PID the launcher wrote to `<cache>/launcher-<port>.pid`, after checking that PID still runs `cli.js serve` and (where `lsof` exists) is listening on that port. The launcher exits cleanly, so launchd leaves it stopped until the next login.
 
 ## Can a claude.ai artifact open the link?
 
@@ -100,15 +100,15 @@ The launcher is the only Docent server that other websites are meant to link to.
 | A link or hidden request starts a review | `GET /open` only renders the confirm page. Only a `POST` starts one. |
 | A hostile page submits the `POST` | The `POST` must carry `Origin` equal to the launcher's own origin, and `Sec-Fetch-Site: same-origin` when the browser sends it. It must also carry a CSRF token: an HMAC of the PR URL and the head commit the page showed, under a secret made fresh each launch. The token is only in the confirm page, which other origins can't read: there's no CORS, framing is refused, and COOP cuts the opener's handle to the tab. |
 | DNS rebinding (`evil.example` resolves to 127.0.0.1) | The launcher binds 127.0.0.1 only. Every request's `Host` must be exactly `127.0.0.1:<port>` or `localhost:<port>`, checked both in the URL and in the raw header. |
-| Clickjacking the confirm button | `frame-ancestors 'none'` and `X-Frame-Options: DENY`. Against a pop-up opened under the cursor ("double-clickjacking"), the button ignores clicks for its first 0.8 s on screen. |
+| Clickjacking the confirm button | `frame-ancestors 'none'` and `X-Frame-Options: DENY`. Against a pop-up that covers the page and asks for a double click ("double-clickjacking"), the button is `disabled` (no click, no Enter) until the tab is visible and focused and has seen your pointer or keys for 0.5 s, and it disables again whenever the tab loses focus. A small inline script does this, allowed by its CSP hash; it's the page's only script. Without JavaScript the button stays disabled. |
 | Stealing the review token | It appears only in the `303` redirect after a valid confirm, as a URL fragment, which browsers never send to servers or in a `Referer`. Every launcher response is `Referrer-Policy: no-referrer`, except the confirm page itself, which is `same-origin`: under `no-referrer`, browsers send `Origin: null` on the page's own POST, which would break the Origin check. The token is never logged. |
-| Making the launcher hit GitHub in the background | `GET /open` refuses loads that aren't a page in a tab (`Sec-Fetch-Dest` other than `document`), and lookups are reused for 30 s. |
-| Opening a PR from a repo you don't trust | Only `allowedRepos`. The check happens before anything asks GitHub about the PR. |
+| Making the launcher hit GitHub in the background | `GET /open` refuses anything but a page load in a tab: `Sec-Fetch-Dest` other than `document`, `Sec-Fetch-Mode` other than `navigate`, or a prefetch or prerender. Browsers without Fetch Metadata skip those checks, so at most 4 lookups run at once (more get a "busy" page), and each is reused for 30 s. Only allowed repos are ever looked up. |
+| A PR from someone you don't trust, in a repo you allowed | Anyone can open a PR on a public repo, so the allow list trusts repos, not authors. The page names the PR's author and marks a PR from a fork, so you see who wrote it before you click. Even so, the PR's code never runs: the guide only reads, and a fork PR never matches an author session. The worst case is about $1 and a tour that may carry the author's prompt injection. |
 | A stale page starting a costlier commit | The token binds the head commit the page showed. After a push, the click starts nothing and shows the page again, with the new cost. |
-| Spending money by repeated confirms | At most 5 new reviews start in any 5 minutes. Reopening a running review is free. At most 10 run at once; the least recently opened closes first. |
+| Spending money by repeated confirms | At most 5 new reviews start in any 5 minutes. Reopening a running review is free. At most 10 stay reachable; past that, the least recently opened one's server closes. A tour that's still being written when its server closes runs to the end and lands in the cache, so the start limit is what bounds spend. |
 | Running the PR's code | Nothing new. The review server reads the PR as before: a hardened checkout, never executed. |
 
 **What it does not defend against:**
 - **Anything running as you on this machine.** Local processes can call the launcher like a browser can. They can already read your `gh` login and the review servers' memory, so the launcher adds nothing for them.
 - **You clicking confirm on a page you didn't mean to open.** The worst case is a review of a PR in a repo you allowed, at about $1, and within the rate limit.
-- **A PR title that misleads.** The title is the PR author's text. It's escaped, so it can't inject markup, but it can still lie. The page also shows the repo, the number and the head commit.
+- **A PR title that misleads.** The title is the PR author's text. It's escaped, so it can't inject markup, but it can still lie. The page also shows the repo, number, head commit and author.

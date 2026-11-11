@@ -171,18 +171,37 @@ export function githubSource(url: string, cacheDir: string): PrSource {
 }
 
 /**
- * A PR's title and the two commits its diff sits between, with no checkout. The launcher uses
- * it to name the PR and to find a cached tour before anything starts.
+ * A PR's title, author and the two commits its diff sits between, with no checkout. The
+ * launcher uses it to name the PR and to find a cached tour before anything starts.
  */
-export async function readPrHead(
-  url: string,
-): Promise<{ repo: string; number: number; title: string; base: CommitSha; head: CommitSha }> {
+export async function readPrHead(url: string): Promise<{
+  repo: string;
+  number: number;
+  title: string;
+  author: string;
+  fromFork: boolean;
+  base: CommitSha;
+  head: CommitSha;
+}> {
   const ref = parsePrUrl(url);
   if (!ref) throw new Error(`Not a GitHub pull request URL: ${url}`);
   const repo = `${ref.owner}/${ref.name}`;
   const view = JSON.parse(
-    await gh(['pr', 'view', url, '--json', 'number,title,baseRefOid,headRefOid']),
-  ) as { number: number; title: string; baseRefOid: string; headRefOid: string };
+    await gh([
+      'pr',
+      'view',
+      url,
+      '--json',
+      'number,title,author,isCrossRepository,baseRefOid,headRefOid',
+    ]),
+  ) as {
+    number: number;
+    title: string;
+    author: { login: string };
+    isCrossRepository: boolean;
+    baseRefOid: string;
+    headRefOid: string;
+  };
   const mergeBase = await gh([
     'api',
     `repos/${repo}/compare/${view.baseRefOid}...${view.headRefOid}`,
@@ -193,6 +212,8 @@ export async function readPrHead(
     repo,
     number: view.number,
     title: view.title,
+    author: view.author.login,
+    fromFork: view.isCrossRepository,
     base: commitSha(mergeBase.trim()),
     head: commitSha(view.headRefOid),
   };

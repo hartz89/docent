@@ -23,10 +23,16 @@ test('a link opens a confirm page, and one click lands on the tour', async ({ pa
       await expect(page.getByRole('heading', { name: 'Open this review?' })).toBeVisible();
       await expect(page.getByText('fix(cors): reflect request origin')).toBeVisible();
       await expect(page.getByText('About $1 to write.')).toBeVisible();
+      await expect(page.locator('.author')).toHaveText('app/');
     });
 
     await test.step('confirming opens the tour on its own review server', async () => {
-      await page.getByRole('button', { name: 'Start the review' }).click();
+      // The button arms only once the reviewer's pointer has been on this page for a moment.
+      const start = page.getByRole('button', { name: 'Start the review' });
+      await expect(start).toBeDisabled();
+      await start.hover();
+      await expect(start).toBeEnabled();
+      await start.click();
       await expect(page.getByRole('heading', { level: 1 })).toContainText('cors');
       await expect(page.getByText(/Stop 1 of \d+/)).toBeVisible();
       // The token came in the fragment, and the app has taken it out of the address bar.

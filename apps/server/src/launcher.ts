@@ -4,7 +4,7 @@
 // - A click on that page (a same-origin POST carrying the page's CSRF token) starts the review,
 //   then redirects the browser to it with that review's per-launch token.
 // See docs/launcher.md for the threat model.
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { createMiddleware } from 'hono/factory';
 import { parsePrUrl } from './github.ts';
@@ -16,6 +16,10 @@ export type PrPreview = {
   repo: string;
   number: number;
   title: string;
+  /** The PR author's login. Anyone can open a PR on a public repo, so the page says who did. */
+  author: string;
+  /** The head branch lives in a fork, not in the repo itself. */
+  fromFork: boolean;
   head: string;
   /** A finished tour for this head commit is in the cache, so opening it costs nothing. */
   cached: boolean;
@@ -56,6 +60,27 @@ export const START_WINDOW_MS = 5 * 60_000;
 export const MAX_OPEN_REVIEWS = 10;
 /** How long a PR's preview is reused, so reloads and the confirm click don't re-ask GitHub. */
 const PREVIEW_TTL_MS = 30_000;
+/** At most this many PR lookups run at once; more get a "busy" page. */
+export const MAX_LOOKUPS = 4;
+
+/**
+ * Arms the confirm button. It stays disabled (no click, no Enter) until this tab is visible and
+ * focused and has seen the reviewer's pointer or keys for half a second, and it disarms whenever
+ * the tab loses focus. A page that pops up over this one and asks for a double click, closing
+ * itself on the first, can't land the second click on an armed button.
+ */
+const ARM_SCRIPT = `const b = document.querySelector('button[type=submit]');
+let timer;
+const disarm = () => { b.disabled = true; clearTimeout(timer); timer = undefined; };
+const arm = () => {
+  if (document.visibilityState !== 'visible' || !document.hasFocus() || timer || !b.disabled) return;
+  timer = setTimeout(() => { b.disabled = false; }, 500);
+};
+addEventListener('pointermove', arm);
+addEventListener('keydown', arm);
+addEventListener('blur', disarm);
+document.addEventListener('visibilitychange', disarm);`;
+const ARM_SCRIPT_HASH = `sha256-${createHash('sha256').update(ARM_SCRIPT).digest('base64')}`;
 
 /**
  * Headers on every launcher response, unless a route sets its own. No framing (clickjacking),
@@ -64,8 +89,7 @@ const PREVIEW_TTL_MS = 30_000;
  * on another 127.0.0.1 port (Chrome applies form-action to redirects).
  */
 const SECURITY_HEADERS: Record<string, string> = {
-  'Content-Security-Policy':
-    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' http://127.0.0.1:*; frame-ancestors 'none'; base-uri 'none'",
+  'Content-Security-Policy': `default-src 'none'; script-src '${ARM_SCRIPT_HASH}'; style-src 'unsafe-inline'; form-action 'self' http://127.0.0.1:*; frame-ancestors 'none'; base-uri 'none'`,
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'no-referrer',
   'X-Content-Type-Options': 'nosniff',
@@ -88,14 +112,40 @@ export function createLauncher(options: LauncherOptions) {
     createHmac('sha256', secret).update(`${pr.url}\n${pr.head}`).digest('base64url');
 
   const previews = new Map<string, { at: number; pr: Promise<PrPreview> }>();
-  const cachedPreview = (url: string) => {
+  let lookups = 0;
+  /** The PR's preview, reused for a short while. 'busy' when too many lookups are running. */
+  const cachedPreview = (url: string): Promise<PrPreview> | 'busy' => {
+    for (const [key, { at }] of previews) {
+      if (now() - at >= PREVIEW_TTL_MS) previews.delete(key);
+    }
     const hit = previews.get(url);
-    if (hit && now() - hit.at < PREVIEW_TTL_MS) return hit.pr;
+    if (hit) return hit.pr;
+    if (lookups >= MAX_LOOKUPS) return 'busy';
+    lookups++;
     const pr = preview(url);
     previews.set(url, { at: now(), pr });
     // A failed lookup isn't remembered, so a retry asks again.
-    pr.catch(() => previews.delete(url));
+    pr.catch(() => previews.delete(url)).finally(() => lookups--);
     return pr;
+  };
+  /** Looks the PR up, or returns a page saying why it couldn't. */
+  const lookUp = async (url: string): Promise<PrPreview | { html: string; status: 502 | 503 }> => {
+    const pending = cachedPreview(url);
+    if (pending === 'busy') {
+      return {
+        status: 503,
+        html: page(
+          'Busy',
+          `<h1>The launcher is busy</h1>
+          <p>It's looking up several pull requests already. <a href="${escapeHtml(openLink(url))}">Try again</a> in a moment.</p>`,
+        ),
+      };
+    }
+    try {
+      return await pending;
+    } catch (error) {
+      return { status: 502, html: couldNotRead(url, error) };
+    }
   };
 
   const open = new Map<string, Entry>();
@@ -175,21 +225,24 @@ export function createLauncher(options: LauncherOptions) {
       ),
     )
     .get('/open', async (c) => {
-      // Only a page load in a tab, never an image, script or fetch: other sites can't make the
-      // launcher look PRs up in the background. Browsers without Fetch Metadata skip this check.
+      // Only a page load in a tab, never an image, script, fetch or prefetch: other sites can't
+      // make the launcher look PRs up in the background. Browsers without Fetch Metadata skip
+      // these checks; the lookup cap and the allow list still bound what they can cause.
       const dest = c.req.header('sec-fetch-dest');
-      if (dest !== undefined && dest !== 'document') {
+      const mode = c.req.header('sec-fetch-mode');
+      const purpose = c.req.header('sec-purpose') ?? c.req.header('purpose') ?? '';
+      if (
+        (dest !== undefined && dest !== 'document') ||
+        (mode !== undefined && mode !== 'navigate') ||
+        /prefetch|prerender/i.test(purpose)
+      ) {
         return c.text('Forbidden: open this link in a browser tab', 403);
       }
       const target = checkTarget(c.req.query('pr'));
       if (target.refusal) return c.html(target.refusal.html, target.refusal.status);
 
-      let pr: PrPreview;
-      try {
-        pr = await cachedPreview(target.url);
-      } catch (error) {
-        return c.html(couldNotRead(target.url, error), 502);
-      }
+      const pr = await lookUp(target.url);
+      if ('html' in pr) return c.html(pr.html, pr.status);
       // The page's own POST must carry its real Origin, and under no-referrer browsers send
       // `Origin: null` instead. same-origin still sends nothing to any other origin.
       return c.html(confirmPage(pr, csrfFor(pr)), 200, { 'Referrer-Policy': 'same-origin' });
@@ -219,12 +272,8 @@ export function createLauncher(options: LauncherOptions) {
         );
       }
 
-      let pr: PrPreview;
-      try {
-        pr = await cachedPreview(target.url);
-      } catch (error) {
-        return c.html(couldNotRead(target.url, error), 502);
-      }
+      const pr = await lookUp(target.url);
+      if ('html' in pr) return c.html(pr.html, pr.status);
       if (pr.head !== head) {
         // Pushed to since the page was shown: its cost line may be wrong. Show the page again.
         return c.html(
@@ -325,15 +374,20 @@ function confirmPage(pr: PrPreview, csrf: string, notice?: string): string {
     <div class="pr">
       <div class="quiet">${repo} · #${pr.number} · <code>${escapeHtml(pr.head.slice(0, 7))}</code></div>
       <div class="title">${escapeHtml(pr.title)}</div>
+      <div class="quiet">by <strong class="author">${escapeHtml(pr.author)}</strong>${pr.fromFork ? ' · <span class="fork">from a fork</span>' : ''}</div>
     </div>
     ${cost}
     <form method="post" action="/open">
       <input type="hidden" name="pr" value="${escapeHtml(pr.url)}">
       <input type="hidden" name="head" value="${escapeHtml(pr.head)}">
       <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
-      <button type="submit">Start the review</button>
+      <button type="submit" disabled>Start the review</button>
     </form>
-    <p class="quiet">A link opened this page. Nothing starts until you click.</p>`,
+    <p class="quiet">A link opened this page. Nothing starts until you click. The title is the
+    author's own words, so check who wrote it.</p>
+    <noscript><p class="notice">The button needs JavaScript, which guards it against
+    click tricks.</p></noscript>
+    <script>${ARM_SCRIPT}</script>`,
   );
 }
 
@@ -361,11 +415,7 @@ function escapeHtml(text: string): string {
   );
 }
 
-/**
- * A small self-contained page in the web app's colors. No scripts. The button can't be clicked
- * for its first moment on screen, so a page that pops this open under the cursor can't turn a
- * double click into a confirm.
- */
+/** A small self-contained page in the web app's colors. Its only script is ARM_SCRIPT. */
 function page(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en">
@@ -388,10 +438,12 @@ function page(title: string, body: string): string {
   a { color: var(--brass-text); }
   .cost.cached strong { color: var(--ok); }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; overflow-wrap: anywhere; }
-  button { font: inherit; font-weight: 600; color: var(--brass-ink); background: var(--brass-fill); border: 0; border-radius: 8px; padding: 10px 18px; cursor: pointer; pointer-events: none; opacity: 0.55; animation: arm 0s 0.8s forwards; }
-  button:hover { filter: brightness(1.06); }
+  button { font: inherit; font-weight: 600; color: var(--brass-ink); background: var(--brass-fill); border: 0; border-radius: 8px; padding: 10px 18px; cursor: pointer; }
+  button:disabled { cursor: default; opacity: 0.55; }
+  button:enabled:hover { filter: brightness(1.06); }
+  .author { color: var(--text); font-weight: 600; }
+  .fork { color: var(--brass-text); }
   button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
-  @keyframes arm { to { pointer-events: auto; opacity: 1; } }
 </style>
 </head>
 <body><main>${body}</main></body>

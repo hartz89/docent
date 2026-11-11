@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, test } from 'vitest';
 import {
   createLauncher,
+  MAX_LOOKUPS,
   MAX_OPEN_REVIEWS,
   MAX_STARTS,
   type PrPreview,
@@ -37,6 +39,8 @@ function setup(overrides: Partial<PrPreview> = {}) {
         repo: 'hartz89/docent',
         number,
         title: 'Open a tour from a link',
+        author: 'docent-builder',
+        fromFork: false,
         head: headOf(url),
         cached: false,
         ...overrides,
@@ -98,6 +102,27 @@ describe('GET /open shows a confirm page and does nothing else', () => {
     expect(started).toEqual([]);
   });
 
+  test('names who wrote the PR, and says when it comes from a fork', async () => {
+    const { openPage } = setup({ author: 'stranger', fromFork: true });
+
+    const html = await (await openPage()).text();
+
+    expect(html).toContain('by <strong class="author">stranger</strong>');
+    expect(html).toContain('from a fork');
+  });
+
+  test('the button starts disabled, armed only by a script the page’s CSP allows by hash', async () => {
+    const { openPage } = setup();
+
+    const res = await openPage();
+    const html = await res.text();
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1] ?? '';
+    const hash = createHash('sha256').update(script).digest('base64');
+
+    expect(html).toContain('<button type="submit" disabled>');
+    expect(res.headers.get('content-security-policy')).toContain(`script-src 'sha256-${hash}'`);
+  });
+
   test('says a cached tour costs nothing', async () => {
     const { openPage } = setup({ cached: true });
 
@@ -118,8 +143,32 @@ describe('GET /open shows a confirm page and does nothing else', () => {
     for (const dest of ['image', 'script', 'empty', 'iframe']) {
       expect((await openPage(prUrl, { 'Sec-Fetch-Dest': dest })).status).toBe(403);
     }
-    expect((await openPage(prUrl, { 'Sec-Fetch-Dest': 'document' })).status).toBe(200);
+    expect((await openPage(prUrl, { 'Sec-Fetch-Mode': 'no-cors' })).status).toBe(403);
+    expect((await openPage(prUrl, { 'Sec-Purpose': 'prefetch' })).status).toBe(403);
+    expect((await openPage(prUrl, { 'Sec-Purpose': 'prefetch;prerender' })).status).toBe(403);
+    expect(
+      (await openPage(prUrl, { 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate' }))
+        .status,
+    ).toBe(200);
     expect(previewed).toHaveLength(1);
+  });
+
+  test('runs only a few PR lookups at once, so a flood of links cannot hammer GitHub', async () => {
+    const { app } = createLauncher({
+      port,
+      allowedRepos: ['hartz89/docent'],
+      configPath: '/config.json',
+      preview: () => new Promise(() => {}), // GitHub never answers.
+      start: () => Promise.reject(new Error('never')),
+    });
+    const open = (n: number) =>
+      app.request(`${own}/open?pr=https://github.com/hartz89/docent/pull/${n}`);
+
+    for (let n = 1; n <= MAX_LOOKUPS; n++) void open(n);
+    const res = await open(MAX_LOOKUPS + 1);
+
+    expect(res.status).toBe(503);
+    expect(await res.text()).toContain('The launcher is busy');
   });
 
   test('escapes the PR title, which the PR author controls', async () => {

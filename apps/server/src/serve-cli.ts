@@ -79,7 +79,7 @@ async function serve() {
         if (url.toLowerCase() !== pr.url.toLowerCase()) {
           throw new Error(`This launcher replays a fixture, so it only opens ${pr.url}`);
         }
-        return { ...pr, url, cached: false };
+        return { ...pr, url, fromFork: false, cached: false };
       }
     : async (url: string): Promise<PrPreview> => {
         const pr = await readPrHead(url);
@@ -175,17 +175,42 @@ async function stop(p: number) {
     console.log(`No launcher is running on port ${p}.`);
     return;
   }
-  // The PID may have been reused since a crash; only signal a process that is a launcher.
-  const command = await promisify(execFile)('ps', ['-p', String(pid), '-o', 'command='])
-    .then(({ stdout }) => stdout)
-    .catch(() => '');
-  if (!/cli\.[jt]s serve\b/.test(command)) {
+  // The PID may have been reused since a crash; only signal a launcher listening on this port.
+  if (!(await isLauncherOn(pid, p))) {
     await rm(file, { force: true });
     console.log(`No launcher is running on port ${p}.`);
     return;
   }
-  process.kill(pid, 'SIGTERM');
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (error) {
+    console.error(`Could not stop PID ${pid}: ${(error as { code?: string }).code ?? error}`);
+    process.exit(1);
+  }
   console.log(`Stopped the launcher on port ${p} (PID ${pid}).`);
+}
+
+/** The process runs `cli serve`, and (where lsof exists) is the one listening on `p`. */
+async function isLauncherOn(pid: number, p: number): Promise<boolean> {
+  const run = promisify(execFile);
+  const command = await run('ps', ['-p', String(pid), '-o', 'command='])
+    .then(({ stdout }) => stdout)
+    .catch(() => '');
+  if (!/cli\.[jt]s serve\b/.test(command)) return false;
+  try {
+    const { stdout } = await run('lsof', [
+      '-a',
+      '-p',
+      String(pid),
+      `-iTCP:${p}`,
+      '-sTCP:LISTEN',
+      '-t',
+    ]);
+    return stdout.trim() === String(pid);
+  } catch (error) {
+    // lsof exits 1 when nothing matches. Without lsof at all, the command line has to do.
+    return (error as { code?: unknown }).code === 'ENOENT';
+  }
 }
 
 /** The config file: $DOCENT_CONFIG, or config.json in the user's config folder. */
