@@ -58,7 +58,7 @@ Being 2b isn't enough. A 2b PR whose security review found issues that were then
 
 **How to escalate.** The builder adds the `needs-maintainer` label (`gh pr edit <number> --add-label needs-maintainer`) and says why in a PR comment, naming which rule above applies.
 
-**At most two PRs wait on the maintainer at once.** "Waiting" means open and labeled `needs-maintainer`. Count them with `gh api 'repos/hartz89/docent/issues?labels=needs-maintainer&state=open'`. If a third would escalate, it gets the `escalation-queued` label instead, and agents work on something else. When a slot frees, the builder swaps the labels (`gh pr edit <number> --remove-label escalation-queued --add-label needs-maintainer`). The builder can't mark PRs draft or ready (`gh pr ready` isn't on its allowlist), so the label does that job. Once the morning brief exists, it lists the queue.
+**At most two PRs wait on the maintainer at once.** "Waiting" means open and labeled `needs-maintainer`. Count them with `gh api 'search/issues?q=repo:hartz89/docent+is:pr+is:open+label:needs-maintainer'`, which returns `total_count`. If a third would escalate, it gets the `escalation-queued` label instead, and agents work on something else. When a slot frees, the builder swaps the labels (`gh pr edit <number> --remove-label escalation-queued --add-label needs-maintainer`). The builder can't mark PRs draft or ready (`gh pr ready` isn't on its allowlist), so the label does that job. Once the morning brief exists, it lists the queue.
 
 **No stacking on a waiting PR.** Agents don't push to a PR that's waiting on the maintainer, or build on its branch, unless the maintainer asks. A new commit would also dismiss their approval.
 
