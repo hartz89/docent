@@ -47,7 +47,7 @@ export async function gitHeadFiles(
         '--full-tree',
         head,
       ]),
-      { maxBuffer: 64 * 1024 * 1024, env: hardenedGitEnv({ offline: true }) },
+      { maxBuffer: 64 * 1024 * 1024, env: hardenedGitEnv({ offline: true }), timeout: 30_000 },
     ));
   } catch (error) {
     // A listing too big to buffer is cut short: what arrived is kept.
@@ -99,6 +99,7 @@ async function* readBlobs(
   });
   const stop = () => child.kill();
   signal.addEventListener('abort', stop);
+  child.on('error', () => {}); // A failed spawn ends stdout early; the caller sees too few files.
   child.stdin.on('error', () => {}); // The child may be stopped before it reads everything.
   child.stdin.end(`${wanted.map((w) => w.oid).join('\n')}\n`);
   let buffer: Buffer = Buffer.alloc(0);

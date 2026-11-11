@@ -245,7 +245,7 @@ export function hardenedGitEnv({ offline = false } = {}): NodeJS.ProcessEnv {
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_LFS_SKIP_SMUDGE: '1',
     GIT_TERMINAL_PROMPT: '0',
-    ...(offline ? { GIT_NO_LAZY_FETCH: '1' } : {}),
+    ...(offline ? { GIT_NO_LAZY_FETCH: '1', GIT_NO_REPLACE_OBJECTS: '1' } : {}),
   };
 }
 

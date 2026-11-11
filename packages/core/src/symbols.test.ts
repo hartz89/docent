@@ -42,8 +42,19 @@ describe('definitions', () => {
     const slow = 'export function f() { return [1].map((x) => x); }\n'.repeat(5000);
     expect(extractSymbols(grammar, slow, Date.now() - 1)).toBeNull();
     expect(extractSymbols(grammar, 'function g() {}')?.definitions).toEqual([
-      { name: 'g', kind: 'function', line: 1 },
+      { name: 'g', kind: 'function', line: 1, topLevel: true },
     ]);
+  });
+
+  test('N1: a long run of comments stays fast, and the definitions after it are found', async () => {
+    const index = await indexOf({
+      'a.ts': `${'// note\n'.repeat(20_000)}export function after() {}\n`,
+    });
+    const started = performance.now();
+    const again = await indexOf({ 'b.ts': `${'// note\n'.repeat(20_000)}function b() {}\n` });
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(index.definitions('after')).toEqual([at('a.ts', 20_001)]);
+    expect(again.definitions('b')).toEqual([at('b.ts', 20_001)]);
   });
 
   test('N1: TSX, JSX, Python and Go files are indexed too', async () => {
@@ -91,6 +102,12 @@ describe('definitions', () => {
       'src/lib.ts',
     ]);
     expect(index.definitions('nothing')).toEqual([]);
+    // A limit keeps the best and says there were more.
+    expect(index.limited('helper', 2)).toEqual({
+      candidates: [at('other/a.ts', 1), at('other/b.ts', 1)],
+      truncated: true,
+    });
+    expect(index.limited('helper', 3).truncated).toBe(false);
   });
 });
 
@@ -151,6 +168,36 @@ describe('following imports', () => {
     expect(index.definitions('Again', from)).toEqual([at('named.js', 2)]);
   });
 
+  test('N3: a nested or unexported name never stands in for the export', async () => {
+    const index = await indexOf({
+      'app.ts': [
+        "import { foo, parse } from './barrel';",
+        "import * as u from './u';",
+        'u.helper();',
+      ].join('\n'),
+      // A method named foo, and a nested parse, above the real ones.
+      'barrel.ts': [
+        'class Helper { foo() {} }',
+        "export * from './real';",
+        'function outer() { function parse() {} }',
+        "export { parse } from './real';",
+      ].join('\n'),
+      'real.ts': 'export function foo() {}\nexport function parse() {}\n',
+      'u.ts': "export * from './v';\n",
+      'v.ts': 'export function helper() {}\n',
+    });
+    const from = { path: 'app.ts' };
+    expect(index.definitions('foo', from)[0]).toEqual(
+      expect.objectContaining({ path: 'real.ts', line: 1, rank: 'import' }),
+    );
+    expect(index.definitions('parse', from)[0]).toEqual(
+      expect.objectContaining({ path: 'real.ts', line: 2, rank: 'import' }),
+    );
+    expect(index.definitions('helper', from)).toEqual([
+      { path: 'v.ts', line: 1, kind: 'function', rank: 'import' },
+    ]);
+  });
+
   test('N3: an export cycle ends instead of looping', async () => {
     const index = await indexOf({
       'a.ts': "export * from './b';\nimport { x } from './b';\n",
@@ -181,6 +228,21 @@ describe('resolving imports', () => {
     expect(resolve('../src/styles.css')).toBe('src/styles.css');
     expect(resolve('@/util')).toBe('src/util.ts');
     expect(resolve('~lib')).toBe('src/lib/index.ts');
+  });
+
+  test('N4: a hostile tsconfig is capped, and .js names the .ts file when both exist', async () => {
+    const targets = Array.from({ length: 20_000 }, (_, i) => `nowhere${i}/*`);
+    const imports = Array.from({ length: 300 }, (_, i) => `import { x${i} } from 'pkg${i}';`);
+    const index = await indexOf({
+      'tsconfig.json': JSON.stringify({ compilerOptions: { paths: { '*': targets } } }),
+      'app.ts': imports.join('\n'),
+      'b.js': '',
+      'b.ts': '',
+    });
+    const started = performance.now();
+    for (let i = 0; i < 5; i++) index.definitions('x1', { path: 'app.ts' });
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(index.resolveImport('app.ts', './b.js')).toBe('b.ts');
   });
 
   test('N4: packages, missing files and paths out of the repo stay unresolved', async () => {

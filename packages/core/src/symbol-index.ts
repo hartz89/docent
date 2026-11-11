@@ -28,6 +28,9 @@ const COMPILED_FROM: Record<string, string[]> = {
   '.mjs': ['.mts'],
   '.cjs': ['.cts'],
 };
+/** tsconfig `paths` beyond these are ignored. */
+const MAX_PATH_PATTERNS = 100;
+const MAX_PATH_TARGETS = 10;
 /** Re-export chains longer than this stop; real ones are a few steps. */
 const MAX_HOPS = 16;
 
@@ -57,7 +60,11 @@ export class SymbolIndex {
         else this.#byName.set(name, [path]);
       }
     }
+    for (const list of this.#byName.values()) list.sort();
   }
+
+  /** Resolved specifiers, by the importing folder (for relative ones) and specifier. */
+  readonly #resolved = new Map<string, string | null>();
 
   get fileCount(): number {
     return this.#files.size;
@@ -68,10 +75,22 @@ export class SymbolIndex {
    * tsconfig's `paths` resolve; a package name or anything else is left unresolved.
    */
   resolveImport(from: string, spec: string): string | null {
-    if (spec.startsWith('./') || spec.startsWith('../') || spec === '.' || spec === '..') {
-      const target = normalize(`${dirName(from)}/${spec}`);
-      return target === null ? null : this.#withExtension(target);
-    }
+    const relative =
+      spec.startsWith('./') || spec.startsWith('../') || spec === '.' || spec === '..';
+    const key = relative ? `${dirName(from)}\0${spec}` : `\0${spec}`;
+    const cached = this.#resolved.get(key);
+    if (cached !== undefined) return cached;
+    const found = relative ? this.#resolveRelative(from, spec) : this.#resolvePaths(spec);
+    this.#resolved.set(key, found);
+    return found;
+  }
+
+  #resolveRelative(from: string, spec: string): string | null {
+    const target = normalize(`${dirName(from)}/${spec}`);
+    return target === null ? null : this.#withExtension(target);
+  }
+
+  #resolvePaths(spec: string): string | null {
     let best: { prefix: number; found: string | null } | null = null;
     for (const { pattern, targets } of this.#tsconfig) {
       const star = pattern.indexOf('*');
@@ -100,14 +119,25 @@ export class SymbolIndex {
   /**
    * N2: every place `symbol` may be defined, best first. With `from`, definitions in that file
    * come first (nearest `line` first), then those its imports lead to, then the rest of the repo
-   * by path. Each place appears once (N5).
+   * by path. Each place appears once (N5). At most `limit` come back; `truncated` says whether
+   * there were more, so a common name stays cheap to look up.
    */
-  definitions(symbol: string, from?: { path: string; line?: number }): Candidate[] {
+  definitions(
+    symbol: string,
+    from?: { path: string; line?: number },
+    limit = Number.POSITIVE_INFINITY,
+  ): { candidates: Candidate[]; truncated: boolean } {
     const found: Candidate[] = [];
     const seen = new Set<string>();
+    let truncated = false;
     const add = (candidate: Candidate) => {
+      if (truncated) return;
       const key = `${candidate.path}:${candidate.line}`;
       if (seen.has(key)) return;
+      if (found.length === limit) {
+        truncated = true;
+        return;
+      }
       seen.add(key);
       found.push(candidate);
     };
@@ -126,7 +156,12 @@ export class SymbolIndex {
         const target = this.resolveImport(from.path, binding.spec);
         if (target) this.#follow(target, binding.imported, 0, new Set(), add);
       }
-      // Then any file this one imports that defines the name, like `ns.symbol()`.
+      // `ns.symbol()` after `import * as ns`: the symbol is followed through that module.
+      for (const binding of own.imports.filter((i) => i.imported === '*')) {
+        const target = this.resolveImport(from.path, binding.spec);
+        if (target && this.#files.has(target)) this.#follow(target, symbol, 0, new Set(), add);
+      }
+      // Then any file this one imports that defines the name, like a method on an imported class.
       const specs = new Set([
         ...own.imports.map((i) => i.spec),
         ...own.exports.flatMap((e) => (e.kind === 'from' ? [e.spec] : [])),
@@ -142,12 +177,13 @@ export class SymbolIndex {
       }
     }
 
-    for (const path of [...(this.#byName.get(symbol) ?? [])].sort()) {
+    for (const path of this.#byName.get(symbol) ?? []) {
+      if (truncated) break;
       for (const d of this.#files.get(path)?.definitions ?? []) {
         if (d.name === symbol) add({ path, line: d.line, kind: d.kind, rank: 'repo' });
       }
     }
-    return found;
+    return { candidates: found, truncated };
   }
 
   /** Finds where `path`'s export `name` is defined. `'*'` means the module itself. */
@@ -170,10 +206,14 @@ export class SymbolIndex {
     const exports = symbols.exports.filter((e) => e.name === name);
     for (const entry of exports) this.#followExport(path, entry, hops, visited, add);
     if (exports.length > 0) return;
-    // CommonJS and scripts don't declare exports: a top-level definition of the name will do.
-    const defined = symbols.definitions.filter((d) => d.name === name);
-    for (const d of defined) add({ path, line: d.line, kind: d.kind, rank: 'import' });
-    if (defined.length > 0 || name === 'default') return;
+    // CommonJS and scripts don't declare exports: there, a top-level definition will do.
+    const isModule = symbols.exports.length > 0 || symbols.exportsAll.length > 0;
+    if (!isModule) {
+      const defined = symbols.definitions.filter((d) => d.name === name && d.topLevel);
+      for (const d of defined) add({ path, line: d.line, kind: d.kind, rank: 'import' });
+      return;
+    }
+    if (name === 'default') return;
     for (const spec of symbols.exportsAll) {
       const next = this.resolveImport(path, spec);
       if (next) this.#follow(next, name, hops + 1, visited, add);
@@ -198,7 +238,8 @@ export class SymbolIndex {
       add({ path, line: entry.line, kind: 'export', rank: 'import' });
       return;
     }
-    const defined = symbols.definitions.filter((d) => d.name === local);
+    // Only a top-level definition can be exported; a nested one of the same name isn't it.
+    const defined = symbols.definitions.filter((d) => d.name === local && d.topLevel);
     for (const d of defined) add({ path, line: d.line, kind: d.kind, rank: 'import' });
     if (defined.length > 0) return;
     // `import { a } from './x'; export { a }`: keep following the import.
@@ -213,13 +254,14 @@ export class SymbolIndex {
   /** The file a module path names, trying TypeScript's and Node's extensions and index files. */
   #withExtension(path: string): string | null {
     const has = (p: string) => this.#paths.has(p);
-    if (has(path)) return path;
+    // Like TypeScript, `./a.js` means `./a.ts` when both exist.
     const dot = path.lastIndexOf('.');
     const extension = dot > path.lastIndexOf('/') ? path.slice(dot) : '';
     for (const replacement of COMPILED_FROM[extension] ?? []) {
       const candidate = path.slice(0, dot) + replacement;
       if (has(candidate)) return candidate;
     }
+    if (has(path)) return path;
     for (const ext of SCRIPT_EXTENSIONS) if (has(path + ext)) return path + ext;
     const base = path === '' ? 'index' : `${path}/index`;
     for (const ext of SCRIPT_EXTENSIONS) if (has(base + ext)) return base + ext;
@@ -244,11 +286,12 @@ export function tsconfigPaths(text: string): TsconfigPaths {
   if (typeof paths !== 'object' || paths === null) return [];
   const base = typeof baseUrl === 'string' ? baseUrl : '.';
   const result: { pattern: string; targets: string[] }[] = [];
-  for (const [pattern, targets] of Object.entries(paths)) {
+  // The file comes from the PR, so it's capped: a real one has a handful of each.
+  for (const [pattern, targets] of Object.entries(paths).slice(0, MAX_PATH_PATTERNS)) {
     if (!Array.isArray(targets) || (pattern.match(/\*/g)?.length ?? 0) > 1) continue;
-    const usable = targets.filter(
-      (t): t is string => typeof t === 'string' && (t.match(/\*/g)?.length ?? 0) <= 1,
-    );
+    const usable = targets
+      .filter((t): t is string => typeof t === 'string' && (t.match(/\*/g)?.length ?? 0) <= 1)
+      .slice(0, MAX_PATH_TARGETS);
     result.push({ pattern, targets: usable.map((t) => `${base}/${t}`) });
   }
   return result;

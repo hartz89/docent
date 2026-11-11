@@ -122,10 +122,13 @@ export type ReviewOptions = {
   questionTimeoutMs?: number;
   /** Caps on the symbol index. Default `INDEX_LIMITS`. */
   indexLimits?: IndexLimits;
+  /** How long a failed index build is remembered before one is tried again. Default 30 s. */
+  indexRetryMs?: number;
 };
 
-/** A jump returns at most this many candidates; `more` says how many were left out. */
+/** A jump returns at most this many candidates; `truncated` says when there were more. */
 export const MAX_CANDIDATES = 50;
+const INDEX_RETRY_MS = 30_000;
 
 const DEFAULT_FORK_BUDGET_USD = 2;
 const DEFAULT_QUESTION_TIMEOUT_MS = 180_000;
@@ -185,15 +188,10 @@ export class Review {
   async definitions(
     symbol: string,
     from?: { path: string; line?: number },
-  ): Promise<{ candidates: Candidate[]; more: number; index: IndexStatus } | null> {
+  ): Promise<{ candidates: Candidate[]; truncated: boolean; index: IndexStatus } | null> {
     const built = await this.#symbolIndex();
     if (!built) return null;
-    const all = built.index.definitions(symbol, from);
-    return {
-      candidates: all.slice(0, MAX_CANDIDATES),
-      more: Math.max(0, all.length - MAX_CANDIDATES),
-      index: built.status,
-    };
+    return { ...built.index.definitions(symbol, from, MAX_CANDIDATES), index: built.status };
   }
 
   /** The repo file an import specifier names, or a null path when it doesn't resolve. */
@@ -209,10 +207,15 @@ export class Review {
   #symbolIndex(): Promise<BuiltIndex> | null {
     const workspace = this.#workspace;
     if (!workspace) return null;
-    // Concurrent first requests share one build. A failed build isn't kept, so the next retries.
+    // Concurrent first requests share one build. A failed one is kept for a while, so a failure
+    // that always happens doesn't cost a whole new build on every click, then retried.
     this.#symbols ??= buildIndex(workspace.headFiles, this.#options.indexLimits).catch(
       (error: unknown) => {
-        this.#symbols = null;
+        console.error(`Docent couldn't index the repository: ${String(error)}`);
+        const failed = this.#symbols;
+        setTimeout(() => {
+          if (this.#symbols === failed) this.#symbols = null;
+        }, this.#options.indexRetryMs ?? INDEX_RETRY_MS).unref();
         throw error;
       },
     );

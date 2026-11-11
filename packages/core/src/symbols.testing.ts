@@ -29,7 +29,7 @@ export function testGrammars(): Promise<Grammars> {
 }
 
 /** An index of the given files (path → text), parsing the ones in a known language. */
-export async function indexOf(files: Record<string, string>): Promise<SymbolIndex> {
+export async function indexOf(files: Record<string, string>) {
   const grammars = await testGrammars();
   const symbols = new Map<string, FileSymbols>();
   for (const [path, text] of Object.entries(files)) {
@@ -39,9 +39,15 @@ export async function indexOf(files: Record<string, string>): Promise<SymbolInde
     if (parsed) symbols.set(path, parsed);
   }
   const tsconfig = files['tsconfig.json'];
-  return new SymbolIndex(
+  const index = new SymbolIndex(
     new Set(Object.keys(files)),
     symbols,
     tsconfig ? tsconfigPaths(tsconfig) : [],
   );
+  return {
+    definitions: (symbol: string, from?: { path: string; line?: number }) =>
+      index.definitions(symbol, from).candidates,
+    limited: (symbol: string, limit: number) => index.definitions(symbol, undefined, limit),
+    resolveImport: (from: string, spec: string) => index.resolveImport(from, spec),
+  };
 }

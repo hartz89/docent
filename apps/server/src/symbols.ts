@@ -1,22 +1,12 @@
 // Builds the symbol index for jump to definition and imports, from the PR's files at head.
-// The PR's code is untrusted: it's only ever parsed, by WASM grammars, and never run. Indexing is
-// capped in files, bytes and time, so a huge or hostile repo gets a partial index, not a hang.
-import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
-import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
-import {
-  extractSymbols,
-  type FileSymbols,
-  type GrammarFile,
-  type Grammars,
-  loadGrammars,
-  SymbolIndex,
-  sourceLanguage,
-  tsconfigPaths,
-} from '@docent/core';
-import * as treeSitter from 'web-tree-sitter';
+// The PR's code is untrusted: it's only ever parsed, by WASM grammars, and never run. Parsing
+// happens in a worker thread that's thrown away if a file breaks it, so the server stays up and
+// responsive. Indexing is capped in files, bytes and time, so a huge or hostile repo gets a
+// partial index, not a hang.
+import { Worker } from 'node:worker_threads';
+import { type FileSymbols, SymbolIndex, sourceLanguage, tsconfigPaths } from '@docent/core';
 import type { HeadFile, HeadFiles } from './head-files.ts';
+import type { ParseReply, ParseRequest } from './symbol-worker.ts';
 
 export type IndexLimits = {
   /** Files parsed at most. */
@@ -74,6 +64,8 @@ const SKIPPED_NAMES = /\.(min|bundle)\.[cm]?js$|\.pb\.go$|_pb2\.py$|\.generated\
 /** A line this long means minified or generated code. */
 const LONGEST_LINE = 10_000;
 const MAX_TSCONFIG_BYTES = 256 * 1024;
+/** How long past its own deadline a parse may run before its worker is stopped. */
+const GRACE_MS = 250;
 
 /** Not vendored or generated, judging by its path. */
 function ownCode({ path }: HeadFile): boolean {
@@ -81,34 +73,14 @@ function ownCode({ path }: HeadFile): boolean {
   return !path.split('/').some((part) => SKIPPED_FOLDERS.has(part));
 }
 
-let grammars: Promise<Grammars> | null = null;
-
-/** The grammars, loaded once per process from their npm packages' WASM and query files. */
-export function serverGrammars(): Promise<Grammars> {
-  const locate = ({ packages, path }: GrammarFile) => {
-    let from = import.meta.filename;
-    for (const name of packages) from = createRequire(from).resolve(`${name}/package.json`);
-    return join(dirname(from), path);
-  };
-  grammars ??= loadGrammars(treeSitter, {
-    bytes: (file) => readFile(locate(file)),
-    text: (file) => readFile(locate(file), 'utf8'),
-  }).catch((error: unknown) => {
-    grammars = null;
-    throw error;
-  });
-  return grammars;
-}
-
-/** Indexes the files at head within `limits`. `now` is the clock, for tests. */
+/** Indexes the files at head within `limits`. */
 export async function buildIndex(
   listFiles: () => Promise<HeadFiles>,
   limits: IndexLimits = INDEX_LIMITS,
-  now: () => number = Date.now,
 ): Promise<BuiltIndex> {
-  const started = now();
+  const started = Date.now();
   const deadline = started + limits.ms;
-  const [head, loaded] = await Promise.all([listFiles(), serverGrammars()]);
+  const head = await listFiles();
   let reason: PartialReason | null = head.truncated ? 'listing' : null;
 
   const sources = head.entries.filter((e) => sourceLanguage(e.path));
@@ -139,34 +111,29 @@ export async function buildIndex(
       timedOut = true;
       stop.abort();
     },
-    Math.max(0, deadline - now()),
+    Math.max(0, deadline - Date.now()),
   );
-  let lastYield = now();
+  const parser = new ParserWorker();
   try {
     for await (const { path, text } of head.read(toRead, stop.signal)) {
       read++;
-      if (now() > deadline) {
+      if (Date.now() > deadline) {
         reason ??= 'time';
         break;
       }
       const language = sourceLanguage(path);
-      const grammar = language ? loaded.get(language) : undefined;
-      if (!grammar) {
+      if (!language) {
         tsconfig = text ?? ''; // The only file read that isn't source.
         continue;
       }
       if (text === null || longestLineOver(text, LONGEST_LINE)) continue;
-      const parsed = extractSymbols(grammar, text, Math.min(deadline, now() + limits.fileMs));
+      const parsed = await parser.parse(language, text, limits.fileMs, deadline);
       if (parsed) symbols.set(path, parsed);
-      // Parsing is synchronous; let the server answer other requests between files.
-      if (now() - lastYield > 20) {
-        await yieldToEventLoop();
-        lastYield = now();
-      }
     }
   } finally {
     clearTimeout(timer);
     stop.abort();
+    await parser.close();
   }
   if (read < toRead.length && reason === null) {
     // The reader ended early: out of time, or git failed. A failed index isn't cached.
@@ -182,12 +149,84 @@ export async function buildIndex(
   const counts = {
     files: symbols.size,
     skipped: sources.length - symbols.size,
-    ms: Math.round(now() - started),
+    ms: Math.round(Date.now() - started),
   };
   return {
     index,
     status: reason ? { ...counts, state: 'partial', reason } : { ...counts, state: 'complete' },
   };
+}
+
+/**
+ * One parser worker, used for one file at a time. A file that crashes it, or runs past its
+ * deadline, is skipped, and the next file gets a fresh worker. Closing it frees its WASM memory.
+ */
+class ParserWorker {
+  #worker: Promise<Worker> | null = null;
+
+  /** Parses within `ms`, and never past `deadline`. Null when it can't. */
+  async parse(
+    language: ParseRequest['language'],
+    text: string,
+    ms: number,
+    deadline: number,
+  ): Promise<FileSymbols | null> {
+    const worker = await this.#start();
+    // The clock starts once the worker is ready, so loading grammars isn't charged to a file.
+    const request: ParseRequest = { language, text, deadline: Math.min(deadline, Date.now() + ms) };
+    return new Promise((resolve) => {
+      const done = (symbols: FileSymbols | null, broken: boolean) => {
+        clearTimeout(timer);
+        worker.off('message', onMessage);
+        worker.off('exit', onExit);
+        worker.off('error', onError);
+        if (broken) this.#stop(worker);
+        resolve(symbols);
+      };
+      const onMessage = (reply: ParseReply) => done(reply.symbols, false);
+      const onExit = () => done(null, true);
+      const onError = () => done(null, true);
+      // The parser checks its deadline itself; this catches one that doesn't come back.
+      const timer = setTimeout(
+        () => done(null, true),
+        Math.max(0, request.deadline - Date.now()) + GRACE_MS,
+      );
+      worker.on('message', onMessage);
+      worker.on('exit', onExit);
+      worker.on('error', onError);
+      worker.postMessage(request);
+    });
+  }
+
+  async close(): Promise<void> {
+    const worker = this.#worker;
+    this.#worker = null;
+    if (worker) await (await worker.catch(() => null))?.terminate();
+  }
+
+  /** A worker with its grammars loaded. Throws if one can't start, which fails the build. */
+  #start(): Promise<Worker> {
+    this.#worker ??= new Promise<Worker>((resolve, reject) => {
+      // Node runs the .ts source directly; the build emits .js next to this file.
+      const file = import.meta.url.endsWith('.ts') ? './symbol-worker.ts' : './symbol-worker.js';
+      const worker = new Worker(new URL(file, import.meta.url), {
+        resourceLimits: { maxOldGenerationSizeMb: 256 },
+      });
+      // Always listening, so a worker's error can never become an uncaught one in the server.
+      worker.on('error', () => {});
+      worker.once('message', () => resolve(worker));
+      worker.once('exit', () => reject(new Error('The parser worker failed to start')));
+    }).catch((error: unknown) => {
+      this.#worker = null;
+      throw error;
+    });
+    return this.#worker;
+  }
+
+  #stop(worker: Worker): void {
+    this.#worker = null;
+    void worker.terminate();
+  }
 }
 
 function longestLineOver(text: string, limit: number): boolean {

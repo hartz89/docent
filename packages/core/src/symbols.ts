@@ -45,8 +45,11 @@ export const DEFINITION_KINDS = [
 ] as const;
 export type DefinitionKind = (typeof DEFINITION_KINDS)[number];
 
-/** A named definition. `line` is the 1-based line of its name. */
-export type Definition = { name: string; kind: DefinitionKind; line: number };
+/**
+ * A named definition. `line` is the 1-based line of its name. `topLevel` is false inside a class,
+ * function or block, where it can't be what a module exports.
+ */
+export type Definition = { name: string; kind: DefinitionKind; line: number; topLevel: boolean };
 
 /**
  * A name an import statement brings into the file. `imported` is the export it names:
@@ -146,6 +149,17 @@ export type GrammarReader = {
   text: (file: GrammarFile) => Promise<string>;
 };
 
+/**
+ * The grammars' tags capture the comments before a definition as `@doc`. Docent doesn't use
+ * them, and matching `(comment)*` takes time quadratic in a run of comments: 4,000 comment lines
+ * took 0.3 s, so a hostile file could stall the index. So those parts are taken out.
+ */
+export function withoutDocComments(query: string): string {
+  return query
+    .replace(/\(comment\)\*\s*@doc\s*\.\s*/g, '')
+    .replace(/\(#[\w-]+!\s+@doc\b[^)]*\)/g, '');
+}
+
 /** Loads every grammar. Only the files named in this module are read. */
 export async function loadGrammars(
   treeSitter: typeof TreeSitter,
@@ -158,7 +172,7 @@ export async function loadGrammars(
     (typeof GRAMMAR_FILES)[SourceLanguage],
   ][]) {
     const grammar = await treeSitter.Language.load(await read.bytes(files.wasm));
-    const tags = await Promise.all(files.tags.map(read.text));
+    const tags = (await Promise.all(files.tags.map(read.text))).map(withoutDocComments);
     const parser = new treeSitter.Parser();
     parser.setLanguage(grammar);
     grammars.set(language, {
@@ -203,20 +217,22 @@ export function extractSymbols(
     for (const match of matches) {
       let kind: DefinitionKind | null = null;
       let name: TreeSitter.Node | null = null;
+      let node: TreeSitter.Node | null = null;
       for (const capture of match.captures) {
         if (capture.name === 'name') name = capture.node;
         else if (capture.name.startsWith('definition.')) {
           kind = definitionKind(capture.name.slice('definition.'.length));
+          node = capture.node;
         }
       }
-      if (!kind || !name) continue;
+      if (!kind || !name || !node) continue;
       const line = name.startPosition.row + 1;
       const key = `${line}:${name.text}`;
       const known = seen.get(key);
       if (known && known.kind !== 'constant') continue;
       if (known) known.kind = kind;
       else {
-        const definition = { name: name.text, kind, line };
+        const definition = { name: name.text, kind, line, topLevel: isTopLevel(node) };
         seen.set(key, definition);
         symbols.definitions.push(definition);
       }
@@ -229,6 +245,30 @@ export function extractSymbols(
   } finally {
     tree.delete();
   }
+}
+
+/** Statements that wrap a module-level definition without nesting it in a scope. */
+const MODULE_LEVEL = new Set([
+  'program',
+  'export_statement',
+  'lexical_declaration',
+  'variable_declaration',
+  'ambient_declaration',
+  'expression_statement',
+  'decorated_definition',
+  'module',
+  'source_file',
+  'type_declaration',
+  'const_declaration',
+  'var_declaration',
+]);
+
+/** Whether a definition sits at the top of its file, not inside a class, function or block. */
+function isTopLevel(node: TreeSitter.Node): boolean {
+  for (let up = node.parent; up; up = up.parent) {
+    if (!MODULE_LEVEL.has(up.type)) return false;
+  }
+  return true;
 }
 
 function definitionKind(tag: string): DefinitionKind | null {

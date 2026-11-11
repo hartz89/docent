@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { type CommitSha, commitSha } from '@docent/core';
 import { hc } from 'hono/client';
-import { beforeAll, describe, expect, test } from 'vitest';
+import { beforeAll, describe, expect, test, vi } from 'vitest';
 import { type AppType, createApp } from './app.ts';
 import { fixedSession } from './author-session.ts';
 import { gitHeadFiles, type HeadFiles } from './head-files.ts';
@@ -63,6 +63,12 @@ beforeAll(async () => {
     ].join('\n'),
   );
   await put(repo, 'src/lib.ts', 'export function helper() {}\n');
+  // Bigger than one pipe chunk, and multibyte, so cat-file's output splits mid-file.
+  await put(
+    repo,
+    'src/wide.ts',
+    `export function wide() {}\n${'// ünïcödé ✓ 日本語\n'.repeat(10_000)}export function tail() {}\n`,
+  );
   await put(repo, 'src/ui/index.ts', "export { Widget } from './widget';\n");
   await put(repo, 'src/ui/widget.tsx', '\nexport class Widget {}\n');
   await put(repo, 'tools/helper.py', 'def helper():\n    pass\n');
@@ -90,6 +96,7 @@ beforeAll(async () => {
 async function serve(
   limits: Partial<IndexLimits> = {},
   files: () => Promise<HeadFiles> = () => gitHeadFiles(repo, head),
+  indexRetryMs = 30_000,
 ) {
   let listings = 0;
   const review = new Review({
@@ -126,6 +133,7 @@ async function serve(
     locator: fixedSession({ found: false, reason: 'none' }),
     model: 'claude-test',
     indexLimits: { ...INDEX_LIMITS, ...limits },
+    indexRetryMs,
   });
   await review.done;
   const app = createApp({ origin, token, version: '0.0.0', review });
@@ -153,8 +161,8 @@ describe('GET /api/definition', () => {
       { path: 'src/lib.ts', line: 1, kind: 'function', rank: 'import' },
       { path: 'tools/helper.py', line: 1, kind: 'function', rank: 'repo' },
     ]);
-    expect(found.more).toBe(0);
-    expect(found.index).toMatchObject({ state: 'complete', files: 5 });
+    expect(found.truncated).toBe(false);
+    expect(found.index).toMatchObject({ state: 'complete', files: 6 });
 
     const widget = await definition(api, { symbol: 'Widget', from: 'src/app.ts' });
     expect(widget.candidates).toEqual([
@@ -173,14 +181,18 @@ describe('GET /api/definition', () => {
       expect.objectContaining({ path: 'src/lib.ts', line: 1 }),
     );
     expect((await definition(api, { symbol: 'secretOutside' })).candidates).toEqual([]);
+    // A blob split across many reads comes back whole, multibyte text and all.
+    expect((await definition(api, { symbol: 'tail' })).candidates).toEqual([
+      expect.objectContaining({ path: 'src/wide.ts', line: 10_002 }),
+    ]);
   });
 
   test('skips vendored, minified, binary and oversized files, and counts them', async () => {
     const { api } = await serve({ fileBytes: 100_000 });
     const found = await definition(api, { symbol: 'helper' });
     expect(found.candidates.map((c) => c.path).sort()).toEqual(['src/lib.ts', 'tools/helper.py']);
-    // node_modules, the .min.js, the long line, the binary and the huge file.
-    expect(found.index).toMatchObject({ state: 'complete', files: 5, skipped: 5 });
+    // node_modules, the .min.js, the long line, the binary, the huge file and the wide one.
+    expect(found.index).toMatchObject({ state: 'complete', files: 5, skipped: 6 });
   });
 
   test('builds the index once, on first use, and shares it between concurrent requests', async () => {
@@ -220,14 +232,44 @@ describe('GET /api/definition', () => {
     });
   });
 
-  test('a failed index answers 500 and is built again on the next request', async () => {
+  test('a failed index answers 500, is remembered for a while, then built again', async () => {
     let calls = 0;
-    const { api } = await serve({}, async () => {
-      if (++calls === 1) throw new Error('git broke');
-      return gitHeadFiles(repo, head);
-    });
+    const { api } = await serve(
+      {},
+      async () => {
+        if (++calls === 1) throw new Error('git broke');
+        return gitHeadFiles(repo, head);
+      },
+      50,
+    );
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
     expect((await api.definition.$get({ query: { symbol: 'helper' } })).status).toBe(500);
+    expect((await api.definition.$get({ query: { symbol: 'helper' } })).status).toBe(500);
+    expect(calls).toBe(1);
+    expect(quiet).toHaveBeenCalledOnce();
+    quiet.mockRestore();
+    await new Promise((resolve) => setTimeout(resolve, 80));
     expect((await definition(api, { symbol: 'helper' })).index.state).toBe('complete');
+  });
+
+  test('a file that breaks the parser is skipped, and the files after it still parse', async () => {
+    // Out of the WASM heap in a fraction of a second, found by the security review.
+    const hostile = 'a<b,\n'.repeat(20_000);
+    const files = {
+      'a/first.ts': 'export function first() {}\n',
+      'b/hostile.ts': hostile,
+      'c/last.ts': 'export function last() {}\n',
+    };
+    const { api } = await serve({}, async () => ({
+      entries: Object.entries(files).map(([path, text]) => ({ path, bytes: text.length })),
+      truncated: false,
+      read: async function* (paths) {
+        for (const path of paths) yield { path, text: files[path as keyof typeof files] };
+      },
+    }));
+    const found = await definition(api, { symbol: 'last' });
+    expect(found.candidates).toEqual([expect.objectContaining({ path: 'c/last.ts' })]);
+    expect(found.index).toMatchObject({ state: 'complete', files: 2, skipped: 1 });
   });
 
   test('refuses bad input, and anyone without the token', async () => {
