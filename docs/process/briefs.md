@@ -20,11 +20,12 @@ The threshold is a first guess. On 2026-11-10, a busy day, the repo scored 30. T
 All GitHub reads are GETs through `gh api`, run as the builder app, which the runner limits to reads (see [`agent-identities.md`](agent-identities.md)).
 
 - **Merged PRs**, with the tier and outcome their description states.
-- **The escalation queue:** open PRs labelled `needs-maintainer` (at most two) and `escalation-queued`, from [`pull-requests.md`](pull-requests.md).
+- **The escalation queue:** open PRs labelled `needs-maintainer` (at most two) and `escalation-queued`. The labels and the rule arrive with [PR #44](https://github.com/hartz89/docent/pull/44); until then the queue is always empty, and the brief lists PRs waiting on code-owner approval instead.
 - **Open PRs in progress**, with any description section addressed to the maintainer.
-- **Escapes:** reverts, and fixes that name what they repair. A fix for an escaped defect says `Repairs #N` on its own line, or carries the `escape` label, so the trust ledger can count it.
+- **Escapes:** reverts, and fixes that name what they repair. A fix for an escaped defect says `Repairs #N` on its own line, so the trust ledger can count it against that PR's tier. An `escape` label alone still lists it, but the ledger can't say which tier it came from.
 - **The trust ledger's raw numbers:** merged PRs and escapes per tier, for the period.
-- **New issues** labelled `backlog`, **failed CI runs on `main`**, and the "Open" section of [`backlog/decisions.md`](../../backlog/decisions.md).
+- **New issues** labelled `backlog`, and the "Open" section of [`backlog/decisions.md`](../../backlog/decisions.md).
+- **Failed CI runs on `main`**, each marked with whether `main` is still red (that workflow's latest run failed).
 
 ## What the maintainer finds useful
 

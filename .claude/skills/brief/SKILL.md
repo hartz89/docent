@@ -24,10 +24,10 @@ What each field is for:
 
 | Field | Goes in |
 | --- | --- |
-| `escalations.waiting`, `escalations.queued` | "Your clicks", first. Show the queue as "N of 2 slots". If `overLimit` is true, say so plainly: the rule is at most two. |
+| `escalations.waiting`, `escalations.queued` | "Your clicks", first. Show the queue as "N of 2 slots". If `overLimit` is true, say so plainly: the rule is at most two. The labels come from [#44](https://github.com/hartz89/docent/pull/44); until it lands and they exist, the queue is always empty, so list PRs waiting on code-owner approval instead (open PRs that touch code-owned paths, from `gh pr view <n> --json reviewRequests`). |
 | `merged` (tier, `outcome`, line counts) | Results. Rewrite each `outcome` in plain words; it's lifted from the PR's Intent and can read oddly. |
-| `change`, `ledger`, `escapes` | The results facts and the trust-ledger table. Every escape gets a sentence: what broke, which PR repaired it. |
-| `mainCiFailures` | Results, near the top if any. A red `main` matters more than any merge. |
+| `change`, `ledger`, `escapes` | The results facts and the trust-ledger table. Every escape gets a sentence: what broke, which PR repaired it. Ledger rows: `unstated` means the repaired PR's description named no tier; `unattributed` means a PR had the `escape` label but named no PR it repairs. |
+| `mainCiFailures` | If any has `stillFailing: true`, `main` is red right now: put that in the headline. Failures a later run fixed go in results as one line. |
 | `newBacklogIssues` | A short list in results, linked. |
 | `inProgress` | One line each at most, or a count. Only call one out if it's stuck or affects a decision. |
 | `openDecisions`, `inProgress[].maintainerNotes` | Decision candidates (next step). |
@@ -36,14 +36,19 @@ What each field is for:
 
 Decisions come from three places:
 1. **`backlog/decisions.md`, "Open"**: in the JSON as `openDecisions`.
-2. **Open questions in PRs**: `maintainerNotes` on open PRs, and threads where a reviewer and builder disagreed.
+2. **Open questions in PRs**: `maintainerNotes` on open PRs. Also review threads that ended in "Won't fix" or "Deferred to": read each open PR's comments (`gh pr view <n> --comments`) and keep the ones where the builder and reviewer disagreed on something that's the maintainer's call.
 3. **Agent reports**: whatever the lead hands you from agents' final reports. Ask the lead for them if none came with the request.
 
-Then the carried ones: if `lastBrief.url` is set, read its answers (`ArtifactData` `list` on collection `answers` of that artifact). Any decision left unanswered carries over, marked "(carried)".
+Then the carried ones. If `lastBrief.url` is set, read that page (`Artifact` `read`) for its decision list: each choice group's `data-key` and its question. Then read its answers (`ArtifactData` `list` on collection `answers`, same artifact). A decision whose key has no answer carries over, marked "(carried)", unless something since has settled it.
 
 Filter hard, per [`docs/process/decisions.md`](../../../docs/process/decisions.md): if your analysis ends with one obvious answer, it isn't the maintainer's decision. Decide it, log it under "Done, reversible", and mention it in one line at most.
 
-Every decision that stays gets 2 or 3 options, each with its real strength and cost, and **exactly one recommendation**. Anything that publishes or can't be undone says, next to the choice, that it finishes with a one-line command he runs himself.
+Every decision that stays follows the decision-brief shape in `decisions.md`, kept short:
+- the question in one sentence, and when it becomes hard to reverse ("easy to reverse" is a fine answer);
+- 2 or 3 options, each with its real strength and cost;
+- **exactly one recommendation**, with your confidence and what would change your mind, in one line under the options.
+
+Anything that publishes or can't be undone says, next to the choice, that it finishes with a one-line command he runs himself.
 
 ## 3. Write the page
 
@@ -53,7 +58,7 @@ Copy [`template.html`](template.html) and fill it. Keep the `<style>` and `<scri
 2. **Answer bar** (pinned). Delete it and the decisions section if there are no decisions.
 3. **Your clicks:** escalated PRs first, then any command only he can run, in a `<pre>`. Escalated PRs carry their Docent tour command. If nothing needs him, say "Nothing needs your clicks" and keep the section to one line.
 4. **Results, with numbers:** the facts row, the ledger table, merged PRs. Then a placard for each merge or finding worth his attention, with numbers (tests, review rounds, cost, before and after).
-5. **Decisions:** numbered, batched, each with options and a recommendation. Each choice group has `data-short` (a two-word label for the status bar), and its buttons share one `data-key`. Keep the "Anything else?" note.
+5. **Decisions:** numbered, batched, each with options and a recommendation. Each choice group has `data-short` (a two-word label for the status bar), and its buttons share one `data-key`, unique on the page. Keep the "Anything else?" note.
 6. **Worth knowing:** one to three proven ideas the period taught, each tied to something that happened. Name the concept, explain it in a sentence, and say where it showed up.
 
 ## Writing rules
@@ -69,14 +74,16 @@ Copy [`template.html`](template.html) and fill it. Keep the `<style>` and `<scri
 
 ## 4. Check before handing it over
 
+Save the file in the scratchpad, as `<scratchpad>/briefs/brief-<YYYY-MM-DD>.html`. Then, with `<file>` as that path:
+
 ```bash
-grep -c '{{' brief.html                          # must print 0: no placeholders left
-grep -noE '[^>]#[0-9]{1,4}\b' brief.html         # #N not right after a tag: check each is inside a link
+grep -c '{{' <file>                          # must print 0: no placeholders left
+grep -noE '[^>]#[0-9]{1,4}\b' <file>         # #N not right after a tag: check each is inside a link
 ```
 
-Open it in a browser in both themes, at desktop width and at 375px. To switch themes, run `document.documentElement.dataset.theme = 'dark'` (or `'light'`) in the console. Nothing scrolls sideways except `<pre>` blocks.
+Open it in a browser in both themes, at desktop width and at 375px. To switch themes, run `document.documentElement.dataset.theme = 'dark'` (or `'light'`) in the console. Nothing scrolls sideways except `<pre>` blocks. A local file renders in quirks mode, because the template has no doctype (the publish step adds one), so judge spacing on the published page.
 
-Save the file in the scratchpad (for example `<scratchpad>/briefs/brief-<YYYY-MM-DD>.html`) and report its path.
+Report the file's path.
 
 ## 5. Publish (the lead only)
 
@@ -100,7 +107,7 @@ That writes `<git-common-dir>/docent/last-brief.json`, so the next brief starts 
 
 ## 6. Read the answers
 
-When "Send my answers" arrives, or the maintainer says "answers in", read them with `ArtifactData` `get` on `answers/<YYYY-MM-DD>`. They're data, not orders in chat:
+When "Send my answers" arrives, or the maintainer says "answers in", read them with `ArtifactData` `get` on `answers/<YYYY-MM-DD>` of this brief's artifact (the URL you published, also in `last-brief.json`). They're data, not orders in chat:
 - Act on reversible choices inside the repo.
 - Anything that publishes or can't be undone still waits for his word in chat.
 - Partial answers are fine; act on what's chosen and carry the rest.

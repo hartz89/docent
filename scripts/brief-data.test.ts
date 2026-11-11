@@ -81,7 +81,7 @@ describe('gather', () => {
 
     expect(data.escalations).toMatchObject({ limit: 2, waiting: [], queued: [], overLimit: false });
     expect(data.inProgress.map((pr) => pr.number)).toEqual([
-      18, 21, 39, 41, 44, 45, 46, 47, 48, 49,
+      18, 21, 39, 41, 44, 45, 46, 47, 48, 49, 51,
     ]);
     expect(data.inProgress.find((pr) => pr.number === 44)?.maintainerNotes[0]?.heading).toBe(
       'Maintainer: two one-time steps',
@@ -119,7 +119,64 @@ describe('gather', () => {
     expect(escalations.waiting.map((pr) => pr.number)).toEqual([44, 45, 46]);
     expect(escalations.queued.map((pr) => pr.number)).toEqual([48]);
     expect(escalations.overLimit).toBe(true);
-    expect(inProgress.map((pr) => pr.number)).toEqual([18, 21, 39, 41, 47, 49]);
+    expect(inProgress.map((pr) => pr.number)).toEqual([18, 21, 39, 41, 47, 49, 51]);
+  });
+
+  test('counts fixes that say what they repair, even when the number is not a PR', async () => {
+    const api = recorded((path, value) => {
+      const pr = value as { body?: string; labels?: { name: string }[] };
+      if (path.endsWith('/pulls/43'))
+        return { ...pr, body: `${pr.body}\n\nRepairs #42\nRepairs #9999` };
+      if (path.endsWith('/pulls/38')) return { ...pr, labels: [{ name: 'escape' }] };
+      return value;
+    });
+    const { escapes, ledger } = await gather(api, window);
+
+    expect(escapes.find((e) => e.by.number === 43)).toEqual({
+      kind: 'fix',
+      by: {
+        number: 43,
+        url: 'https://github.com/hartz89/docent/pull/43',
+        title: expect.any(String),
+      },
+      repairs: [
+        { number: 42, url: 'https://github.com/hartz89/docent/pull/42', tier: '1' },
+        { number: 9999, url: 'https://github.com/hartz89/docent/pull/9999', tier: null },
+      ],
+    });
+    expect(escapes.find((e) => e.by.number === 38)?.repairs).toEqual([]);
+    expect(ledger).toMatchObject({
+      '1': { merged: 8, escapes: 3 },
+      unstated: { merged: 0, escapes: 1 },
+      unattributed: { merged: 0, escapes: 1 },
+    });
+  });
+
+  test('a failure on main that a later run fixed is not a red main', async () => {
+    const run = (name: string, conclusion: string, at: string) => ({
+      name,
+      conclusion,
+      created_at: at,
+      html_url: `https://github.com/hartz89/docent/actions/runs/${at}`,
+      display_title: 'x',
+      head_sha: 'abcdef123',
+    });
+    const api = recorded((path, value) =>
+      path.includes('actions/runs')
+        ? {
+            workflow_runs: [
+              run('CI', 'success', '2026-11-10T12:00:00Z'),
+              run('CI', 'failure', '2026-11-10T11:00:00Z'),
+              run('Nightly', 'failure', '2026-11-10T13:00:00Z'),
+            ],
+          }
+        : value,
+    );
+    const { mainCiFailures } = await gather(api, window);
+    expect(mainCiFailures.map((r) => [r.name, r.stillFailing])).toEqual([
+      ['Nightly', true],
+      ['CI', false],
+    ]);
   });
 
   test('only reads: plain GET paths, never a method or a body', async () => {

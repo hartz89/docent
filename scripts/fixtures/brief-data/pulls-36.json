@@ -12,9 +12,7 @@
   "merged_at": "2026-11-10T04:08:09Z",
   "labels": [],
   "draft": false,
-  "auto_merge": {
-    "merge_method": "squash"
-  },
+  "auto_merge": {},
   "additions": 3,
   "deletions": 1
 }

@@ -5,6 +5,7 @@
 //   node scripts/brief-data.ts                 JSON on stdout, since the last brief
 //   node scripts/brief-data.ts --since <iso>   from a given time instead
 //   node scripts/brief-data.ts --plain-gh      use your own gh login, not the builder app
+//   node scripts/brief-data.ts --threshold <n> the score at which a brief is due (default 10)
 //   node scripts/brief-data.ts --mark <iso> [--url <artifact>]
 //                                              record that a brief covering up to <iso> went out
 //
@@ -105,6 +106,8 @@ export type BriefData = {
     title: string;
     sha: string;
     createdAt: string;
+    /** True when this is the workflow's latest run on main: main is red right now. */
+    stillFailing: boolean;
   }[];
   /** The "Open" section of backlog/decisions.md on main, one entry per bullet. */
   openDecisions: { title: string; text: string }[];
@@ -127,9 +130,9 @@ async function pages(api: Api, path: string, done?: (item: Raw) => boolean): Pro
   for (let page = 1; page <= MAX_PAGES; page++) {
     const items = (await api(`${path}${sep}per_page=${PER_PAGE}&page=${page}`)) as Raw[];
     all.push(...items);
-    if (items.length < PER_PAGE || (done && items.some(done))) break;
+    if (items.length < PER_PAGE || (done && items.some(done))) return all;
   }
-  return all;
+  throw new Error(`${path} has more than ${MAX_PAGES} pages; narrow the window with --since`);
 }
 
 /** The tier a PR's description states, under a "Tier" heading or label. */
@@ -220,7 +223,7 @@ function openPr(raw: Raw): OpenPr {
 }
 
 const inWindow = (at: string, since: string, until: string): boolean =>
-  at !== '' && Date.parse(at) >= Date.parse(since) && Date.parse(at) <= Date.parse(until);
+  at !== '' && Date.parse(at) >= Date.parse(since) && Date.parse(at) < Date.parse(until);
 
 /** Runs `fn` over `items`, a few at a time, keeping order. */
 async function mapLimited<T, R>(items: T[], fn: (item: T) => Promise<R>, limit = 4): Promise<R[]> {
@@ -288,8 +291,9 @@ export async function gather(
     if (repairs.length === 0 && !pr.labels.includes('escape')) continue;
     const repaired = await mapLimited(repairs, async (n) => {
       if (!tierOf.has(n)) {
-        const old = (await api(`${base}/pulls/${n}`)) as Raw;
-        tierOf.set(n, parseTier(str(old.body)));
+        // `#N` may name an issue, or a PR that doesn't exist. Count it, with no tier.
+        const old = (await api(`${base}/pulls/${n}`).catch(() => null)) as Raw | null;
+        tierOf.set(n, old ? parseTier(str(old.body)) : null);
       }
       return {
         number: n,
@@ -305,13 +309,17 @@ export async function gather(
   }
 
   const ledger: BriefData['ledger'] = {};
-  const row = (tier: Tier | null) => {
+  const row = (tier: Tier | 'unattributed' | null) => {
     const key = tier ?? 'unstated';
     ledger[key] ??= { merged: 0, escapes: 0 };
     return ledger[key];
   };
   for (const pr of merged) row(pr.tier).merged++;
-  for (const found of escapes) for (const r of found.repairs) row(r.tier).escapes++;
+  for (const found of escapes) {
+    for (const r of found.repairs) row(r.tier).escapes++;
+    // An `escape` label with no `Repairs #N` can't be pinned to a tier.
+    if (found.repairs.length === 0) row('unattributed').escapes++;
+  }
 
   const open = (await pages(api, `${base}/pulls?state=open&sort=created&direction=asc`)).map(
     openPr,
@@ -336,17 +344,27 @@ export async function gather(
       createdAt: str(issue.created_at),
     }));
 
+  // Completed runs on main, newest first. A failure that a later run of the same workflow
+  // fixed is history, not a red main, so it's marked `stillFailing: false`.
   const runs = (await api(
-    `${base}/actions/runs?branch=main&status=failure&created=${encodeURIComponent(`>=${since}`)}&per_page=${PER_PAGE}`,
+    `${base}/actions/runs?branch=main&status=completed&created=${encodeURIComponent(`>=${since}`)}&per_page=${PER_PAGE}`,
   )) as { workflow_runs?: Raw[] };
-  const mainCiFailures = (runs.workflow_runs ?? [])
+  const completed = (runs.workflow_runs ?? [])
     .filter((run) => inWindow(str(run.created_at), since, until))
+    .sort((a, b) => Date.parse(str(b.created_at)) - Date.parse(str(a.created_at)));
+  const latestByWorkflow = new Map<string, Raw>();
+  for (const run of completed) {
+    if (!latestByWorkflow.has(str(run.name))) latestByWorkflow.set(str(run.name), run);
+  }
+  const mainCiFailures = completed
+    .filter((run) => run.conclusion === 'failure')
     .map((run) => ({
       name: str(run.name),
       url: str(run.html_url),
       title: str(run.display_title),
       sha: str(run.head_sha).slice(0, 7),
       createdAt: str(run.created_at),
+      stillFailing: latestByWorkflow.get(str(run.name)) === run,
     }));
 
   const decisionsFile = (await api(`${base}/contents/backlog/decisions.md?ref=main`)) as Raw;
@@ -442,11 +460,12 @@ async function main(argv: string[]): Promise<void> {
   const lastBrief = readLastBrief(path);
   const sinceFlag = flag('--since');
   const until = new Date().toISOString();
-  const [since, sinceSource]: [string, BriefData['sinceSource']] = sinceFlag
-    ? [isoArg('--since', sinceFlag), 'flag']
-    : lastBrief
-      ? [lastBrief.at, 'last-brief']
-      : [new Date(Date.now() - DEFAULT_LOOKBACK_DAYS * 86_400_000).toISOString(), 'default'];
+  const [since, sinceSource]: [string, BriefData['sinceSource']] =
+    sinceFlag !== undefined
+      ? [isoArg('--since', sinceFlag), 'flag']
+      : lastBrief
+        ? [lastBrief.at, 'last-brief']
+        : [new Date(Date.now() - DEFAULT_LOOKBACK_DAYS * 86_400_000).toISOString(), 'default'];
   const threshold = flag('--threshold');
 
   let api = githubApi(argv.includes('--plain-gh'));
@@ -485,7 +504,7 @@ const KEPT = new Set([
   'display_title',
   'head_sha',
   'content',
-  'merge_method',
+  'conclusion',
 ]);
 
 function trim(value: unknown): unknown {

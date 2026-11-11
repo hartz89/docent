@@ -1,0 +1,166 @@
+{
+  "workflow_runs": [
+    {
+      "name": "CI",
+      "head_sha": "67afd595b03c8eac1ab0279544d0e45ec2e2a365",
+      "display_title": "Research: reviving an author session on another machine (#50)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42957771128",
+      "created_at": "2026-11-11T04:13:06Z",
+      "updated_at": "2026-11-11T04:14:22Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "5ca432e155da418c9ee8e60a0be1dc5de06bf412",
+      "display_title": "Submit your review from Docent's verdict stop (#40)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42954132080",
+      "created_at": "2026-11-11T03:38:51Z",
+      "updated_at": "2026-11-11T03:39:38Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "c543d1a2f4d14848f352e7ee2b88b38f2f37820c",
+      "display_title": "Web: a light theme that follows the system, with a top-bar toggle (#43)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42766590998",
+      "created_at": "2026-11-10T06:09:16Z",
+      "updated_at": "2026-11-10T06:14:43Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "7ce3dd8f180f41aafc6336e3e8f519f387e7db39",
+      "display_title": "Core: proven-skip detectors and the computed skip ledger (#42)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42764864934",
+      "created_at": "2026-11-10T05:52:52Z",
+      "updated_at": "2026-11-10T05:55:18Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "e9d3cf4ce8ec84e0d070118871b429c43f0acb5e",
+      "display_title": "Question path: answer from a read-only fork of the author's session (…",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42759115932",
+      "created_at": "2026-11-10T04:57:58Z",
+      "updated_at": "2026-11-10T04:58:57Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "5853b441a1510e47f82d08f19fd987fef2ffedaa",
+      "display_title": "Web: up and down arrows read through a stop's citations (#38)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42755873837",
+      "created_at": "2026-11-10T04:26:21Z",
+      "updated_at": "2026-11-10T04:27:01Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "1f80fbec9b890074c430fea2f220bfc07648879f",
+      "display_title": "Decide: the skip ledger is computed, not written by the docent (#37)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42755185702",
+      "created_at": "2026-11-10T04:20:03Z",
+      "updated_at": "2026-11-10T04:20:47Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "22fb3370be17ddf33188c972792d57b179ae5339",
+      "display_title": "Backlog: proven skips for barrels, and no citations needed for import…",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42753893983",
+      "created_at": "2026-11-10T04:08:12Z",
+      "updated_at": "2026-11-10T04:08:51Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "41c75ac411b17ed42f9723b5397e8b875e0138c5",
+      "display_title": "Web: name the tab after the PR, and add a favicon (#35)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42753435024",
+      "created_at": "2026-11-10T04:04:01Z",
+      "updated_at": "2026-11-10T04:04:44Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "3e976adb4e8d4d799b7bb3a9a47631b6781781e9",
+      "display_title": "Backlog: open a tour from a link (#34)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42753044484",
+      "created_at": "2026-11-10T04:00:27Z",
+      "updated_at": "2026-11-10T04:01:58Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "f504c912a7c90477388dcc9dc35f1e5afdbaa9d7",
+      "display_title": "Web: questions read like a chat, and survive leaving the stop (#33)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42751225904",
+      "created_at": "2026-11-10T03:43:02Z",
+      "updated_at": "2026-11-10T03:44:02Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "02ec2b45d0618c641b72079e5e12ba9e571c7618",
+      "display_title": "Backlog: show the PR's existing review comments in the tour (#32)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42747576422",
+      "created_at": "2026-11-10T03:09:31Z",
+      "updated_at": "2026-11-10T03:12:08Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "8657e757cb78a483f6d26151d37b46ec8cd19df1",
+      "display_title": "Revert line wrapping (#29, #30) (#31)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42746486884",
+      "created_at": "2026-11-10T02:59:58Z",
+      "updated_at": "2026-11-10T03:00:38Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "0252a4de6401f66e6c84ed934dabfaaca4243ccf",
+      "display_title": "Web: keep wrapped lines' tabs in place (#30)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42744624706",
+      "created_at": "2026-11-10T02:42:50Z",
+      "updated_at": "2026-11-10T02:43:55Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "2920f19891887ddf0679f412065ae2d6a1171ca3",
+      "display_title": "Web: wrap long lines in the code view, with a toggle (#29)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42744237603",
+      "created_at": "2026-11-10T02:39:17Z",
+      "updated_at": "2026-11-10T02:40:02Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "1f80e3486edec6c9f998a1cb503a560fe0a60a3f",
+      "display_title": "Backlog: a trust ledger, so autonomy is earned by evidence (#28)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42743902794",
+      "created_at": "2026-11-10T02:36:11Z",
+      "updated_at": "2026-11-10T02:37:13Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "fca7e560d8c96b329d2fdad73b0c720289ca01df",
+      "display_title": "Decisions: the product has no risk tiers (#27)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42743276796",
+      "created_at": "2026-11-10T02:30:51Z",
+      "updated_at": "2026-11-10T02:31:57Z"
+    },
+    {
+      "name": "CI",
+      "head_sha": "38bd52fbb0f24b902d9b6ff62be0e73e06c03f4b",
+      "display_title": "Backlog: skip liberally, and prove it (#26)",
+      "conclusion": "success",
+      "html_url": "https://github.com/hartz89/docent/actions/runs/42741775047",
+      "created_at": "2026-11-10T02:17:52Z",
+      "updated_at": "2026-11-10T02:18:35Z"
+    }
+  ]
+}

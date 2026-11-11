@@ -220,13 +220,15 @@ button:disabled, textarea:disabled { cursor: default; opacity: 0.75; }
 
     <!-- EXAMPLE decision: repeat per decision. data-key is a short unique id; data-short labels the status bar. -->
     <div class="decision">
-      <div class="dhead"><span class="dnum">1</span><h3>{{The question, in one sentence?}} <span class="carried">(carried)</span></h3></div>
-      <p>{{The context they need, in two to four short sentences. Link every PR, issue or artifact.}}</p>
+      <div class="dhead"><span class="dnum">1</span><h3>{{The question, in one sentence?}}</h3></div>
+      <!-- A decision carried from the last brief adds <span class="carried">(carried)</span> to its h3. -->
+      <p>{{The context they need, in two to four short sentences. Link every PR, issue or artifact. When it becomes hard to reverse.}}</p>
       <div class="options3">
         <div class="opt"><span class="t">A. {{Option}}</span><span class="c">{{Its real strength and cost.}}</span></div>
         <div class="opt"><span class="t">B. {{Option}}</span><span class="c">{{Its real strength and cost.}}</span></div>
         <div class="opt"><span class="t">C. {{Option}}</span><span class="c">{{Its real strength and cost.}}</span></div>
       </div>
+      <p class="quiet">{{I'd pick A, fairly sure. What would change my mind: ...}}</p>
       <fieldset class="choices" aria-label="Decision 1" data-short="{{two-word label}}">
         <button type="button" class="choice" data-key="{{key}}" data-value="A">A <span class="rec">recommended</span></button>
         <button type="button" class="choice" data-key="{{key}}" data-value="B">B</button>
@@ -266,6 +268,7 @@ button:disabled, textarea:disabled { cursor: default; opacity: 0.75; }
   const hint = document.getElementById('s-hint');
   const note = document.getElementById('note');
   let doc = null;
+  let owner = false;
 
   function render() {
     for (const b of buttons) b.setAttribute('aria-pressed', String(state[b.dataset.key] === b.dataset.value));
@@ -294,9 +297,10 @@ button:disabled, textarea:disabled { cursor: default; opacity: 0.75; }
     if (!claude?.use) { lock('Answers save only inside claude.ai. Reply in chat instead.'); return; }
     const [db, user] = await Promise.all([claude.use('db'), claude.use('user')]);
     if (!db) { lock("This view can't save answers. Reply in chat instead."); return; }
-    const owner = user ? await user.isOwner() : false;
+    owner = user ? await user.isOwner() : false;
     const ref = db.doc(BRIEF_DOC);
     if (owner) doc = ref; else lock('Only the decision owner can answer here.');
+    refreshSend();
     const timer = setTimeout(() => { hint.textContent = "Saved answers didn't load. You can still answer."; }, 10000);
     ref.onSnapshot((snap) => {
       clearTimeout(timer);
@@ -320,6 +324,7 @@ button:disabled, textarea:disabled { cursor: default; opacity: 0.75; }
     if (!comments) return;
     let s = 'off';
     try { s = await comments.canSendToClaude(); } catch { s = 'off'; }
+    if (s === 'available' && !owner) s = 'writers_only'; // Only the owner's answers are saved.
     sendBtn.disabled = s !== 'available';
     sendNote.textContent = s === 'available' ? 'Partial answers are fine.' : (reasons[s] || reasons.off);
   }
