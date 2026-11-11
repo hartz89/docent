@@ -144,7 +144,7 @@ async function serve(review: Review) {
 
   report(review);
 
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
     // Closing the review deletes its primed copy of the author's session.
     process.once(signal, () => {
       void Promise.allSettled([server.close(), review.close()]).then(() => process.exit(0));

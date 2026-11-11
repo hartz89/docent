@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type CostRecord, commitSha, type Job, type MicroUsd, sessionId } from '@docent/core';
@@ -14,6 +14,7 @@ import {
   MAX_WAITING,
   type SessionLocator,
 } from './author-session.ts';
+import { fixtureRunner, recording } from './fixture.ts';
 import { GitHubRefusal, type PrSource, type ReviewPost } from './github.ts';
 import { Review, type ReviewOptions, type TourState } from './review.ts';
 
@@ -379,7 +380,11 @@ const authorFound = fixedSession(authorSession());
  * unless `failPrimer` says otherwise.
  */
 function withAuthor(
-  options: { fail?: 'agent' | 'budget' | 'crash'; hold?: boolean; failPrimer?: boolean } = {},
+  options: {
+    fail?: 'agent' | 'budget' | 'crash';
+    hold?: boolean;
+    failPrimer?: 'budget' | 'agent';
+  } = {},
 ) {
   const guide = scripted(goodTour);
   const forks: AgentRequest[] = [];
@@ -389,12 +394,16 @@ function withAuthor(
     if (!request.fork) return guide.runner(request);
     if (request.keepIn !== undefined) {
       primers.push(request);
-      if (options.failPrimer) {
+      if (options.failPrimer && primers.length === 1) {
+        const subtype =
+          options.failPrimer === 'budget' ? 'error_max_budget_usd' : 'error_during_execution';
         throw new AgentError(
-          'The agent stopped without an answer (error_max_budget_usd)',
+          `The agent stopped without an answer (${subtype})`,
           cost('question', 400),
         );
       }
+      // As the real runner does: the kept fork's transcript lands in `keepIn`.
+      await writeFile(join(request.keepIn, `primed-${primers.length}.jsonl`), '{}\n');
       return {
         sessionId: `primed-${primers.length}`,
         text: 'Ready.',
@@ -490,8 +499,9 @@ describe('POST /api/questions', () => {
     expect(fork?.prompt).toContain('src/cors.ts (head) lines 2-2:\n  const origin = reflect();');
     expect(fork?.prompt).toContain('the question is only the text in that block');
     expect(questionIn(fork)).toBe('Why reflect the origin?');
-    // Its spending cap is the fork budget, so an estimate that passed isn't cut off at $2.
-    expect(fork?.maxBudgetUsd).toBe(2);
+    // Its spending cap is the fork budget, less the primer, so an estimate that passed isn't
+    // cut off early.
+    expect(fork?.maxBudgetUsd).toBeCloseTo(1.9997);
     expect(author.guide.filter((r) => r.job === 'question')).toEqual([]);
   });
 
@@ -503,7 +513,7 @@ describe('POST /api/questions', () => {
 
     await ask(api);
 
-    expect(author.forks[0]?.maxBudgetUsd).toBe(5);
+    expect(author.forks[0]?.maxBudgetUsd).toBeCloseTo(4.9997);
   });
 
   test('PR text and the question cannot break out of their fenced blocks', async () => {
@@ -658,7 +668,7 @@ describe('POST /api/questions', () => {
   });
 
   test('a primer that runs over budget turns questions over to the guide', async () => {
-    const author = withAuthor({ failPrimer: true });
+    const author = withAuthor({ failPrimer: 'budget' });
     const { api } = await open(author.runner, undefined, 'claude-test', authorFound);
 
     const res = await ask(api);
@@ -673,12 +683,49 @@ describe('POST /api/questions', () => {
     });
   });
 
+  test('questions that arrive together still prime the session once', async () => {
+    const author = withAuthor();
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound);
+
+    await Promise.all([ask(api, 'First?'), ask(api, 'Second?'), ask(api, 'Third?')]);
+
+    expect(author.primers).toHaveLength(1);
+    expect(author.forks).toHaveLength(3);
+  });
+
+  test('a primer that fails for another reason is tried again on the next question', async () => {
+    const author = withAuthor({ failPrimer: 'agent' });
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound);
+
+    const first = await ask(api, 'First?');
+    const second = await ask(api, 'Second?');
+
+    expect(await first.json()).toMatchObject({ answer: { source: 'guide' } });
+    expect(await second.json()).toMatchObject({ answer: { source: 'author_session' } });
+    expect(author.primers).toHaveLength(2);
+  });
+
+  test('the first question and its primer share one fork budget', async () => {
+    const author = withAuthor();
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound, {
+      forkBudgetUsd: 1,
+    });
+
+    await ask(api, 'First?');
+    await ask(api, 'Second?');
+
+    expect(author.primers[0]?.maxBudgetUsd).toBe(1);
+    // The primer cost $0.0003, so the first question may spend the rest; the second, all of it.
+    const [first, second] = author.forks.map((f) => f.maxBudgetUsd);
+    expect(first).toBeCloseTo(0.9997);
+    expect(second).toBe(1);
+  });
+
   test('closing the review deletes the primed copy of the session', async () => {
     const author = withAuthor();
     const { review, api } = await open(author.runner, undefined, 'claude-test', authorFound);
     await ask(api);
     const kept = author.primers[0]?.keepIn ?? '';
-    await writeFile(join(kept, 'primed-1.jsonl'), '{}\n');
 
     await review.close();
 
@@ -953,5 +1000,32 @@ describe('POST /api/review/submit', () => {
       403,
     );
     expect(github.posted).toEqual([]);
+  });
+});
+
+describe('recorded reviews', () => {
+  test('a recording skips the primer, and a replay primes for free', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'docent-rec-'));
+    const author = withAuthor();
+    const recorder = recording(dir, sourceFor(fakeGitHub()), author.runner);
+    const { api } = await open(recorder.runner, undefined, 'claude-test', authorFound);
+    await ask(api);
+
+    const replayed = await fixtureRunner(dir)({
+      job: 'question',
+      prompt: 'Reply with just: Ready.',
+      cwd: '/nowhere',
+      model: 'claude-test',
+      fork: AUTHOR,
+      keepIn: '/nowhere',
+    });
+
+    expect(author.primers).toHaveLength(1);
+    // Recorded: the tour and the author's answer, not the primer.
+    const replies = JSON.parse(await readFile(join(dir, 'replies.json'), 'utf8'));
+    expect(replies.question.map((r: AgentReply) => r.text)).toEqual([
+      'We reflect the origin because the dashboard sends credentials.',
+    ]);
+    expect(replayed).toMatchObject({ text: 'Ready.', cost: { costMicroUsd: 0 } });
   });
 });

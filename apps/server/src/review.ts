@@ -151,6 +151,7 @@ export class Review {
   /** The kept, primed copy of the author's session that questions fork, once it exists. */
   #primed: string | null = null;
   #primedDir: Promise<string> | null = null;
+  #closed = false;
   readonly done: Promise<void>;
 
   constructor(options: ReviewOptions) {
@@ -236,6 +237,8 @@ ${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
             try {
               const primed = await this.#prime(author.id, workspace.dir, limit.signal);
               if (primed.cost) costs.push(primed.cost);
+              // The fork budget covers the first question, primer included.
+              const spent = (primed.cost?.costMicroUsd ?? 0) / 1e6;
               return await this.#options.runner({
                 job: 'question',
                 cwd: workspace.dir,
@@ -243,7 +246,7 @@ ${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
                 fork: primed.session,
                 prompt: authorPrompt(pr, workspace.dir, author.cwd, context, question),
                 signal: limit.signal,
-                maxBudgetUsd: this.#forkBudgetUsd(),
+                maxBudgetUsd: Math.max(0.01, this.#forkBudgetUsd() - spent),
               });
             } catch (error) {
               timedOut = limit.timeout.aborted;
@@ -336,14 +339,16 @@ Question: ${question}`,
    * Claude Code caches a fork only up to its newest message, the question, so forks of the
    * original that ask different questions each write the whole session to the cache again.
    * Forks of the primed copy all start with the same turn, so they read its cache instead
-   * (docs/research/2026-11-11-cheaper-questions.md). The first question pays for the primer too.
+   * (docs/research/2026-11-11-cheaper-questions.md). The first question pays for the primer too,
+   * and shares its deadline. A primed copy that has gone missing is primed again.
    */
   async #prime(
     author: SessionId,
     cwd: string,
     signal: AbortSignal,
   ): Promise<{ session: string; cost: CostRecord | null }> {
-    if (this.#primed) return { session: this.#primed, cost: null };
+    if (this.#closed) throw new Error('The review is closed.');
+    if (this.#primed && existsSync(this.#primed)) return { session: this.#primed, cost: null };
     this.#primedDir ??= mkdtemp(join(tmpdir(), 'docent-primed-'));
     const dir = await this.#primedDir;
     const reply = await this.#options.runner({
@@ -356,12 +361,19 @@ Question: ${question}`,
       signal,
       maxBudgetUsd: this.#forkBudgetUsd(),
     });
-    this.#primed = join(dir, `${reply.sessionId}.jsonl`);
-    return { session: this.#primed, cost: reply.cost };
+    const primed = join(dir, `${reply.sessionId}.jsonl`);
+    // Closed while priming: the copy goes with the folder, and nothing forks it.
+    if (this.#closed) {
+      await rm(dir, { recursive: true, force: true });
+      throw new AgentError('The review is closed.', reply.cost);
+    }
+    this.#primed = primed;
+    return { session: primed, cost: reply.cost };
   }
 
   /** Deletes the primed copy of the author's session. Call it when the review ends. */
   async close(): Promise<void> {
+    this.#closed = true;
     const dir = await this.#primedDir?.catch(() => null);
     this.#primed = null;
     this.#primedDir = null;

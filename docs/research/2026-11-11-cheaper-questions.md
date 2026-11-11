@@ -14,13 +14,13 @@ The setup: this project's coordinator session, 263k tokens of context. Copies we
 | Forked through a logging pass-through to the API | **Hit.** It read 259k from the cache. This held on Opus too. |
 | PR #17's exact transcript states, replayed through the pass-through | **Hit.** That includes the state where the author's session gained a task notification between the two questions. |
 
-So the miss isn't caused by the system prompt, the date, the working directory or the tool list. Those were byte-identical between forks in the logged requests. The cache TTL isn't the cause either: every write was a 1-hour write, and the forks were seconds apart. A changing author session isn't the cause, since the replay still hit.
+On the pass-through path, the system prompt, the date, the working directory and the tool list were byte-identical between forks, and every write was a 1-hour write, seconds apart. A changing author session didn't break reuse there either. The direct path can't be logged the same way, so these causes are ruled out only on the path that runs with fewer betas. What's certain is that the same forks miss directly and hit through the pass-through.
 
 What differs is the connection. Through the pass-through, Claude Code treats the endpoint as third-party. It places a cache breakpoint on the last message of the transcript, before the new question, so the next fork can read it. On a direct connection it sends extra first-party betas: message threads, prompt-caching scope, cache diagnosis and others. A direct fork's breakpoints can't be inspected, but it behaves as though only the newest message (the question) is cached. That means every fork with a new question misses. The [session-snapshot spike](https://github.com/hartz89/docent/pull/50) saw the same single breakpoint. Its "priming" idea is what fixes it.
 
 ## The fix: prime once, fork the primed copy
 
-| 263k-token session, direct connection | Haiku 5.5, measured | Opus 5.5 |
+| 263k-token session, direct connection | Haiku 5.5, measured | Opus 5.5 (estimated from token counts unless marked measured) |
 | --- | --- | --- |
 | Before: first question | $0.25 | $1.94 measured (PR #17: $1.63 at 196k) |
 | Before: each follow-up | $0.28 (rewrites 233k) | about $1.90, the same rewrite |
@@ -30,7 +30,8 @@ What differs is the connection. Through the pass-through, Claude Code treats the
 
 On a 47k-token session, Opus measured $0.16 to prime and then $0.012 a question.
 
-- Priming is one fork with the fixed turn "Reply with just: Ready." It is saved, then moved out of `~/.claude/projects` into a private temp folder. That way neither Claude Code's resume list nor Docent's own session search sees it. Questions fork that file by path, and those forks aren't saved. Closing the review deletes the folder.
+- Priming is one fork with the fixed turn "Reply with just: Ready.", limited to one turn. It is saved, then moved out of `~/.claude/projects` into a private temp folder. That way neither Claude Code's resume list nor Docent's own session search sees it. If the primer fails, its saved copy is deleted. Questions fork that file by path, and those forks aren't saved. Closing the review deletes the folder.
+- The first question pays for the primer, and the two share one fork budget and one deadline.
 - It depends on the 1-hour cache that Claude Code uses on a subscription. A question more than an hour after the last one rewrites the cache once, which is what every question cost before.
 - Opus follow-ups still cost dimes, not cents. Each tool call in a fork re-reads the whole session (about $0.05 per call on Opus).
 
@@ -45,7 +46,7 @@ There were five questions about [PR #44](https://github.com/hartz89/docent/pull/
 | Said it didn't know, when the session held the answer | 0 | 1 (why the floor covers all of `apps/server/src/`) |
 | Made something up | 0 | 0 |
 
-Haiku also answered two questions about [PR #42](https://github.com/hartz89/docent/pull/42) correctly. It fails safe: when it misses, it says it doesn't know. Opus gives more of the reasoning and more context. The question model is now `--question-model` (default: the guide's model). Haiku is priced at its long-prompt rate ($0.50 input per million above 100k tokens), which Docent didn't model before. That changes Haiku's reported costs and the fork estimate.
+Haiku also answered two questions about [PR #42](https://github.com/hartz89/docent/pull/42) correctly. In this small sample (one miss in seven questions), it said it didn't know rather than make something up. Opus gives more of the reasoning and more context. The question model is now `--question-model` (default: the guide's model). Haiku is priced at its long-prompt rate ($0.50 input per million above 100k tokens), which Docent didn't model before. That changes Haiku's reported costs and the fork estimate.
 
 ## Forking at the PR's last message
 
@@ -56,7 +57,7 @@ It isn't built. It only helps sessions that kept working after the PR. A builder
 ## Also seen
 
 - **A fork keeps the author's full tool list in the request,** Bash, Edit and Write included, so the cache prefix stays the same. Claude Code then refuses those tools in the fork: "Bash is disabled for this session", and the same for Write, Edit and Agent. No file changed. Read-only holds, and this PR doesn't change it.
-- **The live tests now prove the cache reuse.** `agent.live.test.ts` primes a kept copy and asserts that two questions forked from it read its cache.
+- **A live test guards the cache reuse.** `agent.live.test.ts` primes a kept copy of a tiny Haiku session and asserts that two questions forked from it read its cache. Without priming, the same assertion failed twice. The 263k-token numbers above come from the scratchpad runs, not from that test.
 
 ## Spend
 

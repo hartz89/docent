@@ -1,5 +1,16 @@
-import { describe, expect, test } from 'vitest';
-import { costRecord, forkCostEstimateUsd, readOnlyOptions, sdkRunner } from './agent.ts';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import {
+  costRecord,
+  discardTranscript,
+  forkCostEstimateUsd,
+  keepTranscript,
+  readOnlyOptions,
+  sdkRunner,
+} from './agent.ts';
 
 describe('the guide session is read-only', () => {
   test('pins the exact options that keep the session read-only', () => {
@@ -53,12 +64,13 @@ describe('the guide session is read-only', () => {
     ).toBe(5);
   });
 
-  test('a kept fork differs only in being saved, so later forks can start from it', () => {
+  test('a kept fork differs only in being saved, with one turn', () => {
     expect(
       readOnlyOptions({ cwd: '/checkout', model: 'claude-test', fork: 'author-1', keepIn: '/k' }),
     ).toEqual({
       ...readOnlyOptions({ cwd: '/checkout', model: 'claude-test', fork: 'author-1' }),
       persistSession: true,
+      maxTurns: 1,
     });
   });
 
@@ -118,5 +130,53 @@ describe('costRecord', () => {
     // 400k tokens written to a 1-hour cache: 2x the $0.50 long-prompt input price.
     expect(forkCostEstimateUsd('claude-haiku-5-5', 400_000)).toBeCloseTo(0.4);
     expect(forkCostEstimateUsd('claude-haiku-5-5', 50_000)).toBeCloseTo(0.01);
+  });
+});
+
+describe("keeping a fork out of Claude Code's projects folder", () => {
+  const id = '0a1b2c3d-1111-4222-8333-444455556666';
+  afterEach(() => vi.unstubAllEnvs());
+
+  /** A config folder holding one saved session, with a tool-results folder beside it. */
+  async function saved() {
+    const config = await mkdtemp(join(tmpdir(), 'docent-config-'));
+    const project = join(config, 'projects', '-some-checkout');
+    await mkdir(join(project, id), { recursive: true });
+    await writeFile(join(project, `${id}.jsonl`), '{"type":"user"}\n');
+    await writeFile(join(project, id, 'result.txt'), 'output');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', config);
+    return project;
+  }
+
+  test('moves the transcript out, and deletes its tool results', async () => {
+    const project = await saved();
+    const kept = await mkdtemp(join(tmpdir(), 'docent-kept-'));
+
+    expect(await keepTranscript(id, kept)).toBe(true);
+
+    expect(await readdir(kept)).toEqual([`${id}.jsonl`]);
+    expect(await readdir(project)).toEqual([]);
+  });
+
+  test('a failed move throws, and discarding then removes the saved copy', async () => {
+    const project = await saved();
+
+    await expect(
+      keepTranscript(id, join(tmpdir(), 'docent-no-such-folder', 'x')),
+    ).rejects.toThrow();
+    await discardTranscript(id);
+
+    expect(await readdir(project)).toEqual([]);
+  });
+
+  test('ignores a missing transcript and an id that is not a UUID', async () => {
+    const project = await saved();
+    const kept = await mkdtemp(join(tmpdir(), 'docent-kept-'));
+
+    expect(await keepTranscript('9a1b2c3d-1111-4222-8333-444455556666', kept)).toBe(false);
+    expect(await keepTranscript('../-some-checkout', kept)).toBe(false);
+    await discardTranscript('../-some-checkout');
+
+    expect(existsSync(join(project, `${id}.jsonl`))).toBe(true);
   });
 });

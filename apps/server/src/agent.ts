@@ -1,7 +1,7 @@
 // The boundary to the model. Everything Docent asks an agent goes through an AgentRunner, so tests
 // can swap in a scripted runner and never make a model call.
 import { existsSync } from 'node:fs';
-import { copyFile, readdir, rm } from 'node:fs/promises';
+import { copyFile, readdir, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -71,7 +71,9 @@ const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
 /**
  * The read-only session options. The flags stack, because no single one holds on its own
  * (docs/research/2026-11-06-session-spike.md):
- * - `tools`: only Read, Grep and Glob exist in the session. No Bash, Edit, Write or Task.
+ * - `tools`: only Read, Grep and Glob can run. No Bash, Edit, Write or Task. (A fork still sends
+ *   the author's tool list to the model, to keep the prompt cache; Claude Code refuses any call
+ *   to a tool outside this set: docs/research/2026-11-11-cheaper-questions.md.)
  * - `permissionMode: 'dontAsk'`: any call that would need approval (a read outside the cwd,
  *   say) is denied without asking. There is no `canUseTool`: under `dontAsk` it is never
  *   consulted, so it would only suggest a gate that isn't there. There is no `allowedTools`
@@ -82,8 +84,9 @@ const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
  * A fork of the author's session gets exactly the same options. The author's own tools,
  * permissions and settings live in their settings files, not the transcript, so none of them
  * carry over. `forkSession` keeps the original transcript untouched, and `persistSession: false`
- * leaves no copy of it behind. The one fork Docent keeps (`keepIn`) is moved into a folder of its
- * own and deleted when the review ends.
+ * leaves no copy of it behind. The one fork Docent keeps (`keepIn`, the primer) is saved, gets one
+ * turn, and is moved into a folder of its own, or deleted if it fails; the review deletes the
+ * folder when it ends.
  * `src/agent.test.ts` pins these options; `src/agent.live.test.ts` proves them against a hostile
  * checkout with a real session, and proves a fork leaves the author's transcript unchanged.
  */
@@ -101,7 +104,7 @@ export function readOnlyOptions(
     strictMcpConfig: true,
     mcpServers: {},
     settingSources: [],
-    maxTurns: 60,
+    maxTurns: request.keepIn !== undefined ? 1 : 60,
     maxBudgetUsd: request.maxBudgetUsd ?? 2,
     ...(request.resume ? { resume: request.resume } : {}),
     ...(request.fork
@@ -113,8 +116,28 @@ export function readOnlyOptions(
   };
 }
 
-/** Runs Claude Code headlessly through the Agent SDK, read-only (see `readOnlyOptions`). */
+/**
+ * Runs Claude Code headlessly through the Agent SDK, read-only (see `readOnlyOptions`). A kept
+ * fork's transcript leaves Claude Code's projects folder whatever happens: moved into `keepIn`
+ * when the fork succeeds, deleted when it doesn't.
+ */
 export const sdkRunner: AgentRunner = async (request) => {
+  if (request.keepIn === undefined) return run(request, {});
+  const seen: { sessionId?: string } = {};
+  try {
+    const reply = await run(request, seen);
+    if (!(await keepTranscript(reply.sessionId, request.keepIn).catch(() => false))) {
+      throw new AgentError("The fork's transcript couldn't be kept.", reply.cost);
+    }
+    return reply;
+  } catch (error) {
+    if (seen.sessionId) await discardTranscript(seen.sessionId).catch(() => undefined);
+    throw error;
+  }
+};
+
+/** One SDK query. `seen` gets the session id as soon as Claude Code reports it. */
+async function run(request: AgentRequest, seen: { sessionId?: string }): Promise<AgentReply> {
   // An abort listener never fires for a signal that's already aborted, so check first: an
   // expired deadline must never start a call with no time limit.
   request.signal?.throwIfAborted();
@@ -164,6 +187,9 @@ export const sdkRunner: AgentRunner = async (request) => {
       prompt: request.prompt,
       options: { ...readOnlyOptions(request), abortController },
     })) {
+      if ('session_id' in message && typeof message.session_id === 'string') {
+        seen.sessionId ??= message.session_id;
+      }
       if (message.type === 'assistant' && message.parent_tool_use_id === null) {
         model = message.message.model || model;
         if (message.message.id && message.message.usage) {
@@ -211,10 +237,6 @@ export const sdkRunner: AgentRunner = async (request) => {
   const cost = costRecord(request.job, model, ended.usage, Date.now() - started, largestPrompt());
   if (!ended.ok)
     throw new AgentError(`The agent stopped without an answer (${ended.failure})`, cost);
-  if (request.keepIn !== undefined) {
-    const kept = await keepTranscript(ended.sessionId, request.keepIn).catch(() => false);
-    if (!kept) throw new AgentError("The fork's transcript couldn't be kept.", cost);
-  }
   return {
     sessionId: ended.sessionId,
     text: ended.text,
@@ -222,7 +244,7 @@ export const sdkRunner: AgentRunner = async (request) => {
     cost,
     denials,
   };
-};
+}
 
 /** The result message's usage: this turn's API calls only, even when resuming a session. */
 type Usage = {
@@ -318,22 +340,46 @@ function priceFor(model: string, promptTokens: number): Price | undefined {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Where Claude Code keeps session transcripts, one folder per working directory. */
+export function claudeProjectsDir(): string {
+  return join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects');
+}
+
+/** The project folders holding a saved session's transcript. None for an id that isn't a UUID. */
+async function savedAt(sessionId: string): Promise<string[]> {
+  if (!UUID.test(sessionId)) return [];
+  const projects = claudeProjectsDir();
+  const names = await readdir(projects).catch(() => []);
+  return names
+    .map((name) => join(projects, name))
+    .filter((dir) => existsSync(join(dir, `${sessionId}.jsonl`)));
+}
+
 /**
- * Moves a saved session's transcript out of Claude Code's projects folder into `into`, along
- * with nothing else: its folder of tool results, if any, is deleted. False if it isn't there.
+ * Moves a saved session's transcript out of Claude Code's projects folder into `into`. Its
+ * folder of tool results, if any, is deleted. False if it isn't there; throws if the move fails,
+ * leaving the caller to discard it.
  */
-async function keepTranscript(sessionId: string, into: string): Promise<boolean> {
-  if (!UUID.test(sessionId)) return false;
-  const projects = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects');
-  for (const project of await readdir(projects)) {
-    const from = join(projects, project, `${sessionId}.jsonl`);
-    if (!existsSync(from)) continue;
-    await copyFile(from, join(into, `${sessionId}.jsonl`));
+export async function keepTranscript(sessionId: string, into: string): Promise<boolean> {
+  const [dir] = await savedAt(sessionId);
+  if (!dir) return false;
+  const from = join(dir, `${sessionId}.jsonl`);
+  const to = join(into, `${sessionId}.jsonl`);
+  // A rename can't cross volumes; a copy then a delete can.
+  await rename(from, to).catch(async () => {
+    await copyFile(from, to);
     await rm(from);
-    await rm(join(projects, project, sessionId), { recursive: true, force: true });
-    return true;
+  });
+  await rm(join(dir, sessionId), { recursive: true, force: true });
+  return true;
+}
+
+/** Deletes a saved session's transcript, and its tool results, from Claude Code's projects. */
+export async function discardTranscript(sessionId: string): Promise<void> {
+  for (const dir of await savedAt(sessionId)) {
+    await rm(join(dir, `${sessionId}.jsonl`), { force: true });
+    await rm(join(dir, sessionId), { recursive: true, force: true });
   }
-  return false;
 }
 
 function describeTool(name: string, input: unknown, cwd: string): string {
