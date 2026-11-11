@@ -171,6 +171,32 @@ describe('GET /open shows a confirm page and does nothing else', () => {
     expect(await res.text()).toContain('The launcher is busy');
   });
 
+  test('a lookup GitHub never answers gives up, and frees its slot', async () => {
+    const { app } = createLauncher({
+      port,
+      allowedRepos: ['hartz89/docent'],
+      configPath: '/config.json',
+      lookupTimeoutMs: 20,
+      preview: () => new Promise(() => {}), // GitHub never answers.
+      start: () => Promise.reject(new Error('never')),
+    });
+    const open = (n: number) =>
+      app.request(`${own}/open?pr=https://github.com/hartz89/docent/pull/${n}`);
+
+    const hung = await Promise.all(Array.from({ length: MAX_LOOKUPS }, (_, i) => open(i + 1)));
+    expect(hung.map((r) => r.status)).toEqual(Array(MAX_LOOKUPS).fill(502));
+    expect(await hung[0]?.text()).toContain('answer within 0.02 seconds');
+
+    // The slots are free again: the next link is looked up, not refused as busy.
+    expect((await open(MAX_LOOKUPS + 1)).status).toBe(502);
+  });
+
+  test('names a GitHub app author as a bot', async () => {
+    const { openPage } = setup({ author: 'app/docent-builder' });
+
+    expect(await (await openPage()).text()).toContain('docent-builder (bot)');
+  });
+
   test('escapes the PR title, which the PR author controls', async () => {
     const { openPage } = setup({ title: '<img src=x onerror=alert(1)> & "quotes"' });
 

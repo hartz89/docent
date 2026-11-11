@@ -23,7 +23,7 @@ test('a link opens a confirm page, and one click lands on the tour', async ({ pa
       await expect(page.getByRole('heading', { name: 'Open this review?' })).toBeVisible();
       await expect(page.getByText('fix(cors): reflect request origin')).toBeVisible();
       await expect(page.getByText('About $1 to write.')).toBeVisible();
-      await expect(page.locator('.author')).toHaveText('app/');
+      await expect(page.locator('.author')).toHaveText('a GitHub app');
     });
 
     await test.step('confirming opens the tour on its own review server', async () => {

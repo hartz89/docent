@@ -47,6 +47,8 @@ export type LauncherOptions = {
   start: (pr: PrPreview) => Promise<OpenedReview>;
   /** The clock, for the rate limit. */
   now?: () => number;
+  /** How long a PR lookup may take before it's abandoned. Default LOOKUP_TIMEOUT_MS. */
+  lookupTimeoutMs?: number;
   /** Where to say that a review server was closed to make room. */
   log?: (line: string) => void;
 };
@@ -62,6 +64,8 @@ export const MAX_OPEN_REVIEWS = 10;
 const PREVIEW_TTL_MS = 30_000;
 /** At most this many PR lookups run at once; more get a "busy" page. */
 export const MAX_LOOKUPS = 4;
+/** A lookup slower than this is abandoned, so a hung `gh` can't hold a slot forever. */
+const LOOKUP_TIMEOUT_MS = 30_000;
 
 /**
  * Arms the confirm button. It stays disabled (no click, no Enter) until this tab is visible and
@@ -122,7 +126,17 @@ export function createLauncher(options: LauncherOptions) {
     if (hit) return hit.pr;
     if (lookups >= MAX_LOOKUPS) return 'busy';
     lookups++;
-    const pr = preview(url);
+    const timeoutMs = options.lookupTimeoutMs ?? LOOKUP_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pr = Promise.race([
+      preview(url),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`GitHub didn't answer within ${timeoutMs / 1000} seconds`)),
+          timeoutMs,
+        );
+      }),
+    ]).finally(() => clearTimeout(timer));
     previews.set(url, { at: now(), pr });
     // A failed lookup isn't remembered, so a retry asks again.
     pr.catch(() => previews.delete(url)).finally(() => lookups--);
@@ -374,7 +388,7 @@ function confirmPage(pr: PrPreview, csrf: string, notice?: string): string {
     <div class="pr">
       <div class="quiet">${repo} · #${pr.number} · <code>${escapeHtml(pr.head.slice(0, 7))}</code></div>
       <div class="title">${escapeHtml(pr.title)}</div>
-      <div class="quiet">by <strong class="author">${escapeHtml(pr.author)}</strong>${pr.fromFork ? ' · <span class="fork">from a fork</span>' : ''}</div>
+      <div class="quiet">by <strong class="author">${escapeHtml(authorName(pr.author))}</strong>${pr.fromFork ? ' · <span class="fork">from a fork</span>' : ''}</div>
     </div>
     ${cost}
     <form method="post" action="/open">
@@ -382,6 +396,7 @@ function confirmPage(pr: PrPreview, csrf: string, notice?: string): string {
       <input type="hidden" name="head" value="${escapeHtml(pr.head)}">
       <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
       <button type="submit" disabled>Start the review</button>
+      <span class="hint">Move the pointer here to enable it.</span>
     </form>
     <p class="quiet">A link opened this page. Nothing starts until you click. The title is the
     author's own words, so check who wrote it.</p>
@@ -406,6 +421,13 @@ function failedToStart(pr: PrPreview, error: unknown): string {
     `<h1>The review didn't start</h1>
     <p>${escapeHtml(pr.repo)}#${pr.number}: ${escapeHtml(error instanceof Error ? error.message : String(error))}</p>`,
   );
+}
+
+/** GitHub names an app author `app/<slug>`. Say it's a bot instead. */
+function authorName(login: string): string {
+  if (!login.startsWith('app/')) return login;
+  const slug = login.slice('app/'.length);
+  return slug ? `${slug} (bot)` : 'a GitHub app';
 }
 
 function escapeHtml(text: string): string {
@@ -443,6 +465,8 @@ function page(title: string, body: string): string {
   button:enabled:hover { filter: brightness(1.06); }
   .author { color: var(--text); font-weight: 600; }
   .fork { color: var(--brass-text); }
+  .hint { display: none; margin-left: 10px; color: var(--muted); font-size: 13px; }
+  button:disabled + .hint { display: inline; }
   button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 </style>
 </head>
