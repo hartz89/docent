@@ -240,7 +240,7 @@ describe('GET /api/definition', () => {
         if (++calls === 1) throw new Error('git broke');
         return gitHeadFiles(repo, head);
       },
-      50,
+      1_000,
     );
     const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
     expect((await api.definition.$get({ query: { symbol: 'helper' } })).status).toBe(500);
@@ -248,7 +248,7 @@ describe('GET /api/definition', () => {
     expect(calls).toBe(1);
     expect(quiet).toHaveBeenCalledOnce();
     quiet.mockRestore();
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
     expect((await definition(api, { symbol: 'helper' })).index.state).toBe('complete');
   });
 
@@ -267,9 +267,42 @@ describe('GET /api/definition', () => {
         for (const path of paths) yield { path, text: files[path as keyof typeof files] };
       },
     }));
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     const found = await definition(api, { symbol: 'last' });
     expect(found.candidates).toEqual([expect.objectContaining({ path: 'c/last.ts' })]);
     expect(found.index).toMatchObject({ state: 'complete', files: 2, skipped: 1 });
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('"b/hostile.ts"'));
+    logged.mockRestore();
+  });
+
+  test('after a few files that break the parser, only small files are tried', async () => {
+    // Found by the security review: enough hostile files would spend the whole time budget.
+    const bomb = 'a<b,\n'.repeat(20_000);
+    const files: Record<string, string> = {
+      'a/1.ts': bomb,
+      'a/2.ts': bomb,
+      'a/3.ts': bomb,
+      'a/4.ts': bomb,
+      'a/5.ts': bomb,
+      'z/big.ts': `export function big() {}\n${'// filler\n'.repeat(2_000)}`,
+      'z/small.ts': 'export function small() {}\n',
+    };
+    const { api } = await serve({}, async () => ({
+      entries: Object.entries(files).map(([path, text]) => ({ path, bytes: text.length })),
+      truncated: false,
+      read: async function* (paths) {
+        for (const path of paths) yield { path, text: files[path] ?? null };
+      },
+    }));
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const started = Date.now();
+    const found = await definition(api, { symbol: 'small' });
+    // Three bombs are parsed and fail; the other two and the big file are never tried.
+    expect(logged).toHaveBeenCalledTimes(3);
+    logged.mockRestore();
+    expect(found.candidates).toEqual([expect.objectContaining({ path: 'z/small.ts' })]);
+    expect(found.index).toMatchObject({ state: 'complete', files: 1, skipped: 6 });
+    expect(Date.now() - started).toBeLessThan(10_000);
   });
 
   test('refuses bad input, and anyone without the token', async () => {

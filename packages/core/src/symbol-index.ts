@@ -30,7 +30,24 @@ const COMPILED_FROM: Record<string, string[]> = {
 };
 /** tsconfig `paths` beyond these are ignored. */
 const MAX_PATH_PATTERNS = 100;
-const MAX_PATH_TARGETS = 10;
+const MAX_PATH_TARGETS = 3;
+/**
+ * Import resolutions one lookup may make. A real file needs tens; past this, the lookup returns
+ * what it has, marked truncated.
+ */
+const MAX_LOOKUP_STEPS = 2_000;
+
+/** One `definitions()` call: what it found, where it's been, and the work it has done. */
+type Lookup = {
+  add: (candidate: Candidate) => void;
+  visited: Set<string>;
+  steps: number;
+  /** The candidate limit was reached: nothing more is added. */
+  truncated: boolean;
+  /** The work budget ran out: no more imports are followed, but the repo-wide pass still runs. */
+  exhausted: boolean;
+};
+
 /** Re-export chains longer than this stop; real ones are a few steps. */
 const MAX_HOPS = 16;
 
@@ -91,7 +108,8 @@ export class SymbolIndex {
   }
 
   #resolvePaths(spec: string): string | null {
-    let best: { prefix: number; found: string | null } | null = null;
+    // Like TypeScript: only the matching pattern with the longest prefix is tried.
+    let best: { prefix: number; middle: string; targets: readonly string[] } | null = null;
     for (const { pattern, targets } of this.#tsconfig) {
       const star = pattern.indexOf('*');
       const prefix = star === -1 ? pattern : pattern.slice(0, star);
@@ -102,18 +120,16 @@ export class SymbolIndex {
           : spec.length >= prefix.length + suffix.length &&
             spec.startsWith(prefix) &&
             spec.endsWith(suffix);
-      // TypeScript picks the pattern with the longest prefix.
       if (!matches || (best && best.prefix >= prefix.length)) continue;
       const middle = star === -1 ? '' : spec.slice(prefix.length, spec.length - suffix.length);
-      let found: string | null = null;
-      for (const target of targets) {
-        const path = normalize(target.replace('*', middle));
-        found = path === null ? null : this.#withExtension(path);
-        if (found) break;
-      }
-      best = { prefix: prefix.length, found };
+      best = { prefix: prefix.length, middle, targets };
     }
-    return best?.found ?? null;
+    for (const target of best?.targets ?? []) {
+      const path = normalize(target.replace('*', best?.middle ?? ''));
+      const found = path === null ? null : this.#withExtension(path);
+      if (found) return found;
+    }
+    return null;
   }
 
   /**
@@ -129,18 +145,24 @@ export class SymbolIndex {
   ): { candidates: Candidate[]; truncated: boolean } {
     const found: Candidate[] = [];
     const seen = new Set<string>();
-    let truncated = false;
-    const add = (candidate: Candidate) => {
-      if (truncated) return;
-      const key = `${candidate.path}:${candidate.line}`;
-      if (seen.has(key)) return;
-      if (found.length === limit) {
-        truncated = true;
-        return;
-      }
-      seen.add(key);
-      found.push(candidate);
+    const lookup: Lookup = {
+      visited: new Set(),
+      steps: 0,
+      truncated: false,
+      exhausted: false,
+      add: (candidate) => {
+        if (lookup.truncated) return;
+        const key = `${candidate.path}:${candidate.line}`;
+        if (seen.has(key)) return;
+        if (found.length === limit) {
+          lookup.truncated = true;
+          return;
+        }
+        seen.add(key);
+        found.push(candidate);
+      },
     };
+    const add = lookup.add;
 
     const own = from ? this.#files.get(from.path) : undefined;
     if (from && own) {
@@ -153,50 +175,65 @@ export class SymbolIndex {
 
       // N3: an imported name leads to its definition, through any re-exports.
       for (const binding of own.imports.filter((i) => i.local === symbol)) {
-        const target = this.resolveImport(from.path, binding.spec);
-        if (target) this.#follow(target, binding.imported, 0, new Set(), add);
+        const target = this.#resolveWithin(lookup, from.path, binding.spec);
+        if (target) this.#follow(target, binding.imported, 0, lookup);
       }
       // `ns.symbol()` after `import * as ns`: the symbol is followed through that module.
-      for (const binding of own.imports.filter((i) => i.imported === '*')) {
-        const target = this.resolveImport(from.path, binding.spec);
-        if (target && this.#files.has(target)) this.#follow(target, symbol, 0, new Set(), add);
-      }
-      // Then any file this one imports that defines the name, like a method on an imported class.
+      // The files the clicked file imports, each once: a file can repeat an import many times.
       const specs = new Set([
         ...own.imports.map((i) => i.spec),
         ...own.exports.flatMap((e) => (e.kind === 'from' ? [e.spec] : [])),
         ...own.exportsAll,
       ]);
-      for (const spec of specs) {
-        const target = this.resolveImport(from.path, spec);
-        const symbols = target ? this.#files.get(target) : undefined;
-        if (!target || !symbols) continue;
-        for (const d of symbols.definitions) {
-          if (d.name === symbol) add({ path: target, line: d.line, kind: d.kind, rank: 'import' });
+      const namespaces = new Set(own.imports.filter((i) => i.imported === '*').map((i) => i.spec));
+      for (const spec of namespaces) {
+        const target = this.#resolveWithin(lookup, from.path, spec);
+        if (target && this.#files.has(target)) this.#follow(target, symbol, 0, lookup);
+      }
+      // Then any file this one imports that defines the name, like a method on an imported class.
+      // Only worth resolving when some file defines it at all.
+      if (this.#byName.has(symbol)) {
+        for (const spec of specs) {
+          const target = this.#resolveWithin(lookup, from.path, spec);
+          const symbols = target ? this.#files.get(target) : undefined;
+          if (!target || !symbols) continue;
+          for (const d of symbols.definitions) {
+            if (d.name === symbol)
+              add({ path: target, line: d.line, kind: d.kind, rank: 'import' });
+          }
         }
       }
     }
 
     for (const path of this.#byName.get(symbol) ?? []) {
-      if (truncated) break;
+      if (lookup.truncated) break;
       for (const d of this.#files.get(path)?.definitions ?? []) {
         if (d.name === symbol) add({ path, line: d.line, kind: d.kind, rank: 'repo' });
       }
     }
-    return { candidates: found, truncated };
+    // Either way, some candidates may be missing.
+    return { candidates: found, truncated: lookup.truncated || lookup.exhausted };
+  }
+
+  /**
+   * Resolves within the lookup's budget. Past it, nothing more resolves, so a file the PR built
+   * to fan out can't stall the server.
+   */
+  #resolveWithin(lookup: Lookup, from: string, spec: string): string | null {
+    if (lookup.truncated || lookup.exhausted) return null;
+    if (++lookup.steps > MAX_LOOKUP_STEPS) {
+      lookup.exhausted = true;
+      return null;
+    }
+    return this.resolveImport(from, spec);
   }
 
   /** Finds where `path`'s export `name` is defined. `'*'` means the module itself. */
-  #follow(
-    path: string,
-    name: string,
-    hops: number,
-    visited: Set<string>,
-    add: (candidate: Candidate) => void,
-  ): void {
+  #follow(path: string, name: string, hops: number, lookup: Lookup): void {
     const key = `${path}\0${name}`;
-    if (hops > MAX_HOPS || visited.has(key)) return;
-    visited.add(key);
+    if (hops > MAX_HOPS || lookup.truncated || lookup.exhausted || lookup.visited.has(key)) return;
+    lookup.visited.add(key);
+    const add = lookup.add;
     const symbols = this.#files.get(path);
     if (name === '*' || !symbols) {
       // A namespace import, or a file that wasn't indexed: the file is the best answer.
@@ -204,7 +241,7 @@ export class SymbolIndex {
       return;
     }
     const exports = symbols.exports.filter((e) => e.name === name);
-    for (const entry of exports) this.#followExport(path, entry, hops, visited, add);
+    for (const entry of exports) this.#followExport(path, entry, hops, lookup);
     if (exports.length > 0) return;
     // CommonJS and scripts don't declare exports: there, a top-level definition will do.
     const isModule = symbols.exports.length > 0 || symbols.exportsAll.length > 0;
@@ -214,22 +251,17 @@ export class SymbolIndex {
       return;
     }
     if (name === 'default') return;
-    for (const spec of symbols.exportsAll) {
-      const next = this.resolveImport(path, spec);
-      if (next) this.#follow(next, name, hops + 1, visited, add);
+    for (const spec of new Set(symbols.exportsAll)) {
+      const next = this.#resolveWithin(lookup, path, spec);
+      if (next) this.#follow(next, name, hops + 1, lookup);
     }
   }
 
-  #followExport(
-    path: string,
-    entry: Export,
-    hops: number,
-    visited: Set<string>,
-    add: (candidate: Candidate) => void,
-  ): void {
+  #followExport(path: string, entry: Export, hops: number, lookup: Lookup): void {
+    const add = lookup.add;
     if (entry.kind === 'from') {
-      const next = this.resolveImport(path, entry.spec);
-      if (next) this.#follow(next, entry.imported, hops + 1, visited, add);
+      const next = this.#resolveWithin(lookup, path, entry.spec);
+      if (next) this.#follow(next, entry.imported, hops + 1, lookup);
       return;
     }
     const symbols = this.#files.get(path);
@@ -245,8 +277,8 @@ export class SymbolIndex {
     // `import { a } from './x'; export { a }`: keep following the import.
     const bindings = symbols.imports.filter((i) => i.local === local);
     for (const binding of bindings) {
-      const next = this.resolveImport(path, binding.spec);
-      if (next) this.#follow(next, binding.imported, hops + 1, visited, add);
+      const next = this.#resolveWithin(lookup, path, binding.spec);
+      if (next) this.#follow(next, binding.imported, hops + 1, lookup);
     }
     if (bindings.length === 0) add({ path, line: entry.line, kind: 'export', rank: 'import' });
   }

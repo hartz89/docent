@@ -50,11 +50,21 @@ describe('definitions', () => {
     const index = await indexOf({
       'a.ts': `${'// note\n'.repeat(20_000)}export function after() {}\n`,
     });
+    // Every grammar's tags had the slow pattern, so each one is checked.
+    const comments = '// note\n'.repeat(20_000);
     const started = performance.now();
-    const again = await indexOf({ 'b.ts': `${'// note\n'.repeat(20_000)}function b() {}\n` });
-    expect(performance.now() - started).toBeLessThan(1000);
+    const again = await indexOf({
+      'b.ts': `${comments}function b() {}\n`,
+      'c.js': `${comments}function c() {}\n`,
+      'd.go': `package d\n${comments}func d() {}\n`,
+      'e.tsx': `${comments}function e() {}\n`,
+    });
+    expect(performance.now() - started).toBeLessThan(2000);
     expect(index.definitions('after')).toEqual([at('a.ts', 20_001)]);
     expect(again.definitions('b')).toEqual([at('b.ts', 20_001)]);
+    expect(again.definitions('c')).toEqual([at('c.js', 20_001)]);
+    expect(again.definitions('d')).toEqual([at('d.go', 20_002)]);
+    expect(again.definitions('e')).toEqual([at('e.tsx', 20_001)]);
   });
 
   test('N1: TSX, JSX, Python and Go files are indexed too', async () => {
@@ -187,15 +197,35 @@ describe('following imports', () => {
       'v.ts': 'export function helper() {}\n',
     });
     const from = { path: 'app.ts' };
-    expect(index.definitions('foo', from)[0]).toEqual(
-      expect.objectContaining({ path: 'real.ts', line: 1, rank: 'import' }),
-    );
-    expect(index.definitions('parse', from)[0]).toEqual(
-      expect.objectContaining({ path: 'real.ts', line: 2, rank: 'import' }),
-    );
+    // The export comes first; the method in the imported barrel still follows, as an import.
+    expect(index.definitions('foo', from)).toEqual([
+      { path: 'real.ts', line: 1, kind: 'function', rank: 'import' },
+      { path: 'barrel.ts', line: 1, kind: 'method', rank: 'import' },
+    ]);
+    expect(index.definitions('parse', from)).toEqual([
+      { path: 'real.ts', line: 2, kind: 'function', rank: 'import' },
+      { path: 'barrel.ts', line: 3, kind: 'function', rank: 'import' },
+    ]);
     expect(index.definitions('helper', from)).toEqual([
       { path: 'v.ts', line: 1, kind: 'function', rank: 'import' },
     ]);
+  });
+
+  test('N2: a file built to fan out stops at a work budget, marked truncated', async () => {
+    // Found by the security review: thousands of `import * as` of a barrel of `export *`.
+    const leaves = Array.from({ length: 2_500 }, (_, i) => `l${i}`);
+    const files: Record<string, string> = {
+      'x.ts': `${Array.from({ length: 3_000 }, (_, i) => `import * as a${i} from './h';`).join('\n')}\n`,
+      'h.ts': leaves.map((l) => `export * from './${l}';`).join('\n'),
+      'z.ts': 'export function foo() {}\n',
+    };
+    for (const leaf of leaves) files[`${leaf}.ts`] = '';
+    const index = await indexOf(files);
+    const started = performance.now();
+    const found = index.limited('foo', 50, { path: 'x.ts' });
+    expect(performance.now() - started).toBeLessThan(500);
+    // Nothing the budget couldn't reach is lost from the repo-wide pass.
+    expect(found).toEqual({ candidates: [at('z.ts', 1)], truncated: true });
   });
 
   test('N3: an export cycle ends instead of looping', async () => {

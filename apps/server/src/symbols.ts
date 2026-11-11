@@ -66,6 +66,12 @@ const LONGEST_LINE = 10_000;
 const MAX_TSCONFIG_BYTES = 256 * 1024;
 /** How long past its own deadline a parse may run before its worker is stopped. */
 const GRACE_MS = 250;
+/** Files that fail or take over half their time before the rest are parsed warily. */
+const MAX_STRIKES = 3;
+/** Once wary, a bigger file is skipped. */
+const WARY_FILE_CHARS = 16 * 1024;
+/** How long a worker may take to load its grammars. */
+const STARTUP_MS = 10_000;
 
 /** Not vendored or generated, judging by its path. */
 function ownCode({ path }: HeadFile): boolean {
@@ -114,6 +120,7 @@ export async function buildIndex(
     Math.max(0, deadline - Date.now()),
   );
   const parser = new ParserWorker();
+  let strikes = 0;
   try {
     for await (const { path, text } of head.read(toRead, stop.signal)) {
       read++;
@@ -127,8 +134,15 @@ export async function buildIndex(
         continue;
       }
       if (text === null || longestLineOver(text, LONGEST_LINE)) continue;
-      const parsed = await parser.parse(language, text, limits.fileMs, deadline);
+      // After a few files that broke the parser or were very slow, the PR is treated as hostile:
+      // only small files are parsed, on a short clock, so it can't spend the whole budget.
+      const wary = strikes >= MAX_STRIKES;
+      if (wary && text.length > WARY_FILE_CHARS) continue;
+      const ms = wary ? limits.fileMs / 4 : limits.fileMs;
+      const began = Date.now();
+      const parsed = await parser.parse(path, language, text, ms, deadline);
       if (parsed) symbols.set(path, parsed);
+      if (!parsed || Date.now() - began > limits.fileMs / 2) strikes++;
     }
   } finally {
     clearTimeout(timer);
@@ -166,6 +180,7 @@ class ParserWorker {
 
   /** Parses within `ms`, and never past `deadline`. Null when it can't. */
   async parse(
+    path: string,
     language: ParseRequest['language'],
     text: string,
     ms: number,
@@ -180,7 +195,12 @@ class ParserWorker {
         worker.off('message', onMessage);
         worker.off('exit', onExit);
         worker.off('error', onError);
-        if (broken) this.#stop(worker);
+        if (broken) {
+          console.error(
+            `Docent skipped ${JSON.stringify(path)}: the parser failed or ran too long.`,
+          );
+          this.#stop(worker);
+        }
         resolve(symbols);
       };
       const onMessage = (reply: ParseReply) => done(reply.symbols, false);
@@ -213,9 +233,22 @@ class ParserWorker {
         resourceLimits: { maxOldGenerationSizeMb: 256 },
       });
       // Always listening, so a worker's error can never become an uncaught one in the server.
-      worker.on('error', () => {});
-      worker.once('message', () => resolve(worker));
-      worker.once('exit', () => reject(new Error('The parser worker failed to start')));
+      let reason = 'it exited';
+      worker.on('error', (error) => {
+        reason = String(error);
+      });
+      const fail = (why: string) => {
+        clearTimeout(timer);
+        void worker.terminate();
+        reject(new Error(`The parser worker failed to start: ${why}`));
+      };
+      const timer = setTimeout(() => fail('it took too long'), STARTUP_MS);
+      worker.once('message', (message: 'ready' | { error: string }) => {
+        if (message !== 'ready') return fail(message.error);
+        clearTimeout(timer);
+        resolve(worker);
+      });
+      worker.once('exit', () => fail(reason));
     }).catch((error: unknown) => {
       this.#worker = null;
       throw error;

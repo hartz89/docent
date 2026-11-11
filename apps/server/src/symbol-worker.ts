@@ -30,7 +30,8 @@ try {
     bytes: (file) => readFile(locate(file)),
     text: (file) => readFile(locate(file), 'utf8'),
   });
-} catch {
+} catch (error) {
+  parentPort?.postMessage({ error: String(error) });
   process.exit(1);
 }
 parentPort?.postMessage('ready');

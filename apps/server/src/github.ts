@@ -239,8 +239,19 @@ export function hardenedGitArgs(dir: string, args: readonly string[]): string[] 
 
 /** `git()`'s environment. `offline` forbids fetching missing objects, so nothing is downloaded. */
 export function hardenedGitEnv({ offline = false } = {}): NodeJS.ProcessEnv {
+  // These would override `-C` and point git at another repository or object store.
+  const {
+    GIT_DIR: _dir,
+    GIT_WORK_TREE: _workTree,
+    GIT_INDEX_FILE: _index,
+    GIT_OBJECT_DIRECTORY: _objects,
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: _alternates,
+    GIT_COMMON_DIR: _common,
+    GIT_NAMESPACE: _namespace,
+    ...inherited
+  } = process.env;
   return {
-    ...process.env,
+    ...inherited,
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_LFS_SKIP_SMUDGE: '1',

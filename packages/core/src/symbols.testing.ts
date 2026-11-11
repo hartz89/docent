@@ -47,7 +47,8 @@ export async function indexOf(files: Record<string, string>) {
   return {
     definitions: (symbol: string, from?: { path: string; line?: number }) =>
       index.definitions(symbol, from).candidates,
-    limited: (symbol: string, limit: number) => index.definitions(symbol, undefined, limit),
+    limited: (symbol: string, limit: number, from?: { path: string }) =>
+      index.definitions(symbol, from, limit),
     resolveImport: (from: string, spec: string) => index.resolveImport(from, spec),
   };
 }
