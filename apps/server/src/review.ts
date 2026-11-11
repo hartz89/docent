@@ -21,6 +21,7 @@ import {
   type ReviewEvent,
   type Workspace,
 } from './github.ts';
+import { composeBody, type DraftComment, parseComments, placeComments } from './review-comments.ts';
 import {
   generateTour,
   TOUR_PROMPT_VERSION,
@@ -53,16 +54,16 @@ export type ReviewSnapshot = {
 };
 
 /**
- * The reviewer's verdict. Approve may go without a summary; Request changes and Comment need
- * one, as on GitHub. `verdict()` checks that.
+ * The reviewer's verdict, with their line comments. Approve may go without a summary; Request
+ * changes and Comment need one, as on GitHub. `verdict()` checks that.
  */
-export type Verdict = { event: ReviewEvent; body: string };
+export type Verdict = { event: ReviewEvent; body: string; comments: DraftComment[] };
 
 /** GitHub's own limit on a review body. */
 const MAX_SUMMARY_CHARS = 65_536;
 
 /** A Verdict, or why the input isn't one. */
-export function verdict(event: unknown, body: unknown): Verdict | string {
+export function verdict(event: unknown, body: unknown, comments?: unknown): Verdict | string {
   if (!REVIEW_EVENTS.includes(event as ReviewEvent)) {
     return `Send an event: ${REVIEW_EVENTS.join(', ')}`;
   }
@@ -73,20 +74,25 @@ export function verdict(event: unknown, body: unknown): Verdict | string {
       ? 'A comment needs a summary.'
       : 'Requesting changes needs a summary saying what to change.';
   }
-  return { event: event as ReviewEvent, body: summary };
+  const parsed = parseComments(comments);
+  if (typeof parsed === 'string') return parsed;
+  return { event: event as ReviewEvent, body: summary, comments: parsed };
 }
 
 /** A review posted on the PR, bound to the commit the tour was written for. */
 export type PostedReview = {
   event: ReviewEvent;
+  /** The reviewer's summary, without the notes on lines outside the diff. */
   body: string;
+  /** How many of the reviewer's comments it carried, on diff lines and in the body. */
+  comments: number;
   commitId: CommitSha;
   url: string;
 };
 
 /** Why a review wasn't posted. `stale` and `conflict` are the reviewer's to resolve. */
 export class SubmitRefused extends Error {
-  readonly reason: 'not_ready' | 'conflict' | 'stale' | 'github';
+  readonly reason: 'not_ready' | 'invalid' | 'conflict' | 'stale' | 'github';
   constructor(reason: SubmitRefused['reason'], message: string) {
     super(message);
     this.reason = reason;
@@ -342,13 +348,26 @@ Question: ${question}`,
    */
   async submit(verdict: Verdict): Promise<PostedReview> {
     const workspace = this.#workspace;
-    if (!workspace || this.#tour.state !== 'ready') {
+    const diff = this.#diff;
+    if (!workspace || !diff || this.#tour.state !== 'ready') {
       throw new SubmitRefused('not_ready', 'The tour is not ready yet.');
     }
     if (this.#posted) throw new SubmitRefused('conflict', 'This review is already on GitHub.');
     if (this.#posting) throw new SubmitRefused('conflict', 'This review is already being posted.');
     this.#posting = true;
     try {
+      // Where each comment lands comes from this review's own diff and files, never the client.
+      const placed = await placeComments(verdict.comments, diff, (side, path) =>
+        workspace.readFile(side, path),
+      );
+      if (typeof placed === 'string') throw new SubmitRefused('invalid', placed);
+      const body = composeBody(verdict.body, placed.notes, workspace.pr);
+      if (body.length > MAX_SUMMARY_CHARS) {
+        throw new SubmitRefused(
+          'invalid',
+          'The summary and the comments outside the diff are longer than GitHub allows.',
+        );
+      }
       const head = workspace.pr.head;
       if ((await workspace.currentHead()) !== head) {
         throw new SubmitRefused(
@@ -359,9 +378,16 @@ Question: ${question}`,
       const { url } = await workspace.postReview({
         commitId: head,
         event: verdict.event,
-        body: verdict.body,
+        body,
+        comments: placed.lineComments,
       });
-      this.#posted = { event: verdict.event, body: verdict.body, commitId: head, url };
+      this.#posted = {
+        event: verdict.event,
+        body: verdict.body,
+        comments: verdict.comments.length,
+        commitId: head,
+        url,
+      };
       return this.#posted;
     } catch (error) {
       if (error instanceof GitHubRefusal) throw new SubmitRefused('github', error.message);

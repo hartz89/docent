@@ -28,8 +28,21 @@ export type PrInfo = {
 export const REVIEW_EVENTS = ['APPROVE', 'REQUEST_CHANGES', 'COMMENT'] as const;
 export type ReviewEvent = (typeof REVIEW_EVENTS)[number];
 
+/** A comment on a line of the diff, in GitHub's terms: RIGHT is head, LEFT is base. */
+export type ReviewLineComment = {
+  path: string;
+  line: number;
+  side: 'LEFT' | 'RIGHT';
+  body: string;
+};
+
 /** One review to post. The PR it goes on is fixed by the workspace, never by the caller. */
-export type ReviewPost = { commitId: CommitSha; event: ReviewEvent; body: string };
+export type ReviewPost = {
+  commitId: CommitSha;
+  event: ReviewEvent;
+  body: string;
+  comments: ReviewLineComment[];
+};
 
 /** A PR opened for review: its metadata, its diff, and a way to read its files. */
 export type Workspace = {
@@ -152,11 +165,11 @@ export function githubSource(url: string, cacheDir: string): PrSource {
       readFile: (side, path) => show(side === 'new' ? pr.head : pr.base, path),
       currentHead: async () =>
         commitSha((await ghForReview(['api', ...onGitHub, pull, '--jq', '.head.sha'])).trim()),
-      postReview: async ({ commitId, event, body }) => {
+      postReview: async ({ commitId, event, body, comments }) => {
         // The review goes in as JSON on stdin, so the reviewer's text is never an argument.
         const out = await ghForReview(
           ['api', ...onGitHub, '--method', 'POST', `${pull}/reviews`, '--input', '-'],
-          JSON.stringify({ commit_id: commitId, event, body }),
+          JSON.stringify({ commit_id: commitId, event, body, comments }),
         );
         // gh exited 0, so the review is posted. Never fail from here, or a retry would post twice.
         let url: unknown;

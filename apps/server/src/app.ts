@@ -111,13 +111,24 @@ export function createApp({ token, origin, version, webRoot, review }: AppOption
       },
     )
     // Posts the reviewer's verdict to GitHub as them. The PR, repo and commit come from the
-    // review this server holds; the client chooses only the event and the summary.
+    // review this server holds; the client chooses only the event, the summary, and which lines
+    // of the PR's files its comments are on.
     .post(
       '/api/review/submit',
-      validator('json', (body: { event?: unknown; body?: unknown } | null, c) => {
-        const result = verdict(body?.event, body?.body);
-        return typeof result === 'string' ? c.json({ error: result }, 400) : result;
-      }),
+      validator(
+        'json',
+        (
+          body: {
+            event?: unknown;
+            body?: unknown;
+            comments?: { path: string; side: 'old' | 'new'; line: number; body: string }[];
+          } | null,
+          c,
+        ) => {
+          const result = verdict(body?.event, body?.body, body?.comments);
+          return typeof result === 'string' ? c.json({ error: result }, 400) : result;
+        },
+      ),
       async (c) => {
         if (!review) return c.json(noReview, 404);
         try {
@@ -125,7 +136,8 @@ export function createApp({ token, origin, version, webRoot, review }: AppOption
           return c.json({ posted }, 200);
         } catch (error) {
           if (!(error instanceof SubmitRefused)) throw error;
-          return c.json({ error: error.message }, error.reason === 'github' ? 502 : 409);
+          const status = error.reason === 'github' ? 502 : error.reason === 'invalid' ? 400 : 409;
+          return c.json({ error: error.message }, status);
         }
       },
     );

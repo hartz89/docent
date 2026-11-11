@@ -179,6 +179,7 @@ test('the CLI opens a recorded PR, and the reviewer walks the tour by keyboard',
           commitId: pr.head,
           event: 'APPROVE',
           body: 'Checked the credentials path.',
+          comments: [],
         })}`,
       ]);
     });

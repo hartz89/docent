@@ -3,6 +3,7 @@ import type {
   AnswerView,
   AuthorView,
   PostedReview,
+  PrInfo,
   ReviewSnapshot,
   StopView,
 } from '@docent/server';
@@ -18,6 +19,15 @@ import {
 } from 'react';
 import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
+import {
+  BatchTray,
+  Composer,
+  type Composing,
+  type Draft,
+  DraftCard,
+  ReviewList,
+  useDrafts,
+} from './comments.tsx';
 import { Markdown } from './markdown.tsx';
 import type { Ready } from './review-page.tsx';
 import { ThemeToggle } from './theme.tsx';
@@ -25,7 +35,8 @@ import { postedLabel, VerdictForm } from './verdict.tsx';
 
 type Props = { snapshot: ReviewSnapshot; tour: Ready };
 type Diff = NonNullable<ReviewSnapshot['diff']>;
-type Viewing = { path: string; side: 'old' | 'new' };
+/** A file opened in place of the stop's citation, scrolled to `line` when one is given. */
+type Viewing = { path: string; side: 'old' | 'new'; line?: number };
 
 const KIND_LABELS: Record<StopView['kind'], string> = {
   intent: 'Intent',
@@ -41,6 +52,8 @@ export function TourScreen({ snapshot, tour }: Props) {
   const [anchorIndex, setAnchorIndex] = useState(0);
   // A file opened from the skip list or the overview, in place of the stop's citation.
   const [viewing, setViewing] = useState<Viewing | null>(null);
+  // At the verdict stop the middle pane lists the batch, until a citation is chosen.
+  const [verdictCode, setVerdictCode] = useState(false);
   // Each stop's questions and answers, kept here so they survive moving between stops.
   const [threads, setThreads] = useState<Record<string, Exchange[]>>({});
   // The review posted to GitHub from here, if any. A reload gets it from the snapshot.
@@ -78,6 +91,7 @@ export function TourScreen({ snapshot, tour }: Props) {
       setIndex(Math.max(0, Math.min(stops.length - 1, next)));
       setAnchorIndex(0);
       setViewing(null);
+      setVerdictCode(false);
     },
     [stop, stops.length],
   );
@@ -116,6 +130,68 @@ export function TourScreen({ snapshot, tour }: Props) {
 
   const diff = snapshot.diff as Diff;
   const changes = useMemo(() => changedLines(diff), [diff]);
+
+  // Line comments: saved drafts per PR, and the one being written.
+  const pr = snapshot.pr as PrInfo;
+  const drafts = useDrafts(pr);
+  const [composing, setComposing] = useState<Composing | null>(null);
+  const verdictIndex = stops.findIndex((s) => s.kind === 'verdict_prompt');
+  const saveComposing = () => {
+    if (!composing || !stop) return;
+    const body = composing.text.trim();
+    if (!body) return;
+    const existing = [...drafts.current, ...drafts.stale].find((d) => d.id === composing.draftId);
+    drafts.save({
+      id: existing?.id ?? crypto.randomUUID(),
+      path: composing.path,
+      side: composing.side,
+      line: composing.line,
+      body,
+      head: pr.head,
+      stopId: existing?.stopId ?? stop.id,
+    });
+    setComposing(null);
+  };
+  const editDraft = (draft: Draft) =>
+    setComposing({
+      path: draft.path,
+      side: draft.side,
+      line: draft.line,
+      draftId: draft.id,
+      text: draft.body,
+    });
+  const removeDraft = (draft: Draft) => {
+    drafts.remove([draft.id]);
+    if (composing?.draftId === draft.id) setComposing(null);
+  };
+  /** Back to a comment's line: at the stop that cites it, or opened from the stop it was written at. */
+  const jumpTo = (draft: Draft) => {
+    const covers = (a: AnchorView) =>
+      a.path === draft.path &&
+      a.side === draft.side &&
+      draft.line >= a.startLine &&
+      draft.line <= a.endLine;
+    const written = stops.findIndex((s) => s.id === draft.stopId);
+    const candidates = [written, ...stops.keys()].filter((i) => i >= 0);
+    const at = candidates.find((i) => stops[i]?.anchors.some(covers));
+    if (at !== undefined) {
+      go(at);
+      setAnchorIndex(stops[at]?.anchors.findIndex(covers) ?? 0);
+      setVerdictCode(true);
+    } else {
+      go(written >= 0 && written !== verdictIndex ? written : index);
+      setViewing({ path: draft.path, side: draft.side, line: draft.line });
+    }
+  };
+  const composer = composing && (
+    <Composer
+      composing={composing}
+      onText={(text) => setComposing({ ...composing, text })}
+      onSave={saveComposing}
+      onCancel={() => setComposing(null)}
+    />
+  );
+
   if (!stop || !snapshot.pr) return null;
 
   const anchor = stop.anchors[anchorIndex] ?? null;
@@ -124,10 +200,52 @@ export function TourScreen({ snapshot, tour }: Props) {
   const cited = shown
     ? stop.anchors.filter((a) => a.path === shown.path && a.side === shown.side)
     : [];
+  const focus = viewing
+    ? viewing.line
+      ? { startLine: viewing.line, endLine: viewing.line }
+      : null
+    : anchor;
+  const isVerdict = stop.kind === 'verdict_prompt';
+  const commenting = !posted && shown !== null;
+  const onThisFile = (d: { path: string; side: string }) =>
+    shown !== null && d.path === shown.path && d.side === shown.side;
+  const below = (line: number) => {
+    const here = drafts.current.filter((d) => onThisFile(d) && d.line === line);
+    const composingHere =
+      composing && onThisFile(composing) && composing.line === line ? composing : null;
+    if (here.length === 0 && !composingHere) return null;
+    return (
+      <div className="line-thread">
+        {here.map((draft) =>
+          composingHere?.draftId === draft.id ? (
+            <Fragment key={draft.id}>{composer}</Fragment>
+          ) : (
+            <DraftCard
+              key={draft.id}
+              draft={draft}
+              onEdit={() => editDraft(draft)}
+              onRemove={() => removeDraft(draft)}
+            />
+          ),
+        )}
+        {composingHere && composingHere.draftId === null && composer}
+      </div>
+    );
+  };
+  const hasDrafts = drafts.current.length + drafts.stale.length > 0;
+  const listsBatch = isVerdict && hasDrafts && !posted && !viewing && !verdictCode;
 
   return (
     <div className="app">
-      <TopBar snapshot={snapshot} diff={diff} index={index} total={stops.length} posted={posted} />
+      <TopBar
+        snapshot={snapshot}
+        diff={diff}
+        index={index}
+        total={stops.length}
+        posted={posted}
+        pending={drafts.current.length}
+        onOpenBatch={verdictIndex >= 0 ? () => go(verdictIndex) : undefined}
+      />
       <div className="columns">
         <nav className="column" aria-label="The route">
           <Route
@@ -140,7 +258,19 @@ export function TourScreen({ snapshot, tour }: Props) {
           />
         </nav>
         <section className="column code-column" aria-label="Code">
-          {shown ? (
+          {listsBatch ? (
+            <ReviewList
+              current={drafts.current}
+              stale={drafts.stale}
+              diff={diff}
+              head={pr.head}
+              composing={composing}
+              onEdit={editDraft}
+              onRemove={removeDraft}
+              onKeep={(draft) => drafts.save({ ...draft, head: pr.head })}
+              composer={composer}
+            />
+          ) : shown ? (
             <>
               <div className="code-header">
                 <span className="code-path">{shown.path}</span>
@@ -157,9 +287,16 @@ export function TourScreen({ snapshot, tour }: Props) {
                 path={shown.path}
                 side={shown.side}
                 cited={viewing ? [] : cited}
-                focus={viewing ? null : anchor}
+                focus={focus}
                 changed={changes.get(`${shown.side}:${shown.path}`) ?? new Set()}
                 onStep={viewing ? undefined : stepAnchor}
+                onComment={
+                  commenting
+                    ? (line) => setComposing({ ...shown, line, draftId: null, text: '' })
+                    : undefined
+                }
+                below={commenting ? below : undefined}
+                commentLine={composing && onThisFile(composing) ? composing.line : null}
               />
             </>
           ) : (
@@ -173,16 +310,39 @@ export function TourScreen({ snapshot, tour }: Props) {
             author={snapshot.author}
             exchanges={threads[stop.id] ?? []}
             onAsk={(question) => void ask(stop.id, question)}
-            activeAnchor={viewing ? -1 : anchorIndex}
+            activeAnchor={viewing || listsBatch ? -1 : anchorIndex}
             onAnchor={(i) => {
               setAnchorIndex(i);
               setViewing(null);
+              setVerdictCode(true);
             }}
             isLast={index === stops.length - 1}
             onNext={() => go(index + 1)}
+            hasComments={hasDrafts || posted !== null}
+            tray={
+              !posted && !isVerdict && hasDrafts ? (
+                <BatchTray
+                  current={drafts.current}
+                  stale={drafts.stale}
+                  diff={diff}
+                  onJump={jumpTo}
+                />
+              ) : null
+            }
             verdict={
-              stop.kind === 'verdict_prompt' ? (
-                <VerdictForm pr={snapshot.pr} posted={posted} onPosted={setPosted} />
+              isVerdict ? (
+                <VerdictForm
+                  pr={snapshot.pr}
+                  diff={diff}
+                  comments={drafts.current}
+                  stale={drafts.stale.length}
+                  posted={posted}
+                  onPosted={(review, sent) => {
+                    setPosted(review);
+                    drafts.remove(sent.map((d) => d.id));
+                    setComposing(null);
+                  }}
+                />
               ) : null
             }
           />
@@ -198,12 +358,17 @@ function TopBar({
   index,
   total,
   posted,
+  pending,
+  onOpenBatch,
 }: {
   snapshot: ReviewSnapshot;
   diff: Diff;
   index: number;
   total: number;
   posted: PostedReview | null;
+  /** Comments in the batch, not yet posted. */
+  pending: number;
+  onOpenBatch: (() => void) | undefined;
 }) {
   const pr = snapshot.pr;
   const lines = diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
@@ -250,6 +415,16 @@ function TopBar({
           <div className="progress-fill" style={{ width: `${((index + 1) / total) * 100}%` }} />
         </div>
       </div>
+      {!posted && pending > 0 && (
+        <button
+          type="button"
+          className="batch-pill"
+          onClick={onOpenBatch}
+          title="Your batch: nothing is posted until you send your verdict"
+        >
+          <span className="count">{pending}</span> not posted
+        </button>
+      )}
       {posted ? (
         <a className="verdict-button posted" href={posted.url} target="_blank" rel="noreferrer">
           <span aria-hidden="true">✓</span> {postedLabel(posted)}
@@ -429,6 +604,8 @@ function Narration({
   onAnchor,
   isLast,
   onNext,
+  tray,
+  hasComments,
   verdict,
 }: {
   stop: StopView;
@@ -439,6 +616,10 @@ function Narration({
   onAnchor: (index: number) => void;
   isLast: boolean;
   onNext: () => void;
+  /** The pending batch, when it holds any comments. */
+  tray: ReactNode;
+  /** The reviewer has comments, or has posted: no need for the how-to note. */
+  hasComments: boolean;
   /** The verdict form, on the verdict stop. */
   verdict: ReactNode;
 }) {
@@ -562,12 +743,23 @@ function Narration({
       </div>
 
       <footer className="narration-footer">
-        <span className="batch-note">Pending batch · no changes yet</span>
-        {!isLast && (
-          <button type="button" className="primary-button" onClick={onNext}>
-            Next stop <span aria-hidden="true">→</span>
-          </button>
-        )}
+        {tray}
+        <div className="narration-nav">
+          <span className="batch-note">
+            {hasComments ? (
+              <>
+                <kbd>←</kbd> <kbd>→</kbd> stops
+              </>
+            ) : (
+              'No comments yet · click + beside a line'
+            )}
+          </span>
+          {!isLast && (
+            <button type="button" className="primary-button" onClick={onNext}>
+              Next stop <span aria-hidden="true">→</span>
+            </button>
+          )}
+        </div>
       </footer>
     </div>
   );

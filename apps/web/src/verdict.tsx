@@ -1,6 +1,9 @@
-import type { PostedReview, PrInfo, ReviewEvent } from '@docent/server';
+import type { PostedReview, PrInfo, ReviewEvent, ReviewSnapshot } from '@docent/server';
 import { useState } from 'react';
 import { api } from './api.ts';
+import { type Draft, landsOnDiff, whereLabel } from './comments.tsx';
+
+type Diff = NonNullable<ReviewSnapshot['diff']>;
 
 type Choice = { event: ReviewEvent; label: string; hint: string; action: string; done: string };
 
@@ -40,12 +43,20 @@ export const postedLabel = (posted: PostedReview) => choiceFor(posted.event).don
  */
 export function VerdictForm({
   pr,
+  diff,
+  comments,
+  stale,
   posted,
   onPosted,
 }: {
   pr: PrInfo;
+  diff: Diff;
+  /** The batch's comments, written at the head this tour covers. */
+  comments: readonly Draft[];
+  /** How many comments were written at an older head; they aren't sent. */
+  stale: number;
   posted: PostedReview | null;
-  onPosted: (posted: PostedReview) => void;
+  onPosted: (posted: PostedReview, sent: readonly Draft[]) => void;
 }) {
   const [event, setEvent] = useState<ReviewEvent | null>(null);
   const [summary, setSummary] = useState('');
@@ -58,15 +69,24 @@ export function VerdictForm({
   const body = summary.trim();
   const needsSummary = event !== null && event !== 'APPROVE';
   const ready = choice !== null && (body !== '' || !needsSummary) && !sending;
+  const onLines = comments.filter((c) => landsOnDiff(diff, c));
+  const notes = comments.filter((c) => !landsOnDiff(diff, c));
 
   const send = async () => {
     if (!ready || !event) return;
+    const sent = [...comments];
     setSending(true);
     setError(null);
     try {
-      const res = await api.review.submit.$post({ json: { event, body } });
+      const res = await api.review.submit.$post({
+        json: {
+          event,
+          body,
+          comments: sent.map(({ path, side, line, body }) => ({ path, side, line, body })),
+        },
+      });
       const result = await res.json();
-      if ('posted' in result) onPosted(result.posted);
+      if ('posted' in result) onPosted(result.posted, sent);
       else setError(result.error);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
@@ -79,6 +99,10 @@ export function VerdictForm({
     <section className="verdict" aria-label="Your review">
       <fieldset className="verdict-choices" disabled={sending}>
         <legend className="verdict-label">Your review</legend>
+        <p className="verdict-lede">
+          Posts to GitHub as one review
+          {comments.length > 0 ? `, with your ${plural(comments.length, 'comment')}.` : '.'}
+        </p>
         {CHOICES.map((c) => (
           <label key={c.event} className={`verdict-choice ${c.event.toLowerCase()}`}>
             <input
@@ -124,14 +148,31 @@ export function VerdictForm({
           <p>
             <strong>{choice.label}</strong> {pr.repo}#{pr.number} at{' '}
             <span className="mono">{pr.head.slice(0, 7)}</span> as you,{' '}
-            {body
-              ? 'with this summary:'
-              : needsSummary
-                ? 'once you add a summary.'
-                : 'with no summary.'}
+            {previewTail(onLines.length, body !== '' || notes.length > 0, needsSummary && !body)}
           </p>
-          {body && <blockquote className="verdict-quote">{body}</blockquote>}
+          {(body || notes.length > 0) && (
+            <div className="verdict-body">
+              {body && <div className="verdict-summary">{body}</div>}
+              {notes.map((note) => (
+                <div key={note.id} className="verdict-note">
+                  <a href={lineUrl(pr, note)} target="_blank" rel="noreferrer" className="mono">
+                    {whereLabel(note)}
+                  </a>
+                  <blockquote>{note.body}</blockquote>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
+      )}
+
+      {stale > 0 && (
+        <p className="verdict-stale" role="note">
+          {plural(stale, 'comment')} {stale === 1 ? 'was' : 'were'} written before the PR moved to{' '}
+          <span className="mono">{pr.head.slice(0, 7)}</span>, so{' '}
+          {stale === 1 ? "it isn't" : "they aren't"} sent. Keep or remove{' '}
+          {stale === 1 ? 'it' : 'them'} in the list.
+        </p>
       )}
 
       {error && (
@@ -150,6 +191,24 @@ export function VerdictForm({
   );
 }
 
+/** The end of the preview's sentence: what the review carries besides the verdict. */
+function previewTail(lineComments: number, hasBody: boolean, missingSummary: boolean): string {
+  const lines = lineComments > 0 ? `with ${plural(lineComments, 'line comment')}` : '';
+  if (missingSummary)
+    return lines ? `${lines}, once you add a summary.` : 'once you add a summary.';
+  if (hasBody) return lines ? `${lines} and this summary:` : 'with this summary:';
+  return lines ? `${lines} and no summary.` : 'with no summary.';
+}
+
+const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+
+/** A line on GitHub, at the commit the comment is about: head, or base for a removed line. */
+const lineUrl = (pr: PrInfo, d: Draft) =>
+  `https://github.com/${pr.repo}/blob/${d.side === 'new' ? pr.head : pr.base}/${d.path
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/')}#L${d.line}`;
+
 function Posted({ pr, posted }: { pr: PrInfo; posted: PostedReview }) {
   return (
     <section
@@ -164,6 +223,7 @@ function Posted({ pr, posted }: { pr: PrInfo; posted: PostedReview }) {
           <h3 className="verdict-posted-title">{postedLabel(posted)} on GitHub</h3>
           <p className="verdict-posted-meta">
             {pr.repo}#{pr.number} at <span className="mono">{posted.commitId.slice(0, 7)}</span>
+            {posted.comments > 0 && `, with ${plural(posted.comments, 'comment')}`}
           </p>
         </div>
       </div>
