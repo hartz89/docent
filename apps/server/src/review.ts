@@ -120,6 +120,8 @@ export type ReviewOptions = {
   questionTimeoutMs?: number;
 };
 
+/** The guide's model when neither --model nor DOCENT_MODEL names one. */
+export const DEFAULT_MODEL = 'claude-opus-5-5';
 const DEFAULT_FORK_BUDGET_USD = 2;
 const DEFAULT_QUESTION_TIMEOUT_MS = 180_000;
 
@@ -387,12 +389,7 @@ Question: ${question}`,
       const lookup = this.#findAuthor(workspace);
 
       const cacheFile = this.#options.cacheDir
-        ? join(
-            this.#options.cacheDir,
-            'tours',
-            workspace.pr.repo.replace('/', '__'),
-            tourCacheName(workspace.pr, this.#options.model),
-          )
+        ? tourCachePath(this.#options.cacheDir, workspace.pr, this.#options.model)
         : null;
       if (cacheFile && existsSync(cacheFile)) {
         const outcome = JSON.parse(await readFile(cacheFile, 'utf8')) as TourOutcome;
@@ -495,6 +492,15 @@ function fromProgress(progress: TourProgress, previous: TourState): TourState {
         progress.attempt + 1,
       );
   }
+}
+
+/** Where a PR's finished tour is cached. The launcher checks it to say whether a tour is free. */
+export function tourCachePath(
+  cacheDir: string,
+  pr: { repo: string; base: string; head: string },
+  model: string,
+): string {
+  return join(cacheDir, 'tours', pr.repo.replace('/', '__'), tourCacheName(pr, model));
 }
 
 /**

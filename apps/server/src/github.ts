@@ -171,6 +171,34 @@ export function githubSource(url: string, cacheDir: string): PrSource {
 }
 
 /**
+ * A PR's title and the two commits its diff sits between, with no checkout. The launcher uses
+ * it to name the PR and to find a cached tour before anything starts.
+ */
+export async function readPrHead(
+  url: string,
+): Promise<{ repo: string; number: number; title: string; base: CommitSha; head: CommitSha }> {
+  const ref = parsePrUrl(url);
+  if (!ref) throw new Error(`Not a GitHub pull request URL: ${url}`);
+  const repo = `${ref.owner}/${ref.name}`;
+  const view = JSON.parse(
+    await gh(['pr', 'view', url, '--json', 'number,title,baseRefOid,headRefOid']),
+  ) as { number: number; title: string; baseRefOid: string; headRefOid: string };
+  const mergeBase = await gh([
+    'api',
+    `repos/${repo}/compare/${view.baseRefOid}...${view.headRefOid}`,
+    '--jq',
+    '.merge_base_commit.sha',
+  ]);
+  return {
+    repo,
+    number: view.number,
+    title: view.title,
+    base: commitSha(mergeBase.trim()),
+    head: commitSha(view.headRefOid),
+  };
+}
+
+/**
  * A shallow, blobless fetch of exactly the two commits, by SHA, checked out detached at head.
  * GitHub serves a fork PR's head commit from the base repo too, so fork PRs work.
  */
