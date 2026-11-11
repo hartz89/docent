@@ -230,6 +230,8 @@ export function commitReader(
     try {
       // `<mode> blob <oid> <size>\t<path>\0` for exactly this path, or nothing.
       ({ stdout: entry } = await git(dir, [
+        '-c',
+        'core.precomposeunicode=false',
         '--literal-pathspecs',
         'ls-tree',
         '-z',
@@ -266,7 +268,11 @@ export function commitReader(
     },
     open: (side, path) => blob(at(side), path, MAX_FILE_BYTES),
     tree: () => {
-      listing ??= listTree(dir, head, maxTreeEntries);
+      // A failed listing isn't kept, so the next request tries again.
+      listing ??= listTree(dir, head, maxTreeEntries).catch((error: unknown) => {
+        listing = null;
+        throw error;
+      });
       return listing;
     },
   };

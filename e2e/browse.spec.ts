@@ -36,6 +36,18 @@ test('the reviewer browses to a file the PR did not touch, then returns to the s
       await expect(page.locator('.line.added, .line.removed, .line.cited')).toHaveCount(0);
     });
 
+    await test.step('⌘P jumps to Go to file, and Enter opens the best match', async () => {
+      await page.getByRole('button', { name: /Back to stop 3/ }).focus();
+      await page.keyboard.press('ControlOrMeta+p');
+      await expect(page.getByPlaceholder('Go to file')).toBeFocused();
+      await page.keyboard.press('ControlOrMeta+a');
+      await page.keyboard.type('cors index.ts');
+      await page.keyboard.press('Enter');
+      // Changed files rank first: the PR's own cors/index.ts, not its test.
+      await expect(page.locator('.code-path')).toHaveText('src/middleware/cors/index.ts');
+      await expect(page.locator('.code-range')).toHaveText('changed in this PR');
+    });
+
     await test.step('"Back to stop 3" returns to the stop and its citation', async () => {
       await page.getByRole('button', { name: /Back to stop 3/ }).click();
       await expect(page.locator('.narration-title')).toHaveText(title ?? '');
@@ -44,6 +56,7 @@ test('the reviewer browses to a file the PR did not touch, then returns to the s
     });
 
     await test.step('← and → still move between stops while a file is open', async () => {
+      await page.getByPlaceholder('Go to file').fill('powered-by/index');
       await page.getByRole('button', { name: unchanged, exact: true }).click();
       await page.keyboard.press('ArrowLeft');
       await expect(page.getByText(/^Stop 2 of/)).toBeVisible();

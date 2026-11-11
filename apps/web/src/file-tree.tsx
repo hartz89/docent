@@ -64,8 +64,15 @@ export function FileTree({ diff, onRoute, selected, onOpen, filterRef }: Props) 
     [tree.data, query, changes],
   );
 
+  // A submodule is another repo's commit, not a file here: listed, but not openable.
+  const submodules = useMemo(
+    () => new Set(tree.data?.entries.filter((e) => e.kind === 'submodule').map((e) => e.path)),
+    [tree.data],
+  );
+
   const fileRow = (path: string, depth: number, label: string) => {
     const change = changes.get(path);
+    const submodule = submodules.has(path);
     const dot = !change ? null : onRoute.has(path) ? 'on' : 'off';
     return (
       <li key={path}>
@@ -75,6 +82,7 @@ export function FileTree({ diff, onRoute, selected, onOpen, filterRef }: Props) 
           style={{ paddingLeft: 4 + depth * 14 }}
           aria-current={path === selected ? 'true' : undefined}
           title={path}
+          disabled={submodule}
           onClick={() => onOpen(path)}
         >
           <span className="tree-twisty" aria-hidden="true" />
@@ -89,6 +97,7 @@ export function FileTree({ diff, onRoute, selected, onOpen, filterRef }: Props) 
           <span className="tree-name">{label}</span>
           {change && <Diffstat change={change} />}
           {change?.isNew && <span className="tree-new">new</span>}
+          {submodule && <span className="tree-count">submodule</span>}
         </button>
       </li>
     );

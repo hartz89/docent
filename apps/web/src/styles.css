@@ -542,7 +542,11 @@ code,
   cursor: pointer;
 }
 
-.tree-node:hover {
+.tree-node:disabled {
+  cursor: default;
+}
+
+.tree-node:hover:not(:disabled) {
   background: var(--panel-raised);
 }
 
@@ -611,7 +615,7 @@ code,
 }
 
 .route-dot.on {
-  background: var(--brass);
+  background: var(--brass-fill);
 }
 
 .route-dot.off {
