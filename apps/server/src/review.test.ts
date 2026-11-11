@@ -13,7 +13,7 @@ import {
   MAX_WAITING,
   type SessionLocator,
 } from './author-session.ts';
-import type { PrSource } from './github.ts';
+import { GitHubRefusal, type PrSource, type ReviewPost } from './github.ts';
 import { Review, type ReviewOptions, type TourState, tourCacheName } from './review.ts';
 
 // A small PR: one behavior change in src/cors.ts, plus a lockfile bump.
@@ -43,28 +43,48 @@ diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
 +lockfileVersion: 9
 `;
 
-const source: PrSource = async (onStep) => {
-  onStep('Fetching the pull request');
-  return {
-    pr: {
-      url: 'https://github.com/acme/web/pull/7',
-      repo: 'acme/web',
-      number: 7,
-      title: 'Reflect the request origin',
-      body: 'Reflects the origin instead of the wildcard.',
-      author: 'someone',
-      base: commitSha('b'.repeat(40)),
-      head: commitSha('h'.repeat(40)),
-      baseRef: 'main',
-      headRef: 'fix',
-    },
-    diffText,
-    headInBaseRepo: true,
-    commitMessages: ['Reflect the origin\n\nClaude-Session: https://claude.ai/code/session_01Abc'],
-    dir: '/nowhere',
-    readFile: async (side, path) => (side === 'new' ? head : base)[path] ?? null,
+const prHead = commitSha('h'.repeat(40));
+
+/** GitHub's side of the PR: where its head is now, and the reviews posted to it. */
+function fakeGitHub() {
+  return { head: prHead, posted: [] as ReviewPost[], refusal: null as string | null };
+}
+type FakeGitHub = ReturnType<typeof fakeGitHub>;
+
+const sourceFor =
+  (github: FakeGitHub): PrSource =>
+  async (onStep) => {
+    onStep('Fetching the pull request');
+    return {
+      pr: {
+        url: 'https://github.com/acme/web/pull/7',
+        repo: 'acme/web',
+        number: 7,
+        title: 'Reflect the request origin',
+        body: 'Reflects the origin instead of the wildcard.',
+        author: 'someone',
+        base: commitSha('b'.repeat(40)),
+        head: prHead,
+        baseRef: 'main',
+        headRef: 'fix',
+      },
+      diffText,
+      headInBaseRepo: true,
+      commitMessages: [
+        'Reflect the origin\n\nClaude-Session: https://claude.ai/code/session_01Abc',
+      ],
+      dir: '/nowhere',
+      readFile: async (side, path) => (side === 'new' ? head : base)[path] ?? null,
+      currentHead: async () => github.head,
+      postReview: async (review) => {
+        if (github.refusal) throw new GitHubRefusal(github.refusal);
+        github.posted.push(review);
+        return {
+          url: `https://github.com/acme/web/pull/7#pullrequestreview-${github.posted.length}`,
+        };
+      },
+    };
   };
-};
 
 const cite = (side: 'new' | 'old', startLine: number, endLine = startLine) => ({
   path: 'src/cors.ts',
@@ -139,9 +159,10 @@ async function open(
   model = 'claude-test',
   locator: SessionLocator = noAuthor,
   extra: Pick<ReviewOptions, 'forkBudgetUsd' | 'questionTimeoutMs'> = {},
+  github = fakeGitHub(),
 ) {
   const review = new Review({
-    source,
+    source: sourceFor(github),
     runner,
     locator,
     model,
@@ -158,6 +179,7 @@ async function open(
 }
 
 type Api = Awaited<ReturnType<typeof open>>['api'];
+type App = Awaited<ReturnType<typeof open>>['app'];
 
 /** GET /api/review, narrowed to the success body. */
 async function snapshot(api: Api) {
@@ -696,5 +718,139 @@ describe('the tour cache key', () => {
     expect(tourCacheName(pr, 'claude-opus-5-5', 'prompt text')).toBe(key);
     // An edited prompt, or an edited PR description inside it, must not serve the old tour.
     expect(tourCacheName(pr, 'claude-opus-5-5', 'prompt text, edited')).not.toBe(key);
+  });
+});
+
+describe('POST /api/review/submit', () => {
+  /** Opens the review against a fake GitHub, and returns both. */
+  const openWithGitHub = async () => {
+    const github = fakeGitHub();
+    return {
+      github,
+      ...(await open(scripted(goodTour).runner, undefined, 'claude-test', noAuthor, {}, github)),
+    };
+  };
+  /** Posts raw JSON, so tests can send what the typed client wouldn't allow. */
+  const post = (app: App, json: unknown, headers: Record<string, string> = {}) =>
+    app.request(`${origin}/api/review/submit`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        ...headers,
+      },
+      body: JSON.stringify(json),
+    });
+
+  test('posts one review on this PR, at the head the tour was written for', async () => {
+    const { github, api } = await openWithGitHub();
+
+    const res = await api.review.submit.$post({
+      json: { event: 'APPROVE', body: '  Looks right to me.  ' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(github.posted).toEqual([
+      { commitId: prHead, event: 'APPROVE', body: 'Looks right to me.' },
+    ]);
+    const posted = {
+      event: 'APPROVE',
+      body: 'Looks right to me.',
+      commitId: prHead,
+      url: 'https://github.com/acme/web/pull/7#pullrequestreview-1',
+    };
+    expect(await res.json()).toEqual({ posted });
+    // A reload finds it posted, so the form stays locked.
+    expect((await snapshot(api)).posted).toEqual(posted);
+  });
+
+  test('approving needs no summary', async () => {
+    const { github, app } = await openWithGitHub();
+
+    expect((await post(app, { event: 'APPROVE' })).status).toBe(200);
+    expect(github.posted).toEqual([{ commitId: prHead, event: 'APPROVE', body: '' }]);
+  });
+
+  test('ignores any repo, PR or commit the client sends', async () => {
+    const { github, app } = await openWithGitHub();
+
+    await post(app, {
+      event: 'COMMENT',
+      body: 'Note',
+      commit_id: 'e'.repeat(40),
+      commitId: 'e'.repeat(40),
+      repo: 'evil/repo',
+      number: 1,
+    });
+
+    expect(github.posted).toEqual([{ commitId: prHead, event: 'COMMENT', body: 'Note' }]);
+  });
+
+  test.each(['REQUEST_CHANGES', 'COMMENT'])(
+    'refuses %s without a summary, and posts nothing',
+    async (event) => {
+      const { github, app } = await openWithGitHub();
+
+      const res = await post(app, { event, body: '   ' });
+
+      expect(res.status).toBe(400);
+      expect(github.posted).toEqual([]);
+    },
+  );
+
+  test('refuses an event GitHub does not have', async () => {
+    const { github, app } = await openWithGitHub();
+
+    expect((await post(app, { event: 'DISMISS', body: 'x' })).status).toBe(400);
+    expect(github.posted).toEqual([]);
+  });
+
+  test('refuses when the PR has new commits since the tour, rather than approve unseen code', async () => {
+    const { github, app } = await openWithGitHub();
+    github.head = commitSha('n'.repeat(40));
+
+    const res = await post(app, { event: 'APPROVE', body: 'LGTM' });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'The PR has new commits since this tour. Reopen it in Docent to review them.',
+    });
+    expect(github.posted).toEqual([]);
+  });
+
+  test('posts only once, even when two submits race', async () => {
+    const { github, app } = await openWithGitHub();
+
+    const [first, second] = await Promise.all([
+      post(app, { event: 'APPROVE' }),
+      post(app, { event: 'APPROVE' }),
+    ]);
+    const third = await post(app, { event: 'COMMENT', body: 'One more thing' });
+
+    expect([first.status, second.status, third.status]).toEqual([200, 409, 409]);
+    expect(github.posted).toHaveLength(1);
+  });
+
+  test("passes on GitHub's refusal, and lets the reviewer try again", async () => {
+    const { github, app } = await openWithGitHub();
+    github.refusal =
+      "GitHub doesn't let you approve your own pull request. Choose Comment instead.";
+
+    const res = await post(app, { event: 'APPROVE' });
+
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: github.refusal });
+    github.refusal = null;
+    expect((await post(app, { event: 'COMMENT', body: 'Fine by me' })).status).toBe(200);
+  });
+
+  test('needs the token and our own origin', async () => {
+    const { github, app } = await openWithGitHub();
+
+    expect((await post(app, { event: 'APPROVE' }, { Authorization: '' })).status).toBe(401);
+    expect((await post(app, { event: 'APPROVE' }, { Origin: 'https://evil.example' })).status).toBe(
+      403,
+    );
+    expect(github.posted).toEqual([]);
   });
 });
