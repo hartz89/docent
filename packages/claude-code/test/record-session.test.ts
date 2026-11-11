@@ -22,7 +22,15 @@ const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, {
     cwd,
     stdio: 'ignore',
-    env: { ...process.env, GIT_CONFIG_GLOBAL: '' },
+    // No global config, and a fixed identity: CI has none.
+    env: {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: '',
+      GIT_AUTHOR_NAME: 'Test',
+      GIT_AUTHOR_EMAIL: 'test@example.com',
+      GIT_COMMITTER_NAME: 'Test',
+      GIT_COMMITTER_EMAIL: 'test@example.com',
+    },
   });
 
 /** A checkout on branch `fix`, whose origin URL carries a token that must never be recorded. */
