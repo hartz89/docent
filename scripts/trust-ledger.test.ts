@@ -174,6 +174,9 @@ describe('reading review and PR text', () => {
     ],
     ['Web: chat', 'This also fixes the gap noted in [#25](https://x).', []],
     ['Docs', 'PRs like #19 fell to 2a. Review findings were fixed.', []],
+    // A pasted ledger, or prose quoting a fix, doesn't make this PR a fix.
+    ['Ledger', '| [#29](…) Wrap | 1 | web | fixed in [#30](…) |\n> fixes #12', []],
+    ['Ledger', 'As in #30\'s "fix the bug the reviewer found in #29", and `fixes #3`.', []],
   ])('repairsIn(%j)', (title, body, expected) => {
     expect(repairsIn(title, body)).toEqual(expected);
   });

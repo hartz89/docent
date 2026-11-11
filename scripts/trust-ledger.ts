@@ -163,7 +163,14 @@ export function repairsIn(title: string, body: string): Repair[] {
   // "fix the bug the reviewer found in [#29](…)", "Fixes #12": a fix word, then a PR number
   // later in the same sentence. Closing a gap the earlier PR disclosed ("fixes the gap
   // noted in #25") isn't a repair: nothing escaped.
-  for (const m of `${title}\n${body}`.matchAll(/\bfix(?:es|ed)?\b([^.\n#]{0,80})#(\d+)/gi)) {
+  // Tables, block quotes, code and quoted text only talk about fixes (a pasted ledger says
+  // "fixed in #30"), so they're left out.
+  const prose = `${title}\n${body}`
+    .split('\n')
+    .filter((line) => !/^\s*[|>]/.test(line))
+    .join('\n')
+    .replace(/`[^`\n]*`|"[^"\n]*"|“[^”\n]*”/g, '');
+  for (const m of prose.matchAll(/\bfix(?:es|ed)?\b([^.\n#]{0,80})#(\d+)/gi)) {
     if (!/\bgaps?\b/i.test(m[1] ?? '')) add(m[2], 'fixed');
   }
   return found;
