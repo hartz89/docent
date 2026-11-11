@@ -35,6 +35,9 @@ const isTest = (path: string) =>
   path.startsWith('e2e/') ||
   path.startsWith('packages/evals/fixtures/');
 
+/** In the server, only test files count as tests. A `.testing.ts` helper can weaken a gate test. */
+const isServerTest = (path: string) => /\.(test|spec)\.tsx?$/.test(path);
+
 /** Server tests that pin the read-only session options. They're part of the gate. */
 const PINNING_TESTS = new Set([
   'apps/server/src/agent.test.ts',
@@ -52,7 +55,8 @@ const SKIP_PROOFS = new Set(
  * Path rules. The first rule that matches a path decides it. The 2b rules are the path floor in
  * docs/process/pull-requests.md, exactly; keep them in step. The rest follow the tier table.
  * Order matters: 2b and harness rules come before the docs and tests rules, so
- * `apps/server/src/agent.test.ts` is 2b and `apps/web/AGENTS.md` is harness.
+ * `apps/server/src/agent.test.ts` is 2b and `apps/web/AGENTS.md` is harness. Rules see paths in
+ * lower case (see `ruleKey`).
  */
 const RULES: { tier: Tier; why: string; matches: (path: string) => boolean }[] = [
   { tier: '2b', why: 'CI, the ruleset and repo rules', matches: (p) => p.startsWith('.github/') },
@@ -70,7 +74,7 @@ const RULES: { tier: Tier; why: string; matches: (path: string) => boolean }[] =
   {
     tier: '2b',
     why: 'the server, which holds the request and session gates',
-    matches: (p) => p.startsWith('apps/server/src/') && (!isTest(p) || PINNING_TESTS.has(p)),
+    matches: (p) => p.startsWith('apps/server/src/') && (!isServerTest(p) || PINNING_TESTS.has(p)),
   },
   { tier: '2b', why: 'skip proofs: what the reviewer sees', matches: (p) => SKIP_PROOFS.has(p) },
   {
@@ -78,7 +82,7 @@ const RULES: { tier: Tier; why: string; matches: (path: string) => boolean }[] =
     why: 'the agent harness',
     matches: (p) =>
       /(^|\/)\.claude\//.test(p) ||
-      ['AGENTS.md', 'CLAUDE.md'].includes(basename(p)) ||
+      ['agents.md', 'claude.md'].includes(basename(p)) ||
       p.startsWith('docs/process/'),
   },
   {
@@ -96,6 +100,12 @@ const RULES: { tier: Tier; why: string; matches: (path: string) => boolean }[] =
   { tier: '1', why: 'feature work', matches: (p) => packageOf(p) !== undefined },
 ];
 
+/**
+ * The form of a path the rules match. A Mac's file system ignores case, so `.Claude/settings.json`
+ * is the real settings file there; a leading `./` names the same file. Both can only raise a tier.
+ */
+const ruleKey = (path: string) => path.toLowerCase().replace(/^(?:\.\/)+/, '');
+
 /** For a path outside every package that no rule names. When in doubt, take the higher tier. */
 const UNNAMED: { tier: Tier; why: string } = {
   tier: '2a',
@@ -108,17 +118,17 @@ const UNNAMED: { tier: Tier; why: string } = {
  */
 export function assignTier(paths: readonly string[]): TierResult {
   const reasons = [...new Set(paths)].map((path): Reason => {
-    const rule = RULES.find((r) => r.matches(path)) ?? UNNAMED;
+    const rule = RULES.find((r) => r.matches(ruleKey(path))) ?? UNNAMED;
     return { path, tier: rule.tier, why: rule.why };
   });
 
   // Tier 1 is feature work inside one package. Work that spans packages goes up a step.
   const packages = [
-    ...new Set(reasons.filter((r) => r.tier === '1').map((r) => packageOf(r.path))),
+    ...new Set(reasons.filter((r) => r.tier === '1').map((r) => packageOf(ruleKey(r.path)))),
   ];
   const spanned = reasons.map((r): Reason => {
     if (r.tier !== '1') return r;
-    const where = packageOf(r.path) ?? '';
+    const where = packageOf(ruleKey(r.path)) ?? '';
     return packages.length > 1
       ? { ...r, tier: '2a', why: `feature work spanning ${packages.length} packages` }
       : { ...r, why: `feature work inside ${where}` };

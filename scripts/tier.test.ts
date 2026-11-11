@@ -296,12 +296,18 @@ describe('the 2b path floor, as docs/process/pull-requests.md lists it', () => {
     'apps/server/src/review.ts',
     'apps/server/src/agent.test.ts',
     'apps/server/src/agent.live.test.ts',
+    'apps/server/src/agent.testing.ts',
     'packages/core/src/proof.ts',
     'packages/core/src/detect.ts',
     'packages/core/src/rename.ts',
     'packages/core/src/gitattributes.ts',
     'packages/core/src/ledger.ts',
     'packages/core/src/coverage.ts',
+    // A Mac's file system ignores case, and ./ names the same file.
+    '.Claude/Settings.json',
+    'apps/Server/src/app.ts',
+    './apps/server/src/app.ts',
+    'Packages/Core/src/Detect.ts',
   ])('%s is 2b', (path) => {
     expect(tierOf([path])).toBe('2b');
   });
@@ -309,7 +315,6 @@ describe('the 2b path floor, as docs/process/pull-requests.md lists it', () => {
   // Just outside the list. Some of these are 2b by the checklist; the reviewer raises them.
   test.each<[string, Tier]>([
     ['apps/server/src/review.test.ts', '0'],
-    ['apps/server/src/agent.testing.ts', '0'],
     ['apps/server/tsconfig.json', '1'],
     ['packages/core/src/detect.test.ts', '0'],
     ['packages/core/src/tour.ts', '2a'],
