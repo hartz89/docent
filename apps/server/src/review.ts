@@ -151,6 +151,8 @@ export class Review {
   /** The kept, primed copy of the author's session that questions fork, once it exists. */
   #primed: string | null = null;
   #primedDir: Promise<string> | null = null;
+  /** A primer still running, so closing can stop it and wait for its cleanup. */
+  #priming: { stop: AbortController; done: Promise<unknown> } | null = null;
   #closed = false;
   readonly done: Promise<void>;
 
@@ -237,8 +239,6 @@ ${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
             try {
               const primed = await this.#prime(author.id, workspace.dir, limit.signal);
               if (primed.cost) costs.push(primed.cost);
-              // The fork budget covers the first question, primer included.
-              const spent = (primed.cost?.costMicroUsd ?? 0) / 1e6;
               return await this.#options.runner({
                 job: 'question',
                 cwd: workspace.dir,
@@ -246,7 +246,7 @@ ${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
                 fork: primed.session,
                 prompt: authorPrompt(pr, workspace.dir, author.cwd, context, question),
                 signal: limit.signal,
-                maxBudgetUsd: Math.max(0.01, this.#forkBudgetUsd() - spent),
+                maxBudgetUsd: this.#forkBudgetUsd(),
               });
             } catch (error) {
               timedOut = limit.timeout.aborted;
@@ -340,7 +340,9 @@ Question: ${question}`,
    * original that ask different questions each write the whole session to the cache again.
    * Forks of the primed copy all start with the same turn, so they read its cache instead
    * (docs/research/2026-11-11-cheaper-questions.md). The first question pays for the primer too,
-   * and shares its deadline. A primed copy that has gone missing is primed again.
+   * and shares its deadline. The fork budget caps each call: the primer, which is what the
+   * pre-fork estimate prices, and each question. A primed copy that has gone missing, or whose
+   * folder has, is primed again.
    */
   async #prime(
     author: SessionId,
@@ -349,17 +351,25 @@ Question: ${question}`,
   ): Promise<{ session: string; cost: CostRecord | null }> {
     if (this.#closed) throw new Error('The review is closed.');
     if (this.#primed && existsSync(this.#primed)) return { session: this.#primed, cost: null };
-    this.#primedDir ??= mkdtemp(join(tmpdir(), 'docent-primed-'));
-    const dir = await this.#primedDir;
-    const reply = await this.#options.runner({
+    const existing = await this.#primedDir?.catch(() => null);
+    if (!existing || !existsSync(existing)) {
+      this.#primedDir = mkdtemp(join(tmpdir(), 'docent-primed-'));
+    }
+    const dir = await (this.#primedDir as Promise<string>);
+    const stop = new AbortController();
+    const running = this.#options.runner({
       job: 'question',
       cwd,
       model: this.#questionModel(),
       fork: author,
       keepIn: dir,
       prompt: PRIMER,
-      signal,
+      signal: AbortSignal.any([signal, stop.signal]),
       maxBudgetUsd: this.#forkBudgetUsd(),
+    });
+    this.#priming = { stop, done: running.catch(() => undefined) };
+    const reply = await running.finally(() => {
+      this.#priming = null;
     });
     const primed = join(dir, `${reply.sessionId}.jsonl`);
     // Closed while priming: the copy goes with the folder, and nothing forks it.
@@ -371,9 +381,15 @@ Question: ${question}`,
     return { session: primed, cost: reply.cost };
   }
 
-  /** Deletes the primed copy of the author's session. Call it when the review ends. */
+  /**
+   * Deletes the primed copy of the author's session. Call it when the review ends. A primer still
+   * running is stopped first, and its own cleanup awaited.
+   */
   async close(): Promise<void> {
     this.#closed = true;
+    const priming = this.#priming;
+    priming?.stop.abort();
+    await priming?.done;
     const dir = await this.#primedDir?.catch(() => null);
     this.#primed = null;
     this.#primedDir = null;
@@ -384,7 +400,7 @@ Question: ${question}`,
     return this.#options.questionModel ?? this.#options.model;
   }
 
-  /** Both the pre-fork estimate's limit and the fork's own spending cap. */
+  /** Both the pre-fork estimate's limit and each fork call's own spending cap. */
   #forkBudgetUsd(): number {
     return this.#options.forkBudgetUsd ?? DEFAULT_FORK_BUDGET_USD;
   }

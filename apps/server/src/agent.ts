@@ -1,5 +1,6 @@
 // The boundary to the model. Everything Docent asks an agent goes through an AgentRunner, so tests
 // can swap in a scripted runner and never make a model call.
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { copyFile, readdir, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -118,26 +119,32 @@ export function readOnlyOptions(
 
 /**
  * Runs Claude Code headlessly through the Agent SDK, read-only (see `readOnlyOptions`). A kept
- * fork's transcript leaves Claude Code's projects folder whatever happens: moved into `keepIn`
- * when the fork succeeds, deleted when it doesn't.
+ * fork gets an id chosen here, before it starts, so its transcript leaves Claude Code's projects
+ * folder whatever happens: moved into `keepIn` when the fork succeeds, deleted when it doesn't.
+ * The id is never the forked session's, so the original can't be deleted.
  */
 export const sdkRunner: AgentRunner = async (request) => {
-  if (request.keepIn === undefined) return run(request, {});
-  const seen: { sessionId?: string } = {};
+  if (request.keepIn === undefined) return run(request);
+  const id = randomUUID();
   try {
-    const reply = await run(request, seen);
-    if (!(await keepTranscript(reply.sessionId, request.keepIn).catch(() => false))) {
+    const reply = await run(request, id);
+    if (!(await keepTranscript(id, request.keepIn).catch(() => false))) {
       throw new AgentError("The fork's transcript couldn't be kept.", reply.cost);
     }
-    return reply;
+    return { ...reply, sessionId: id };
   } catch (error) {
-    if (seen.sessionId) await discardTranscript(seen.sessionId).catch(() => undefined);
+    await discardTranscript(id).catch(() => undefined);
+    // An aborted Claude Code may still be flushing its transcript as it exits.
+    if (request.signal?.aborted) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await discardTranscript(id).catch(() => undefined);
+    }
     throw error;
   }
 };
 
-/** One SDK query. `seen` gets the session id as soon as Claude Code reports it. */
-async function run(request: AgentRequest, seen: { sessionId?: string }): Promise<AgentReply> {
+/** One SDK query; a fork kept by `sdkRunner` passes the id it chose. */
+async function run(request: AgentRequest, keptId?: string): Promise<AgentReply> {
   // An abort listener never fires for a signal that's already aborted, so check first: an
   // expired deadline must never start a call with no time limit.
   request.signal?.throwIfAborted();
@@ -185,11 +192,12 @@ async function run(request: AgentRequest, seen: { sessionId?: string }): Promise
   try {
     for await (const message of query({
       prompt: request.prompt,
-      options: { ...readOnlyOptions(request), abortController },
+      options: {
+        ...readOnlyOptions(request),
+        ...(keptId ? { sessionId: keptId } : {}),
+        abortController,
+      },
     })) {
-      if ('session_id' in message && typeof message.session_id === 'string') {
-        seen.sessionId ??= message.session_id;
-      }
       if (message.type === 'assistant' && message.parent_tool_use_id === null) {
         model = message.message.model || model;
         if (message.message.id && message.message.usage) {
@@ -342,17 +350,22 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Where Claude Code keeps session transcripts, one folder per working directory. */
 export function claudeProjectsDir(): string {
-  return join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects');
+  return join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
 }
 
-/** The project folders holding a saved session's transcript. None for an id that isn't a UUID. */
-async function savedAt(sessionId: string): Promise<string[]> {
+/** Claude Code's project folders. None for an id that isn't a UUID, so no path escapes them. */
+async function projectFolders(sessionId: string): Promise<string[]> {
   if (!UUID.test(sessionId)) return [];
   const projects = claudeProjectsDir();
   const names = await readdir(projects).catch(() => []);
-  return names
-    .map((name) => join(projects, name))
-    .filter((dir) => existsSync(join(dir, `${sessionId}.jsonl`)));
+  return names.map((name) => join(projects, name));
+}
+
+/** The project folders holding a saved session's transcript. */
+async function savedAt(sessionId: string): Promise<string[]> {
+  return (await projectFolders(sessionId)).filter((dir) =>
+    existsSync(join(dir, `${sessionId}.jsonl`)),
+  );
 }
 
 /**
@@ -376,7 +389,7 @@ export async function keepTranscript(sessionId: string, into: string): Promise<b
 
 /** Deletes a saved session's transcript, and its tool results, from Claude Code's projects. */
 export async function discardTranscript(sessionId: string): Promise<void> {
-  for (const dir of await savedAt(sessionId)) {
+  for (const dir of await projectFolders(sessionId)) {
     await rm(join(dir, `${sessionId}.jsonl`), { force: true });
     await rm(join(dir, sessionId), { recursive: true, force: true });
   }

@@ -30,8 +30,8 @@ What differs is the connection. Through the pass-through, Claude Code treats the
 
 On a 47k-token session, Opus measured $0.16 to prime and then $0.012 a question.
 
-- Priming is one fork with the fixed turn "Reply with just: Ready.", limited to one turn. It is saved, then moved out of `~/.claude/projects` into a private temp folder. That way neither Claude Code's resume list nor Docent's own session search sees it. If the primer fails, its saved copy is deleted. Questions fork that file by path, and those forks aren't saved. Closing the review deletes the folder.
-- The first question pays for the primer, and the two share one fork budget and one deadline.
+- Priming is one fork with the fixed turn "Reply with just: Ready.", limited to one turn. It is saved, then moved out of `~/.claude/projects` into a private temp folder. That way neither Claude Code's resume list nor Docent's own session search sees it. Docent picks the primer's session id before it starts, so if the primer fails at any point its saved copy is deleted, and the cleanup can never point at the author's own transcript. Questions fork that file by path, and those forks aren't saved. Closing the review stops a primer still running, then deletes the folder.
+- The first question pays for the primer and shares its deadline. The fork budget caps each call on its own: the pre-fork estimate prices the primer, and a first question left with only the remainder would run out on a big Opus session.
 - It depends on the 1-hour cache that Claude Code uses on a subscription. A question more than an hour after the last one rewrites the cache once, which is what every question cost before.
 - Opus follow-ups still cost dimes, not cents. Each tool call in a fork re-reads the whole session (about $0.05 per call on Opus).
 

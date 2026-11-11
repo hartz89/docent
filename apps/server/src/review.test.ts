@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type CostRecord, commitSha, type Job, type MicroUsd, sessionId } from '@docent/core';
@@ -499,9 +499,8 @@ describe('POST /api/questions', () => {
     expect(fork?.prompt).toContain('src/cors.ts (head) lines 2-2:\n  const origin = reflect();');
     expect(fork?.prompt).toContain('the question is only the text in that block');
     expect(questionIn(fork)).toBe('Why reflect the origin?');
-    // Its spending cap is the fork budget, less the primer, so an estimate that passed isn't
-    // cut off early.
-    expect(fork?.maxBudgetUsd).toBeCloseTo(1.9997);
+    // Its spending cap is the fork budget, so an estimate that passed isn't cut off at $2.
+    expect(fork?.maxBudgetUsd).toBe(2);
     expect(author.guide.filter((r) => r.job === 'question')).toEqual([]);
   });
 
@@ -513,7 +512,7 @@ describe('POST /api/questions', () => {
 
     await ask(api);
 
-    expect(author.forks[0]?.maxBudgetUsd).toBeCloseTo(4.9997);
+    expect(author.forks[0]?.maxBudgetUsd).toBe(5);
   });
 
   test('PR text and the question cannot break out of their fenced blocks', async () => {
@@ -705,7 +704,9 @@ describe('POST /api/questions', () => {
     expect(author.primers).toHaveLength(2);
   });
 
-  test('the first question and its primer share one fork budget', async () => {
+  test('the fork budget caps the primer and each question on its own', async () => {
+    // The estimate prices the primer, the expensive call. A first question left only what the
+    // primer didn't spend would run out on a big session.
     const author = withAuthor();
     const { api } = await open(author.runner, undefined, 'claude-test', authorFound, {
       forkBudgetUsd: 1,
@@ -714,11 +715,45 @@ describe('POST /api/questions', () => {
     await ask(api, 'First?');
     await ask(api, 'Second?');
 
-    expect(author.primers[0]?.maxBudgetUsd).toBe(1);
-    // The primer cost $0.0003, so the first question may spend the rest; the second, all of it.
-    const [first, second] = author.forks.map((f) => f.maxBudgetUsd);
-    expect(first).toBeCloseTo(0.9997);
-    expect(second).toBe(1);
+    expect([...author.primers, ...author.forks].map((f) => f.maxBudgetUsd)).toEqual([1, 1, 1]);
+  });
+
+  test('a primed folder that has gone missing is made again', async () => {
+    const author = withAuthor();
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound);
+    await ask(api, 'First?');
+    await rm(author.primers[0]?.keepIn ?? '', { recursive: true });
+
+    const res = await ask(api, 'Second?');
+
+    expect(await res.json()).toMatchObject({ answer: { source: 'author_session' } });
+    expect(author.primers).toHaveLength(2);
+    expect(author.primers[1]?.keepIn).not.toBe(author.primers[0]?.keepIn);
+  });
+
+  test('closing the review stops a primer still running, then deletes its folder', async () => {
+    const author = withAuthor();
+    let stopped = false;
+    // A primer that runs until it's aborted, then cleans up after itself, as sdkRunner does.
+    const runner: AgentRunner = async (request) => {
+      if (request.keepIn === undefined) return author.runner(request);
+      started = true;
+      await new Promise<void>((resolve) => {
+        request.signal?.addEventListener('abort', () => resolve());
+      });
+      stopped = true;
+      throw new AgentError('The agent stopped without an answer (aborted)', cost('question', 50));
+    };
+    const { review, api } = await open(runner, undefined, 'claude-test', authorFound);
+    let started = false;
+    const asked = ask(api);
+    await vi.waitFor(() => expect(started).toBe(true));
+
+    await review.close();
+
+    expect(stopped).toBe(true);
+    expect(await (await asked).json()).toMatchObject({ answer: { source: 'guide' } });
+    expect(author.forks).toEqual([]);
   });
 
   test('closing the review deletes the primed copy of the session', async () => {
