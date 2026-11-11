@@ -143,6 +143,9 @@ const GRAMMAR_FILES: Record<
   },
 };
 
+/** Each of a file's definitions, imports and exports is kept up to this many. */
+export const MAX_ENTRIES = 5_000;
+
 /** Reads one file of a grammar package: the WASM grammar as bytes, a query as text. */
 export type GrammarReader = {
   bytes: (file: GrammarFile) => Promise<Uint8Array>;
@@ -241,6 +244,12 @@ export function extractSymbols(
       readModuleStatements(tree.rootNode, symbols);
     }
     symbols.definitions.sort((a, b) => a.line - b.line);
+    // A real file has hundreds of these at most. Past the cap, the rest are dropped, so a file
+    // built to be dense can't make the index hold hundreds of MB.
+    symbols.definitions.length = Math.min(symbols.definitions.length, MAX_ENTRIES);
+    symbols.imports.length = Math.min(symbols.imports.length, MAX_ENTRIES);
+    symbols.exports.length = Math.min(symbols.exports.length, MAX_ENTRIES);
+    symbols.exportsAll = [...new Set(symbols.exportsAll)].slice(0, MAX_ENTRIES);
     return symbols;
   } finally {
     tree.delete();

@@ -31,6 +31,8 @@ const COMPILED_FROM: Record<string, string[]> = {
 /** tsconfig `paths` beyond these are ignored. */
 const MAX_PATH_PATTERNS = 100;
 const MAX_PATH_TARGETS = 3;
+/** A longer `baseUrl`, pattern or target is ignored. */
+const MAX_PATH_CHARS = 1_024;
 /**
  * Import resolutions one lookup may make. A real file needs tens; past this, the lookup returns
  * what it has, marked truncated.
@@ -57,6 +59,8 @@ export class SymbolIndex {
   readonly #tsconfig: TsconfigPaths;
   /** Name → every file that defines it. */
   readonly #byName = new Map<string, string[]>();
+  /** The longest path in the repo. Anything longer can't name a file, so it isn't tried. */
+  #longest = 0;
 
   /**
    * `paths` is every file in the repo, indexed or not, so an import of `./styles.css` still
@@ -70,6 +74,7 @@ export class SymbolIndex {
     this.#paths = paths;
     this.#files = files;
     this.#tsconfig = tsconfig;
+    for (const path of paths) this.#longest = Math.max(this.#longest, path.length);
     for (const [path, symbols] of files) {
       for (const name of new Set(symbols.definitions.map((d) => d.name))) {
         const list = this.#byName.get(name);
@@ -92,6 +97,8 @@ export class SymbolIndex {
    * tsconfig's `paths` resolve; a package name or anything else is left unresolved.
    */
   resolveImport(from: string, spec: string): string | null {
+    // A specifier in the PR's code can be any length; one this long names no file.
+    if (spec.length > MAX_PATH_CHARS) return null;
     const relative =
       spec.startsWith('./') || spec.startsWith('../') || spec === '.' || spec === '..';
     const key = relative ? `${dirName(from)}\0${spec}` : `\0${spec}`;
@@ -108,8 +115,12 @@ export class SymbolIndex {
   }
 
   #resolvePaths(spec: string): string | null {
-    // Like TypeScript: only the matching pattern with the longest prefix is tried.
-    let best: { prefix: number; middle: string; targets: readonly string[] } | null = null;
+    // Like TypeScript: an exact pattern wins; otherwise only the matching pattern with the
+    // longest prefix is tried, with no fallback to a shorter one.
+    const exact = this.#tsconfig.find((p) => p.pattern === spec && !p.pattern.includes('*'));
+    let best: { prefix: number; middle: string; targets: readonly string[] } | null = exact
+      ? { prefix: Number.POSITIVE_INFINITY, middle: '', targets: exact.targets }
+      : null;
     for (const { pattern, targets } of this.#tsconfig) {
       const star = pattern.indexOf('*');
       const prefix = star === -1 ? pattern : pattern.slice(0, star);
@@ -125,7 +136,8 @@ export class SymbolIndex {
       best = { prefix: prefix.length, middle, targets };
     }
     for (const target of best?.targets ?? []) {
-      const path = normalize(target.replace('*', best?.middle ?? ''));
+      // A function, so `$&` and the like in the import text stay literal.
+      const path = normalize(target.replace('*', () => best?.middle ?? ''));
       const found = path === null ? null : this.#withExtension(path);
       if (found) return found;
     }
@@ -135,8 +147,9 @@ export class SymbolIndex {
   /**
    * N2: every place `symbol` may be defined, best first. With `from`, definitions in that file
    * come first (nearest `line` first), then those its imports lead to, then the rest of the repo
-   * by path. Each place appears once (N5). At most `limit` come back; `truncated` says whether
-   * there were more, so a common name stays cheap to look up.
+   * by path. Each place appears once (N5). At most `limit` come back. Following imports has a
+   * work budget, so a file built to fan out can't stall a lookup. `truncated` says some places
+   * may be missing, or ranked as `repo` when the import that leads there wasn't followed.
    */
   definitions(
     symbol: string,
@@ -193,10 +206,13 @@ export class SymbolIndex {
       // Then any file this one imports that defines the name, like a method on an imported class.
       // Only worth resolving when some file defines it at all.
       if (this.#byName.has(symbol)) {
+        const scanned = new Set<string>();
         for (const spec of specs) {
           const target = this.#resolveWithin(lookup, from.path, spec);
           const symbols = target ? this.#files.get(target) : undefined;
-          if (!target || !symbols) continue;
+          // Many spellings can name one file; it's scanned once.
+          if (!target || !symbols || scanned.has(target)) continue;
+          scanned.add(target);
           for (const d of symbols.definitions) {
             if (d.name === symbol)
               add({ path: target, line: d.line, kind: d.kind, rank: 'import' });
@@ -251,7 +267,7 @@ export class SymbolIndex {
       return;
     }
     if (name === 'default') return;
-    for (const spec of new Set(symbols.exportsAll)) {
+    for (const spec of symbols.exportsAll) {
       const next = this.#resolveWithin(lookup, path, spec);
       if (next) this.#follow(next, name, hops + 1, lookup);
     }
@@ -285,6 +301,7 @@ export class SymbolIndex {
 
   /** The file a module path names, trying TypeScript's and Node's extensions and index files. */
   #withExtension(path: string): string | null {
+    if (path.length > this.#longest) return null;
     const has = (p: string) => this.#paths.has(p);
     // Like TypeScript, `./a.js` means `./a.ts` when both exist.
     const dot = path.lastIndexOf('.');
@@ -317,12 +334,15 @@ export function tsconfigPaths(text: string): TsconfigPaths {
   const { baseUrl, paths } = options as { baseUrl?: unknown; paths?: unknown };
   if (typeof paths !== 'object' || paths === null) return [];
   const base = typeof baseUrl === 'string' ? baseUrl : '.';
+  // The file comes from the PR, so it's capped, in count and length: a real one has a handful
+  // of short entries.
+  if (base.length > MAX_PATH_CHARS) return [];
+  const short = (s: string) => s.length <= MAX_PATH_CHARS && (s.match(/\*/g)?.length ?? 0) <= 1;
   const result: { pattern: string; targets: string[] }[] = [];
-  // The file comes from the PR, so it's capped: a real one has a handful of each.
   for (const [pattern, targets] of Object.entries(paths).slice(0, MAX_PATH_PATTERNS)) {
-    if (!Array.isArray(targets) || (pattern.match(/\*/g)?.length ?? 0) > 1) continue;
+    if (!Array.isArray(targets) || !short(pattern)) continue;
     const usable = targets
-      .filter((t): t is string => typeof t === 'string' && (t.match(/\*/g)?.length ?? 0) <= 1)
+      .filter((t): t is string => typeof t === 'string' && short(t))
       .slice(0, MAX_PATH_TARGETS);
     result.push({ pattern, targets: usable.map((t) => `${base}/${t}`) });
   }

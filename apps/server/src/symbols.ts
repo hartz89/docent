@@ -30,7 +30,8 @@ export const INDEX_LIMITS: IndexLimits = {
 };
 
 /** Why an index stopped early. */
-export type PartialReason = 'time' | 'files' | 'bytes' | 'listing';
+/** `wary`: files kept breaking the parser, so larger ones after them were skipped. */
+export type PartialReason = 'time' | 'files' | 'bytes' | 'listing' | 'wary';
 
 /**
  * How much of the repo the index covers. `skipped` counts files in a known language that weren't
@@ -137,7 +138,10 @@ export async function buildIndex(
       // After a few files that broke the parser or were very slow, the PR is treated as hostile:
       // only small files are parsed, on a short clock, so it can't spend the whole budget.
       const wary = strikes >= MAX_STRIKES;
-      if (wary && text.length > WARY_FILE_CHARS) continue;
+      if (wary && text.length > WARY_FILE_CHARS) {
+        reason ??= 'wary';
+        continue;
+      }
       const ms = wary ? limits.fileMs / 4 : limits.fileMs;
       const began = Date.now();
       const parsed = await parser.parse(path, language, text, ms, deadline);

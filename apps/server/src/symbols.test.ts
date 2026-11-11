@@ -301,7 +301,7 @@ describe('GET /api/definition', () => {
     expect(logged).toHaveBeenCalledTimes(3);
     logged.mockRestore();
     expect(found.candidates).toEqual([expect.objectContaining({ path: 'z/small.ts' })]);
-    expect(found.index).toMatchObject({ state: 'complete', files: 1, skipped: 6 });
+    expect(found.index).toMatchObject({ state: 'partial', reason: 'wary', files: 1, skipped: 6 });
     expect(Date.now() - started).toBeLessThan(10_000);
   });
 

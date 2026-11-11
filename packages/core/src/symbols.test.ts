@@ -266,6 +266,8 @@ describe('resolving imports', () => {
     const index = await indexOf({
       'tsconfig.json': JSON.stringify({ compilerOptions: { paths: { '*': targets } } }),
       'app.ts': imports.join('\n'),
+      // Defined somewhere, so every import in app.ts gets resolved.
+      'lib.ts': 'export function x1() {}\n',
       'b.js': '',
       'b.ts': '',
     });
@@ -273,6 +275,56 @@ describe('resolving imports', () => {
     for (let i = 0; i < 5; i++) index.definitions('x1', { path: 'app.ts' });
     expect(performance.now() - started).toBeLessThan(1000);
     expect(index.resolveImport('app.ts', './b.js')).toBe('b.ts');
+  });
+
+  test('N4: very long tsconfig strings and specifiers are ignored, not resolved slowly', async () => {
+    // Found by the security review: a 250 KB baseUrl made each specifier cost about 7 ms.
+    const index = await indexOf({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: { baseUrl: 'a/'.repeat(100_000), paths: { '*': ['*', 'a/*', 'c/*'] } },
+      }),
+      'x.ts': Array.from({ length: 3_000 }, (_, i) => `import * as a${i} from 'p${i}';`).join('\n'),
+      'p1.ts': 'export function foo() {}\n',
+      'y.ts': `import { foo } from './${'z/'.repeat(50_000)}p1';\n`,
+    });
+    const started = performance.now();
+    index.definitions('foo', { path: 'x.ts' });
+    index.definitions('foo', { path: 'y.ts' });
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(index.resolveImport('x.ts', 'p1')).toBeNull();
+  });
+
+  test('N1: a file built to be dense keeps a capped number of entries', async () => {
+    const names = Array.from({ length: 20_000 }, (_, i) => `a${i}`);
+    const index = await indexOf({
+      'dense.ts': `import { ${names.join(', ')} } from './x';\n${names.map((n) => `export const ${n}2 = 1;`).join('\n')}\n`,
+      'x.ts': 'export function a1() {}\nexport function a19999() {}\n',
+    });
+    // The first imports are kept and followed; past the cap, definitions are dropped.
+    expect(index.definitions('a1', { path: 'dense.ts' })[0]).toEqual(at('x.ts', 1));
+    expect(index.definitions('a49992')).toEqual([at('dense.ts', 5_001)]);
+    expect(index.definitions('a50002')).toEqual([]);
+  });
+
+  test('N4: tsconfig paths pick an exact pattern, else the longest prefix, with no fallback', async () => {
+    const index = await indexOf({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: {
+          paths: { '@/*': ['src/*'], '@/lib/*': ['lib/*'], '@/x*': ['wild/*'], '@/x': ['exact'] },
+        },
+      }),
+      'src/a.ts': '',
+      'src/lib/only-in-src.ts': '',
+      'lib/b.ts': '',
+      'exact.ts': '',
+      'wild.ts': '',
+    });
+    const resolve = (spec: string) => index.resolveImport('src/a.ts', spec);
+    expect(resolve('@/a')).toBe('src/a.ts');
+    expect(resolve('@/lib/b')).toBe('lib/b.ts');
+    // `@/lib/*` is the longest match, so `src/lib/…` is never tried.
+    expect(resolve('@/lib/only-in-src')).toBeNull();
+    expect(resolve('@/x')).toBe('exact.ts');
   });
 
   test('N4: packages, missing files and paths out of the repo stay unresolved', async () => {
