@@ -791,19 +791,26 @@ describe('as-agent as a process', () => {
       cwd: repo,
       env: { HOME: dir, PATH: '/usr/bin:/bin', DOCENT_BUILDER_APP_KEY: pem },
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Under vitest's own 5s limit, so a hung runner is killed rather than left behind.
+      timeout: 4_000,
     });
     // Whoever reads the output goes away at once, as `| head` does after its lines.
     child.stdout.destroy();
     child.stderr.destroy();
-    const [code, signal] = await once(child, 'close');
-    server.close();
-    return { code, signal, calls };
+    try {
+      const [code, signal] = await once(child, 'close');
+      return { code, signal, calls };
+    } finally {
+      server.close();
+    }
   }
 
   test('revokes the token and exits normally when its output reader closes early', async () => {
     const { code, signal, calls } = await launch(['builder', '--', 'git', 'push', 'origin', 'x']);
     // git's own exit code. A crash on the closed pipe would exit 1, before the revoke.
     expect({ code, signal }).toEqual({ code: 128, signal: null });
+    // The runner reads the real .github/agent-apps.json: its appId skips the /apps lookup, and
+    // its slug names the bot.
     expect(calls).toEqual([
       'GET /repos/hartz89/docent/installation',
       'POST /app/installations/222/access_tokens',
