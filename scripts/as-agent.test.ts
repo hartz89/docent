@@ -113,6 +113,8 @@ function setup(
       HOME: process.env.HOME,
       PATH: `/caller/controlled/bin:${process.env.PATH}`,
       DOCENT_BUILDER_APP_KEY: KEY_ENV,
+      // Without it, the reviewer tests fall back to the Keychain: the real key locally, none in CI.
+      DOCENT_REVIEWER_APP_KEY: KEY_ENV,
       GIT_TRACE: '1',
       GIT_CURL_VERBOSE: '1',
       GH_DEBUG: 'api',
