@@ -1,7 +1,7 @@
 // The reviewer's line comments, from what the browser sends to what GitHub receives. The browser
 // names only a file, a side, a line and the text. Everything else in the review (where each
 // comment lands, the links, the commit) is worked out here from the review's own PR and diff.
-import { type Diff, diffPosition, type Side } from '@docent/core';
+import { type Diff, diffPosition, githubLineUrl, lineCount, type Side } from '@docent/core';
 import { isSafeRepoPath, type PrInfo, type ReviewLineComment } from './github.ts';
 
 /** One comment as the reviewer wrote it: on a line of a file, at head ("new") or base ("old"). */
@@ -61,7 +61,7 @@ export async function placeComments(
     const key = `${comment.side}:${comment.path}`;
     if (!lineCounts.has(key)) {
       const text = await readFile(comment.side, comment.path);
-      lineCounts.set(key, text === null || text.includes('\0') ? null : text.split(/\r?\n/).length);
+      lineCounts.set(key, text === null || text.includes('\0') ? null : lineCount(text));
     }
     const count = lineCounts.get(key) ?? null;
     const at = comment.side === 'new' ? 'head' : 'base';
@@ -91,7 +91,7 @@ export async function placeComments(
 export function composeBody(summary: string, notes: readonly BodyNote[], pr: PrInfo): string {
   const blocks = notes.map((note) => {
     const sha = note.side === 'new' ? pr.head : pr.base;
-    const url = `https://github.com/${pr.repo}/blob/${sha}/${encodePath(note.path)}#L${note.line}`;
+    const url = githubLineUrl(pr.repo, sha, note.path, note.line);
     const where = `${note.path}:${note.line}${note.side === 'old' ? ' (base)' : ''}`;
     const quoted = note.body
       .split(/\r?\n/)
@@ -107,21 +107,14 @@ export function composeBody(summary: string, notes: readonly BodyNote[], pr: PrI
  * markdown with a line break.
  */
 function isCommentPath(path: string): boolean {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what's refused.
-  return isSafeRepoPath(path) && !/[\u0000-\u001f\u007f]/.test(path);
-}
-
-/** Each path segment percent-encoded, brackets and quotes too, so a file name can't end the link. */
-function encodePath(path: string): string {
-  return path
-    .split('/')
-    .map((part) =>
-      encodeURIComponent(part).replace(
-        /[!'()*]/g,
-        (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
-      ),
-    )
-    .join('/');
+  return (
+    isSafeRepoPath(path) &&
+    // `./a.ts` names `a.ts` when read, but wouldn't match the diff.
+    !path.split('/').includes('.') &&
+    // Control characters could break the body's markdown; bidi and zero-width ones could make
+    // the `path:line` label read as another file.
+    !/[\p{Cc}\p{Cf}]/u.test(path)
+  );
 }
 
 /** Markdown inline code that holds any text, backticks included. */

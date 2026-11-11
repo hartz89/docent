@@ -369,10 +369,18 @@ Question: ${question}`,
         );
       }
       const head = workspace.pr.head;
-      if ((await workspace.currentHead()) !== head) {
+      const now = await workspace.current();
+      if (now.head !== head) {
         throw new SubmitRefused(
           'stale',
           'The PR has new commits since this tour. Reopen it in Docent to review them.',
+        );
+      }
+      // Base-side line numbers were read against the old base, so they could point elsewhere.
+      if (now.baseRef !== workspace.pr.baseRef) {
+        throw new SubmitRefused(
+          'stale',
+          `The PR now targets ${now.baseRef}, not ${workspace.pr.baseRef}. Reopen it in Docent to review it again.`,
         );
       }
       const { url } = await workspace.postReview({

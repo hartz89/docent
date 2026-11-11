@@ -47,7 +47,12 @@ const prHead = commitSha('h'.repeat(40));
 
 /** GitHub's side of the PR: where its head is now, and the reviews posted to it. */
 function fakeGitHub() {
-  return { head: prHead, posted: [] as ReviewPost[], refusal: null as string | null };
+  return {
+    head: prHead,
+    baseRef: 'main',
+    posted: [] as ReviewPost[],
+    refusal: null as string | null,
+  };
 }
 type FakeGitHub = ReturnType<typeof fakeGitHub>;
 
@@ -75,7 +80,7 @@ const sourceFor =
       ],
       dir: '/nowhere',
       readFile: async (side, path) => (side === 'new' ? head : base)[path] ?? null,
-      currentHead: async () => github.head,
+      current: async () => ({ head: github.head, baseRef: github.baseRef }),
       postReview: async (review) => {
         if (github.refusal) throw new GitHubRefusal(github.refusal);
         github.posted.push(review);
@@ -797,6 +802,16 @@ describe('POST /api/review/submit', () => {
     expect(github.posted).toEqual([]);
   });
 
+  test('refuses when the PR now targets another branch, since base line numbers may have moved', async () => {
+    const { github, app } = await openWithGitHub();
+    github.baseRef = 'release';
+
+    const res = await post(app, { event: 'APPROVE' });
+
+    expect(res.status).toBe(409);
+    expect(github.posted).toEqual([]);
+  });
+
   test('refuses when the PR has new commits since the tour, rather than approve unseen code', async () => {
     const { github, app } = await openWithGitHub();
     github.head = commitSha('n'.repeat(40));
@@ -926,10 +941,17 @@ describe('POST /api/review/submit', () => {
         [comment('new', 1, 'x', 'src/nope.ts')],
         /isn't a text file/,
       ],
-      ['a line past the end of the file', [comment('new', 99, 'x')], /has 5 lines at head/],
+      // The file ends in a newline: that ends line 4, it doesn't make a line 5.
+      ['a line past the end of the file', [comment('new', 5, 'x')], /has 4 lines at head/],
       ['a binary file', [comment('new', 1, 'x', 'logo.png')], /isn't a text file/],
       ['a path that leaves the repository', [comment('new', 1, 'x', '../etc/passwd')], /path/],
       ['a path with a line break', [comment('new', 1, 'x', 'src/cors.ts\n[evil](x)')], /path/],
+      [
+        'a path that hides its name with bidi text',
+        [comment('new', 1, 'x', 'src/\u202ests.ts')],
+        /path/,
+      ],
+      ['a ./ path that would miss the diff', [comment('new', 2, 'x', './src/cors.ts')], /path/],
       ['a line that is not a whole number', [comment('new', 1.5, 'x')], /line number/],
       ['an empty comment', [comment('new', 1, '   ')], /empty/],
       ['a comment that is too long', [comment('new', 1, 'x'.repeat(10_001))], /up to 10,000/],

@@ -13,7 +13,7 @@ test('the reviewer comments on lines, and the comments post with the verdict', a
   try {
     await page.goto(docent.url);
     const code = page.getByRole('region', { name: 'Code' });
-    const stopThree = (await page.locator('.stop-button').nth(2).textContent()) ?? '';
+    const stopThree = (await page.locator('.stop-title').nth(2).textContent()) ?? '';
     await page.locator('.stop-button').nth(2).click();
 
     /** Opens the composer under a line of the code view. */
@@ -24,14 +24,27 @@ test('the reviewer comments on lines, and the comments post with the verdict', a
       return code.getByLabel(`Your comment on line ${line}`);
     };
 
-    await test.step('a comment on a changed line goes into the batch with ⌘↵', async () => {
-      const box = await commentOn(80);
+    await test.step('a comment on a changed line goes into the batch with ⌘↵, and stays editable', async () => {
+      let box = await commentOn(80);
+      await box.fill('Should this log?');
+      await box.press('ControlOrMeta+Enter');
+      await expect(code.locator('.thread.draft')).toContainText('Draft · not posted');
+      await expect(page.getByRole('button', { name: /1 not posted/ })).toBeVisible();
+
+      await code.getByRole('button', { name: 'Edit your comment on line 80' }).click();
+      box = code.getByLabel('Your comment on line 80');
       await box.fill('Should this log that the wildcard was reflected?');
       await box.press('ControlOrMeta+Enter');
-      await expect(code.locator('.thread.draft')).toContainText(
-        'Should this log that the wildcard was reflected?',
+      await expect(code.locator('.thread.draft')).toHaveText(
+        /Should this log that the wildcard was reflected\?/,
       );
-      await expect(code.locator('.thread.draft')).toContainText('Draft · not posted');
+
+      // A comment can be removed before it's ever sent.
+      box = await commentOn(81);
+      await box.fill('Never mind.');
+      await box.press('ControlOrMeta+Enter');
+      await code.getByRole('button', { name: 'Remove your comment on line 81' }).click();
+      await expect(code.locator('.thread.draft')).toHaveCount(1);
       await expect(page.getByRole('button', { name: /1 not posted/ })).toBeVisible();
     });
 
@@ -41,7 +54,10 @@ test('the reviewer comments on lines, and the comments post with the verdict', a
       await box.press('ArrowRight');
       await box.press('ArrowLeft');
       await box.press('ArrowDown');
-      await expect(page.locator('.stop-button[aria-current="step"]')).toHaveText(stopThree);
+      // Esc closes only an empty box: written words go only with Cancel.
+      await box.press('Escape');
+      await expect(box).toBeVisible();
+      await expect(page.locator('.stop-button[aria-current="step"]')).toContainText(stopThree);
       await code.getByRole('button', { name: 'Add to batch' }).click();
       await expect(page.getByRole('button', { name: /2 not posted/ })).toBeVisible();
     });
@@ -64,10 +80,11 @@ test('the reviewer comments on lines, and the comments post with the verdict', a
       await page.reload();
       await expect(page.getByText('Stop 1 of')).toBeVisible();
       const tray = page.getByRole('region', { name: 'Your batch' });
+      await tray.getByRole('button', { name: 'Show' }).click();
       await expect(tray.locator('.tray-item')).toHaveCount(3);
       await expect(tray).toContainText('1 on diff lines · 1 in the summary · 1 out of date');
       await tray.getByRole('button', { name: /index\.ts:66/ }).click();
-      await expect(page.locator('.stop-button[aria-current="step"]')).toHaveText(stopThree);
+      await expect(page.locator('.stop-button[aria-current="step"]')).toContainText(stopThree);
       await expect(code.locator('.line[data-line="66"]')).toBeInViewport();
     });
 
@@ -99,6 +116,14 @@ test('the reviewer comments on lines, and the comments post with the verdict', a
         `https://github.com/honojs/hono/blob/${pr.head}/${file}#L66`,
       );
       await expect(note).toContainText('Are these defaults documented?');
+
+      // An edit that isn't saved yet blocks sending, so what posts is what's on screen.
+      await code.getByRole('button', { name: `Edit your comment at ${file}:80` }).click();
+      await code.getByLabel('Your comment on line 80').fill('Changed my mind about this.');
+      await expect(review.getByRole('alert')).toContainText("isn't in the batch yet");
+      await expect(review.getByRole('button', { name: 'Approve on GitHub' })).toBeDisabled();
+      await code.getByRole('button', { name: 'Cancel' }).click();
+      await expect(review.getByRole('button', { name: 'Approve on GitHub' })).toBeEnabled();
     });
 
     await test.step('approving posts the comments once, on their lines or in the body', async () => {

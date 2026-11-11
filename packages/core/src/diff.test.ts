@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, test } from 'vitest';
 import { base, diffs, head, placeHunks, rawFiles } from './arbitraries.testing.ts';
-import { changedLines, type Diff, makeDiff } from './diff.ts';
+import { changedLines, type Diff, diffPosition, makeDiff } from './diff.ts';
 
 const ids = (diff: Diff) => diff.files.flatMap((file) => file.hunks.map((hunk) => hunk.id));
 
@@ -88,5 +88,51 @@ describe('makeDiff', () => {
         expect(makeDiff(base, head, files)).toEqual(before);
       }),
     );
+  });
+});
+
+describe('diffPosition', () => {
+  // A renamed file, old.ts → new.ts, with one line changed in a three-line hunk.
+  const diff = makeDiff(base, head, [
+    {
+      path: 'new.ts',
+      oldPath: 'old.ts',
+      hunks: [
+        {
+          oldStart: 10,
+          newStart: 12,
+          lines: [
+            { kind: 'context', text: 'a' },
+            { kind: 'removed', text: 'b' },
+            { kind: 'added', text: 'B' },
+          ],
+        },
+      ],
+    },
+  ]);
+
+  test('places lines as GitHub does, always under the head path of a renamed file', () => {
+    expect(diffPosition(diff, { path: 'new.ts', side: 'new', line: 13 })).toEqual({
+      path: 'new.ts',
+      side: 'new',
+      line: 13,
+    });
+    expect(diffPosition(diff, { path: 'old.ts', side: 'old', line: 11 })).toEqual({
+      path: 'new.ts',
+      side: 'old',
+      line: 11,
+    });
+    // An unchanged line seen at base sits on the head side, at its head number.
+    expect(diffPosition(diff, { path: 'old.ts', side: 'old', line: 10 })).toEqual({
+      path: 'new.ts',
+      side: 'new',
+      line: 12,
+    });
+  });
+
+  test('a line outside every hunk, or named by the other side’s path, has no place', () => {
+    expect(diffPosition(diff, { path: 'new.ts', side: 'new', line: 30 })).toBeNull();
+    expect(diffPosition(diff, { path: 'new.ts', side: 'old', line: 11 })).toBeNull();
+    expect(diffPosition(diff, { path: 'old.ts', side: 'new', line: 13 })).toBeNull();
   });
 });

@@ -183,6 +183,14 @@ export function TourScreen({ snapshot, tour }: Props) {
       setViewing({ path: draft.path, side: draft.side, line: draft.line });
     }
   };
+  /** Opens a comment on a line, unless one with text is already open: that one keeps its words. */
+  const openComposer = (at: { path: string; side: 'old' | 'new' }, line: number) => {
+    if (composing?.text.trim()) {
+      document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus();
+      return;
+    }
+    setComposing({ path: at.path, side: at.side, line, draftId: null, text: '' });
+  };
   const composer = composing && (
     <Composer
       composing={composing}
@@ -233,6 +241,11 @@ export function TourScreen({ snapshot, tour }: Props) {
     );
   };
   const hasDrafts = drafts.current.length + drafts.stale.length > 0;
+  // A comment being written, or an edit not yet saved: what's on screen isn't what would post.
+  const editing = [...drafts.current, ...drafts.stale].find((d) => d.id === composing?.draftId);
+  const hasUnsaved =
+    composing !== null &&
+    (editing ? composing.text.trim() !== editing.body : composing.text.trim() !== '');
   const listsBatch = isVerdict && hasDrafts && !posted && !viewing && !verdictCode;
 
   return (
@@ -252,6 +265,7 @@ export function TourScreen({ snapshot, tour }: Props) {
             stops={stops}
             index={index}
             onSelect={go}
+            commentsByStop={countBy(drafts.current, (d) => d.stopId)}
             skips={skips}
             onOpenSkip={(path) => setViewing({ path, side: sideFor(diff, path) })}
             tour={tour}
@@ -273,6 +287,18 @@ export function TourScreen({ snapshot, tour }: Props) {
           ) : shown ? (
             <>
               <div className="code-header">
+                {isVerdict && hasDrafts && !posted && (
+                  <button
+                    type="button"
+                    className="text-button back-to-review"
+                    onClick={() => {
+                      setViewing(null);
+                      setVerdictCode(false);
+                    }}
+                  >
+                    <span aria-hidden="true">←</span> Your review
+                  </button>
+                )}
                 <span className="code-path">{shown.path}</span>
                 <span className="code-range">
                   {viewing
@@ -290,11 +316,7 @@ export function TourScreen({ snapshot, tour }: Props) {
                 focus={focus}
                 changed={changes.get(`${shown.side}:${shown.path}`) ?? new Set()}
                 onStep={viewing ? undefined : stepAnchor}
-                onComment={
-                  commenting
-                    ? (line) => setComposing({ ...shown, line, draftId: null, text: '' })
-                    : undefined
-                }
+                onComment={commenting ? (line) => openComposer(shown, line) : undefined}
                 below={commenting ? below : undefined}
                 commentLine={composing && onThisFile(composing) ? composing.line : null}
               />
@@ -336,6 +358,7 @@ export function TourScreen({ snapshot, tour }: Props) {
                   diff={diff}
                   comments={drafts.current}
                   stale={drafts.stale.length}
+                  unsaved={hasUnsaved}
                   posted={posted}
                   onPosted={(review, sent) => {
                     setPosted(review);
@@ -448,6 +471,7 @@ function Route({
   stops,
   index,
   onSelect,
+  commentsByStop,
   skips,
   onOpenSkip,
   tour,
@@ -455,6 +479,8 @@ function Route({
   stops: readonly StopView[];
   index: number;
   onSelect: (index: number) => void;
+  /** How many comments in the batch were written at each stop. */
+  commentsByStop: ReadonlyMap<string, number>;
   skips: Ready['tour']['skips'];
   onOpenSkip: (path: string) => void;
   tour: Ready;
@@ -488,6 +514,12 @@ function Route({
                   </span>
                   <span className="stop-title">{inline(stop.title)}</span>
                 </span>
+                {commentsByStop.has(stop.id) && (
+                  <span className="stop-comments">
+                    {commentsByStop.get(stop.id)}
+                    <span className="sr-only"> comments</span>
+                  </span>
+                )}
               </button>
             </li>
           );
@@ -746,13 +778,7 @@ function Narration({
         {tray}
         <div className="narration-nav">
           <span className="batch-note">
-            {hasComments ? (
-              <>
-                <kbd>←</kbd> <kbd>→</kbd> stops
-              </>
-            ) : (
-              'No comments yet · click + beside a line'
-            )}
+            {hasComments ? '' : 'No comments yet · click + beside a line'}
           </span>
           {!isLast && (
             <button type="button" className="primary-button" onClick={onNext}>
@@ -787,6 +813,12 @@ function inline(text: string): ReactNode {
       <Fragment key={j}>{part}</Fragment>
     ),
   );
+}
+
+function countBy<T>(items: readonly T[], key: (item: T) => string): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const item of items) counts.set(key(item), (counts.get(key(item)) ?? 0) + 1);
+  return counts;
 }
 
 function chipLabel(anchor: AnchorView): string {

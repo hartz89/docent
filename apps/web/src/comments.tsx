@@ -43,14 +43,20 @@ function load(key: string): Draft[] {
   }
 }
 
+/** Storage is shared with anything that ran on this origin before, so read it as untrusted. */
 function isDraft(value: unknown): value is Draft {
   const d = value as Partial<Draft> | null;
   return (
     typeof d?.id === 'string' &&
     typeof d.path === 'string' &&
+    d.path.length > 0 &&
+    d.path.length < 4096 &&
     (d.side === 'old' || d.side === 'new') &&
     typeof d.line === 'number' &&
+    Number.isSafeInteger(d.line) &&
+    d.line >= 1 &&
     typeof d.body === 'string' &&
+    d.body.length <= 10_000 &&
     typeof d.head === 'string' &&
     typeof d.stopId === 'string'
   );
@@ -69,6 +75,14 @@ export function useDrafts(pr: PrInfo) {
       else localStorage.removeItem(key);
     } catch {}
   }, [key, drafts]);
+  // Another tab changed the drafts: take its version, so a removed draft can't come back.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === key) setDrafts(load(key));
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [key]);
 
   const save = useCallback((draft: Draft) => {
     setDrafts((all) =>
@@ -81,7 +95,7 @@ export function useDrafts(pr: PrInfo) {
     setDrafts((all) => all.filter((d) => !ids.includes(d.id)));
   }, []);
 
-  // In reading order: by file, then base before head, then line.
+  // In reading order: by file, then head before base, then line.
   const sorted = [...drafts].sort(
     (a, b) => a.path.localeCompare(b.path) || a.side.localeCompare(b.side) || a.line - b.line,
   );
@@ -142,7 +156,8 @@ export function Composer({
             if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
               event.preventDefault();
               if (ready) onSave();
-            } else if (event.key === 'Escape') {
+            } else if (event.key === 'Escape' && !composing.text.trim()) {
+              // Esc closes an empty box; written words go only with Cancel.
               event.preventDefault();
               onCancel();
             }
@@ -181,10 +196,20 @@ export function DraftCard({
         <span className="draft-chip">Draft · not posted</span>
         <span>Your comment on line {draft.line}</span>
         <span className="grow" />
-        <button type="button" className="text-button" onClick={onEdit}>
+        <button
+          type="button"
+          className="text-button"
+          onClick={onEdit}
+          aria-label={`Edit your comment on line ${draft.line}`}
+        >
           Edit
         </button>
-        <button type="button" className="text-button" onClick={onRemove}>
+        <button
+          type="button"
+          className="text-button"
+          onClick={onRemove}
+          aria-label={`Remove your comment on line ${draft.line}`}
+        >
           Remove
         </button>
       </div>
@@ -205,7 +230,7 @@ export function BatchTray({
   diff: Diff;
   onJump: (draft: Draft) => void;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const inBody = current.filter((d) => !landsOnDiff(diff, d)).length;
   const parts = [
     current.length - inBody > 0 ? `${current.length - inBody} on diff lines` : '',
@@ -288,60 +313,103 @@ export function ReviewList({
           ? 'No comments wait in the batch.'
           : `${count} comment${count === 1 ? '' : 's'} wait${count === 1 ? 's' : ''} in the batch. Nothing is posted until you send it.`}
       </p>
-      {[...current, ...stale].map((draft) => {
-        const isStale = !current.includes(draft);
-        const editing = composing?.draftId === draft.id;
-        return (
-          <article key={draft.id} className={`review-item${isStale ? ' stale' : ''}`}>
-            <header className="review-item-head">
-              <span className="mono review-item-where">{whereLabel(draft)}</span>
-              <span className="review-item-tag">
-                {isStale
-                  ? `written at ${draft.head.slice(0, 7)} · the PR has moved to ${head.slice(0, 7)}`
-                  : landsOnDiff(diff, draft)
-                    ? 'on the diff line'
-                    : 'outside the diff · goes in the summary'}
-              </span>
-              <span className="grow" />
-              {isStale ? (
-                <button type="button" className="text-button" onClick={() => onKeep(draft)}>
-                  Keep at this line
-                </button>
-              ) : (
-                <button type="button" className="text-button" onClick={() => onEdit(draft)}>
-                  Edit
-                </button>
-              )}
-              <button type="button" className="text-button" onClick={() => onRemove(draft)}>
-                Remove
-              </button>
-            </header>
-            <LineSnippet path={draft.path} side={draft.side} line={draft.line} />
-            {editing ? composer : <p className="thread-body">{draft.body}</p>}
-          </article>
-        );
-      })}
+      {[...current, ...stale].map((draft) => (
+        <ReviewItem
+          key={draft.id}
+          draft={draft}
+          stale={!current.includes(draft)}
+          onDiff={landsOnDiff(diff, draft)}
+          head={head}
+          composer={composing?.draftId === draft.id ? composer : null}
+          onEdit={() => onEdit(draft)}
+          onRemove={() => onRemove(draft)}
+          onKeep={() => onKeep(draft)}
+        />
+      ))}
     </div>
   );
 }
 
-/** One line of code, as the code view shows it. */
-function LineSnippet({ path, side, line }: { path: string; side: Side; line: number }) {
-  const file = useFile(path, side);
-  const tokens = file.data?.[line - 1];
+/** One comment in the verdict stop's list, with its line as the file has it now. */
+function ReviewItem({
+  draft,
+  stale,
+  onDiff,
+  head,
+  composer,
+  onEdit,
+  onRemove,
+  onKeep,
+}: {
+  draft: Draft;
+  stale: boolean;
+  onDiff: boolean;
+  head: string;
+  composer: ReactNode;
+  onEdit: () => void;
+  onRemove: () => void;
+  onKeep: () => void;
+}) {
+  const file = useFile(draft.path, draft.side);
+  const tokens = file.data?.[draft.line - 1];
+  const where = whereLabel(draft);
   return (
-    <div className="code review-item-code">
-      <div className="line">
-        <span className="line-number">{line}</span>
-        <span className="line-mark" />
-        <span className="line-text">
-          {tokens ? (
-            <LineTokens tokens={tokens} />
-          ) : file.isError ? (
-            <span className="snippet-missing">Not in this commit</span>
-          ) : null}
+    <article className={`review-item${stale ? ' stale' : ''}`}>
+      <header className="review-item-head">
+        <span className="mono review-item-where">{where}</span>
+        <span className="review-item-tag">
+          {stale
+            ? `written at ${draft.head.slice(0, 7)} · the PR has moved to ${head.slice(0, 7)}`
+            : onDiff
+              ? 'on the diff line'
+              : 'outside the diff · goes in the summary'}
         </span>
+        <span className="grow" />
+        {stale ? (
+          // Only a line that still exists can be kept, once the reviewer has seen it.
+          tokens && (
+            <button
+              type="button"
+              className="text-button"
+              onClick={onKeep}
+              aria-label={`Keep your comment at ${where}`}
+            >
+              Keep at this line
+            </button>
+          )
+        ) : (
+          <button
+            type="button"
+            className="text-button"
+            onClick={onEdit}
+            aria-label={`Edit your comment at ${where}`}
+          >
+            Edit
+          </button>
+        )}
+        <button
+          type="button"
+          className="text-button"
+          onClick={onRemove}
+          aria-label={`Remove your comment at ${where}`}
+        >
+          Remove
+        </button>
+      </header>
+      <div className="code review-item-code">
+        <div className="line">
+          <span className="line-number">{draft.line}</span>
+          <span className="line-mark" />
+          <span className="line-text">
+            {tokens ? (
+              <LineTokens tokens={tokens} />
+            ) : file.isPending ? null : (
+              <span className="snippet-missing">This line isn't in the file any more</span>
+            )}
+          </span>
+        </div>
       </div>
-    </div>
+      {composer ?? <p className="thread-body">{draft.body}</p>}
+    </article>
   );
 }

@@ -33,7 +33,7 @@ export function fixtureSource(dir: string, record: ReviewRecorder = printReview)
         const file = fileAt(dir, side, path);
         return isSafeRepoPath(path) && existsSync(file) ? readFile(file, 'utf8') : null;
       },
-      currentHead: async () => pr.head,
+      current: async () => ({ head: pr.head, baseRef: pr.baseRef }),
       postReview: async (review) => {
         record(review);
         return { url: `${pr.url}#pullrequestreview-0` };

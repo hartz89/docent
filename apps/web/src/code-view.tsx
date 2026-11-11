@@ -1,3 +1,4 @@
+import { lineCount } from '@docent/core';
 import { useQuery } from '@tanstack/react-query';
 import {
   type CSSProperties,
@@ -48,7 +49,8 @@ export function useFile(path: string, side: 'old' | 'new') {
         throw new Error(body.error ?? `The server answered ${res.status}`);
       }
       const { text } = await res.json();
-      return highlight(path, text);
+      // Only the file's real lines: a final newline doesn't add an empty one to comment on.
+      return (await highlight(path, text)).slice(0, lineCount(text));
     },
     staleTime: Number.POSITIVE_INFINITY,
   });

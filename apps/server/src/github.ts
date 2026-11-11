@@ -56,8 +56,11 @@ export type Workspace = {
   dir: string;
   /** A file's text at the base or head commit, or null if it doesn't exist there. */
   readFile: (side: 'old' | 'new', path: string) => Promise<string | null>;
-  /** The PR's head commit right now, which moves when the author pushes. */
-  currentHead: () => Promise<CommitSha>;
+  /**
+   * The PR's head commit and base branch right now: the head moves when the author pushes, and
+   * the base when they retarget the PR.
+   */
+  current: () => Promise<{ head: CommitSha; baseRef: string }>;
   /** Posts one review on this PR as the reviewer, and returns its link on GitHub. */
   postReview: (review: ReviewPost) => Promise<{ url: string }>;
 };
@@ -145,7 +148,8 @@ export function githubSource(url: string, cacheDir: string): PrSource {
     const show = async (sha: string, path: string) => {
       if (!isSafeRepoPath(path)) return null;
       try {
-        const { stdout } = await git(dir, ['show', `${sha}:${path}`], {
+        // `cat-file blob`, not `show`: `show` prints a folder's listing as if it were a file.
+        const { stdout } = await git(dir, ['cat-file', 'blob', `${sha}:${path}`], {
           maxBuffer: 64 * 1024 * 1024,
         });
         return stdout;
@@ -163,8 +167,11 @@ export function githubSource(url: string, cacheDir: string): PrSource {
       headInBaseRepo: !view.isCrossRepository,
       dir,
       readFile: (side, path) => show(side === 'new' ? pr.head : pr.base, path),
-      currentHead: async () =>
-        commitSha((await ghForReview(['api', ...onGitHub, pull, '--jq', '.head.sha'])).trim()),
+      current: async () => {
+        const out = await ghForReview(['api', ...onGitHub, pull, '--jq', '[.head.sha, .base.ref]']);
+        const [head, baseRef] = JSON.parse(out) as [string, string];
+        return { head: commitSha(head), baseRef };
+      },
       postReview: async ({ commitId, event, body, comments }) => {
         // The review goes in as JSON on stdin, so the reviewer's text is never an argument.
         const out = await ghForReview(

@@ -1,3 +1,4 @@
+import { githubLineUrl } from '@docent/core';
 import type { PostedReview, PrInfo, ReviewEvent, ReviewSnapshot } from '@docent/server';
 import { useState } from 'react';
 import { api } from './api.ts';
@@ -46,6 +47,7 @@ export function VerdictForm({
   diff,
   comments,
   stale,
+  unsaved,
   posted,
   onPosted,
 }: {
@@ -55,6 +57,8 @@ export function VerdictForm({
   comments: readonly Draft[];
   /** How many comments were written at an older head; they aren't sent. */
   stale: number;
+  /** A comment is open with words not yet in the batch; sending now would leave them out. */
+  unsaved: boolean;
   posted: PostedReview | null;
   onPosted: (posted: PostedReview, sent: readonly Draft[]) => void;
 }) {
@@ -68,7 +72,7 @@ export function VerdictForm({
   const choice = event ? choiceFor(event) : null;
   const body = summary.trim();
   const needsSummary = event !== null && event !== 'APPROVE';
-  const ready = choice !== null && (body !== '' || !needsSummary) && !sending;
+  const ready = choice !== null && (body !== '' || !needsSummary) && !sending && !unsaved;
   const onLines = comments.filter((c) => landsOnDiff(diff, c));
   const notes = comments.filter((c) => !landsOnDiff(diff, c));
 
@@ -150,6 +154,15 @@ export function VerdictForm({
             <span className="mono">{pr.head.slice(0, 7)}</span> as you,{' '}
             {previewTail(onLines.length, body !== '' || notes.length > 0, needsSummary && !body)}
           </p>
+          {onLines.length > 0 && (
+            <ul className="verdict-lines" aria-label="Line comments">
+              {onLines.map((c) => (
+                <li key={c.id} className="verdict-line">
+                  <span className="mono">{whereLabel(c)}</span> · {c.body}
+                </li>
+              ))}
+            </ul>
+          )}
           {(body || notes.length > 0) && (
             <div className="verdict-body">
               {body && <div className="verdict-summary">{body}</div>}
@@ -164,6 +177,13 @@ export function VerdictForm({
             </div>
           )}
         </div>
+      )}
+
+      {unsaved && (
+        <p className="verdict-stale" role="alert">
+          You have a comment open that isn't in the batch yet. Add or cancel it before you send, so
+          what posts is what you see.
+        </p>
       )}
 
       {stale > 0 && (
@@ -202,12 +222,9 @@ function previewTail(lineComments: number, hasBody: boolean, missingSummary: boo
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
-/** A line on GitHub, at the commit the comment is about: head, or base for a removed line. */
+/** A line on GitHub, at the commit the comment is about: head, or base for a base line. */
 const lineUrl = (pr: PrInfo, d: Draft) =>
-  `https://github.com/${pr.repo}/blob/${d.side === 'new' ? pr.head : pr.base}/${d.path
-    .split('/')
-    .map(encodeURIComponent)
-    .join('/')}#L${d.line}`;
+  githubLineUrl(pr.repo, d.side === 'new' ? pr.head : pr.base, d.path, d.line);
 
 function Posted({ pr, posted }: { pr: PrInfo; posted: PostedReview }) {
   return (
