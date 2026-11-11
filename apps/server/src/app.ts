@@ -4,8 +4,9 @@ import { bearerAuth } from 'hono/bearer-auth';
 import { createMiddleware } from 'hono/factory';
 import { streamSSE } from 'hono/streaming';
 import { validator } from 'hono/validator';
+import { Busy } from './author-session.ts';
 import { isSafeRepoPath } from './github.ts';
-import type { Review, TourState } from './review.ts';
+import { type Review, SubmitRefused, type TourState, verdict } from './review.ts';
 
 /** The code view shows text files up to this size. */
 const MAX_FILE_CHARS = 2_000_000;
@@ -99,10 +100,32 @@ export function createApp({ token, origin, version, webRoot, review }: AppOption
         if (!review) return c.json(noReview, 404);
         const { stopId, question } = c.req.valid('json');
         try {
-          const answer = await review.ask(stopId, question);
+          // The request's signal aborts when the reviewer goes away, so a dropped question stops.
+          const answer = await review.ask(stopId, question, c.req.raw.signal);
           return c.json({ answer }, 200);
         } catch (error) {
-          return c.json({ error: error instanceof Error ? error.message : String(error) }, 502);
+          const message = error instanceof Error ? error.message : String(error);
+          if (error instanceof Busy) return c.json({ error: message }, 429);
+          return c.json({ error: message }, 502);
+        }
+      },
+    )
+    // Posts the reviewer's verdict to GitHub as them. The PR, repo and commit come from the
+    // review this server holds; the client chooses only the event and the summary.
+    .post(
+      '/api/review/submit',
+      validator('json', (body: { event?: unknown; body?: unknown } | null, c) => {
+        const result = verdict(body?.event, body?.body);
+        return typeof result === 'string' ? c.json({ error: result }, 400) : result;
+      }),
+      async (c) => {
+        if (!review) return c.json(noReview, 404);
+        try {
+          const posted = await review.submit(c.req.valid('json'));
+          return c.json({ posted }, 200);
+        } catch (error) {
+          if (!(error instanceof SubmitRefused)) throw error;
+          return c.json({ error: error.message }, error.reason === 'github' ? 502 : 409);
         }
       },
     );

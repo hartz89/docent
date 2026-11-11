@@ -1,32 +1,22 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
-import {
-  assignTier,
-  ownedBy,
-  parseCodeowners,
-  parsePathList,
-  report,
-  type Tier,
-  tierForPull,
-} from './tier.ts';
+import { assignTier, parsePathList, report, type Tier, tierForPull } from './tier.ts';
 
 const SCRIPT = join(import.meta.dirname, 'tier.ts');
-// The real file, so these tests also catch CODEOWNERS drifting away from the tier rules.
-const CODEOWNERS = readFileSync(join(import.meta.dirname, '..', '.github', 'CODEOWNERS'), 'utf8');
+const TIERS: Tier[] = ['0', '1', '2a', '2b'];
 
-const tierOf = (paths: string[]) => assignTier(paths, CODEOWNERS).tier;
+const tierOf = (paths: string[]) => assignTier(paths).tier;
 const whyOf = (paths: string[], path: string) =>
-  assignTier(paths, CODEOWNERS).reasons.find((r) => r.path === path)?.why;
+  assignTier(paths).reasons.find((r) => r.path === path)?.why;
 
 /**
- * Merged PRs #1–#17, with the files each changed (`gh pr view <n> --json files`) and the tier
- * its description stated. #1–#6 predate the 2a/2b split and said "Tier 2"; their stated
- * reasons (harness, config, the lockfile) are all 2b-class now. #11 stated no tier; it only
- * changes `.claude/settings.json`, which is 2b.
+ * Merged PRs, with the files each changed (`gh pr view <n> --json files`) and the floor the path
+ * rules give them. A tiering backtest over 38 merged PRs (2026-11-10) hand-labeled eight as
+ * needing a security review: #1, #3, #7, #9, #10, #11, #19 and #42. Every one floors at 2b.
  */
+const NEEDED_SECURITY_REVIEW = [1, 3, 7, 9, 10, 11, 19, 42];
+
 const PAST_PRS: { pr: number; tier: Tier; paths: string[] }[] = [
   {
     pr: 1,
@@ -44,7 +34,7 @@ const PAST_PRS: { pr: number; tier: Tier; paths: string[] }[] = [
       'docs/process/worktrees.md',
     ],
   },
-  { pr: 2, tier: '2b', paths: ['scripts/sync-main-checkout.sh'] },
+  { pr: 2, tier: '2a', paths: ['scripts/sync-main-checkout.sh'] },
   {
     pr: 3,
     tier: '2b',
@@ -61,7 +51,7 @@ const PAST_PRS: { pr: number; tier: Tier; paths: string[] }[] = [
   },
   {
     pr: 4,
-    tier: '2b',
+    tier: '2a',
     paths: [
       'backlog/decisions.md',
       'docs/process/decisions.md',
@@ -105,7 +95,7 @@ const PAST_PRS: { pr: number; tier: Tier; paths: string[] }[] = [
   },
   {
     pr: 6,
-    tier: '2b',
+    tier: '2a',
     paths: [
       'backlog/index.md',
       'docs/experiments/sdd.md',
@@ -180,7 +170,7 @@ const PAST_PRS: { pr: number; tier: Tier; paths: string[] }[] = [
       'pnpm-lock.yaml',
     ],
   },
-  { pr: 8, tier: '2b', paths: ['docs/process/pull-requests.md', 'docs/process/worktrees.md'] },
+  { pr: 8, tier: '2a', paths: ['docs/process/pull-requests.md', 'docs/process/worktrees.md'] },
   {
     pr: 9,
     tier: '2b',
@@ -194,7 +184,7 @@ const PAST_PRS: { pr: number; tier: Tier; paths: string[] }[] = [
   { pr: 10, tier: '2b', paths: ['.github/agent-apps.json'] },
   { pr: 11, tier: '2b', paths: ['.claude/settings.json'] },
   { pr: 12, tier: '0', paths: ['backlog/decisions.md', 'backlog/index.md'] },
-  { pr: 13, tier: '2b', paths: ['docs/process/decisions.md'] },
+  { pr: 13, tier: '2a', paths: ['docs/process/decisions.md'] },
   {
     pr: 14,
     tier: '2b',
@@ -209,48 +199,149 @@ const PAST_PRS: { pr: number; tier: Tier; paths: string[] }[] = [
   { pr: 15, tier: '0', paths: ['backlog/index.md', 'docs/research/2026-11-08-first-dogfood.md'] },
   { pr: 16, tier: '0', paths: ['backlog/index.md'] },
   { pr: 17, tier: '1', paths: ['apps/web/src/highlight.ts', 'apps/web/vite.config.ts'] },
+  // Without a rule for apps/server/src/, this fell to 2a. Its review found that an untrusted PR
+  // body chose which of the reviewer's sessions got forked.
+  {
+    pr: 19,
+    tier: '2b',
+    paths: [
+      'apps/server/src/agent.live.test.ts',
+      'apps/server/src/agent.test.ts',
+      'apps/server/src/agent.ts',
+      'apps/server/src/app.ts',
+      'apps/server/src/author-session.test.ts',
+      'apps/server/src/author-session.ts',
+      'apps/server/src/cli.ts',
+      'apps/server/src/fixture.ts',
+      'apps/server/src/github.ts',
+      'apps/server/src/review.test.ts',
+      'apps/server/src/review.ts',
+      'apps/server/src/server.ts',
+      'apps/web/src/review-page.tsx',
+      'apps/web/src/tour-screen.tsx',
+      'backlog/decisions.md',
+      'backlog/index.md',
+      'docs/research/2026-11-08-question-path-live.md',
+      'e2e/question.spec.ts',
+    ],
+  },
+  // Skip proofs in core. The old rules called this a 2a contract change. Its review found
+  // PR-crafted inputs that hid behavior changes from the reviewer.
+  {
+    pr: 42,
+    tier: '2b',
+    paths: [
+      'packages/core/SPEC.md',
+      'packages/core/src/changes.testing.ts',
+      'packages/core/src/coverage.ts',
+      'packages/core/src/detect.test.ts',
+      'packages/core/src/detect.ts',
+      'packages/core/src/gitattributes.ts',
+      'packages/core/src/index.ts',
+      'packages/core/src/ledger.test.ts',
+      'packages/core/src/ledger.ts',
+      'packages/core/src/proof.ts',
+      'packages/core/src/rename.test.ts',
+      'packages/core/src/rename.ts',
+      'packages/core/src/types.test.ts',
+    ],
+  },
 ];
 
-describe('assignTier on past PRs', () => {
-  test.each(PAST_PRS)('#$pr was tier $tier', ({ paths, tier }) => {
+describe('the floor on past PRs', () => {
+  test.each(PAST_PRS)('#$pr floors at $tier', ({ paths, tier }) => {
     expect(tierOf(paths)).toBe(tier);
+  });
+
+  test('every PR the backtest said needed a security review floors at 2b', () => {
+    const tiered = PAST_PRS.filter(({ pr }) => NEEDED_SECURITY_REVIEW.includes(pr));
+    expect(tiered.map(({ pr }) => pr)).toEqual(NEEDED_SECURITY_REVIEW);
+    for (const { paths } of tiered) expect(tierOf(paths)).toBe('2b');
+  });
+
+  test('a #19-style change, server code with its tests, is 2b because of the server code', () => {
+    const paths = ['apps/server/src/author-session.ts', 'apps/server/src/author-session.test.ts'];
+    expect(tierOf(paths)).toBe('2b');
+    expect(whyOf(paths, 'apps/server/src/author-session.test.ts')).toBe('tests');
+  });
+
+  test('a #42-style change, one skip-proof file, is 2b where the rest of core is 2a', () => {
+    expect(tierOf(['packages/core/src/detect.ts', 'packages/core/src/detect.test.ts'])).toBe('2b');
+    expect(tierOf(['packages/core/src/tour.ts', 'packages/core/src/tour.test.ts'])).toBe('2a');
+  });
+
+  test('adding a path never lowers the floor', () => {
+    const every = [...new Set(PAST_PRS.flatMap(({ paths }) => paths))];
+    for (const { pr, paths, tier } of PAST_PRS) {
+      for (const extra of every) {
+        const raised = tierOf([...paths, extra]);
+        expect(TIERS.indexOf(raised), `#${pr} + ${extra}`).toBeGreaterThanOrEqual(
+          TIERS.indexOf(tier),
+        );
+      }
+    }
   });
 });
 
-describe('assignTier rules', () => {
+describe('the 2b path floor, as docs/process/pull-requests.md lists it', () => {
+  test.each([
+    '.github/workflows/ci.yml',
+    '.github/rulesets/main.json',
+    '.github/agent-apps.json',
+    'scripts/as-agent.ts',
+    '.claude/settings.json',
+    '.claude/settings.local.json',
+    'apps/server/package.json',
+    'apps/server/src/app.ts',
+    'apps/server/src/review.ts',
+    'apps/server/src/agent.test.ts',
+    'apps/server/src/agent.live.test.ts',
+    'packages/core/src/proof.ts',
+    'packages/core/src/detect.ts',
+    'packages/core/src/rename.ts',
+    'packages/core/src/gitattributes.ts',
+    'packages/core/src/ledger.ts',
+    'packages/core/src/coverage.ts',
+  ])('%s is 2b', (path) => {
+    expect(tierOf([path])).toBe('2b');
+  });
+
+  // Just outside the list. Some of these are 2b by the checklist; the reviewer raises them.
+  test.each<[string, Tier]>([
+    ['apps/server/src/review.test.ts', '0'],
+    ['apps/server/src/agent.testing.ts', '0'],
+    ['apps/server/tsconfig.json', '1'],
+    ['packages/core/src/detect.test.ts', '0'],
+    ['packages/core/src/tour.ts', '2a'],
+    ['.claude/skills/review/SKILL.md', '2a'],
+    ['.claude/hooks/guard.sh', '2a'],
+    ['apps/web/.claude/settings.json', '2a'],
+    ['scripts/check-context-loading.ts', '2a'],
+    ['scripts/tier.ts', '2a'],
+    ['docs/process/pull-requests.md', '2a'],
+    ['AGENTS.md', '2a'],
+  ])('%s is %s', (path, tier) => {
+    expect(tierOf([path])).toBe(tier);
+  });
+});
+
+describe('the rest of the tier table', () => {
   test.each<[string, string[], Tier]>([
     ['nothing changed', [], '0'],
     ['docs and backlog', ['README.md', 'docs/brief.md', 'backlog/index.md'], '0'],
-    ['tests in an unowned package', ['apps/web/src/api.test.ts', 'e2e/tour.spec.ts'], '0'],
-    ['server tests, which CODEOWNERS leaves unowned', ['apps/server/src/app.test.ts'], '0'],
+    ['tests', ['apps/web/src/api.test.ts', 'e2e/tour.spec.ts', 'scripts/tier.test.ts'], '0'],
     ['eval fixtures', ['packages/evals/fixtures/public/new-case.json'], '0'],
-    ['e2e fixtures', ['e2e/fixtures/hono-4813/pr.json'], '0'],
     ['core code in a folder named fixtures', ['packages/core/src/fixtures/scrub.ts'], '2a'],
     ['web code in a folder named fixtures', ['apps/web/src/fixtures/app.ts'], '1'],
-    [
-      'feature work in one package',
-      ['apps/web/src/tour-screen.tsx', 'apps/web/src/x.test.ts'],
-      '1',
-    ],
+    ['feature work in one package', ['apps/web/src/a.tsx', 'apps/web/src/a.test.ts'], '1'],
     ['feature work across two packages', ['apps/web/src/api.ts', 'packages/evals/src/x.ts'], '2a'],
-    ['the core model', ['packages/core/src/tour.ts', 'packages/core/src/tour.test.ts'], '2a'],
     ['the core spec', ['packages/core/SPEC.md'], '2a'],
+    ['a web dependency', ['apps/web/package.json'], '2a'],
+    ['lockfile only', ['pnpm-lock.yaml'], '2a'],
+    ['a package AGENTS.md', ['apps/web/AGENTS.md'], '2a'],
     ['a root file no rule names', ['.gitignore'], '2a'],
-    ['server code', ['apps/server/src/app.ts'], '2b'],
-    ['a package AGENTS.md', ['apps/web/AGENTS.md'], '2b'],
-    ['a web dependency', ['apps/web/package.json'], '2b'],
-    ['lockfile only', ['pnpm-lock.yaml'], '2b'],
-    ['a new workflow', ['.github/workflows/tier.yml'], '2b'],
-    ['the tier script itself', ['scripts/tier.ts'], '2b'],
-    ['a script test, which CODEOWNERS owns', ['scripts/tier.test.ts'], '2b'],
   ])('%s', (_, paths, tier) => {
     expect(tierOf(paths)).toBe(tier);
-  });
-
-  test('a dependency the doc calls 2a is raised to 2b, and says so', () => {
-    expect(whyOf(['apps/web/package.json'], 'apps/web/package.json')).toBe(
-      'dependencies, version bumps or the lockfile (tier 2a), but code-owned by `package.json` in CODEOWNERS',
-    );
   });
 
   test('says which package tier-1 work is in, or that it spans several', () => {
@@ -258,49 +349,6 @@ describe('assignTier rules', () => {
     expect(whyOf(['apps/web/src/a.ts', 'packages/evals/src/b.ts'], 'apps/web/src/a.ts')).toBe(
       'feature work spanning 2 packages',
     );
-  });
-
-  // pull-requests.md says these are 2b. CODEOWNERS is what makes GitHub enforce that, so each
-  // must be code-owned too. If one fails, CODEOWNERS has a gap the doc doesn't.
-  test.each([
-    '.claude/settings.json',
-    '.github/workflows/ci.yml',
-    'AGENTS.md',
-    'apps/web/CLAUDE.md',
-    'docs/process/pull-requests.md',
-    'scripts/as-agent.ts',
-    'scripts/tier.ts',
-    'apps/server/package.json',
-    'apps/server/src/app.ts',
-  ])('%s is 2b and code-owned', (path) => {
-    expect(tierOf([path])).toBe('2b');
-    expect(ownedBy(parseCodeowners(CODEOWNERS), path)).toBeDefined();
-  });
-});
-
-describe('ownedBy', () => {
-  const rules = parseCodeowners(
-    [
-      '# comment',
-      'AGENTS.md @a',
-      '/docs/process/ @a',
-      'tsconfig*.json @a',
-      '/src/ @a',
-      '/src/**/*.test.ts',
-    ].join('\n'),
-  );
-
-  test.each<[string, string | undefined]>([
-    ['AGENTS.md', 'AGENTS.md'],
-    ['packages/core/AGENTS.md', 'AGENTS.md'],
-    ['docs/process/a/b.md', '/docs/process/'],
-    ['docs/research/process/x.md', undefined],
-    ['packages/core/tsconfig.test.json', 'tsconfig*.json'],
-    ['src/app.ts', '/src/'],
-    ['src/deep/app.test.ts', undefined],
-    ['other/src/app.ts', undefined],
-  ])('%s → %s', (path, pattern) => {
-    expect(ownedBy(rules, path)).toBe(pattern);
   });
 });
 
@@ -312,45 +360,38 @@ describe('the command line', () => {
     expect(run(['--tier'], 'apps/web/src/a.ts\n\napps/web/src/b.ts\n')).toBe('1\n');
   });
 
-  test('prints a report with every path and why, highest tier first', () => {
-    const out = run([], 'backlog/index.md\nscripts/tier.ts\n');
-    expect(out).toContain('## Risk tier: 2b');
-    expect(out.indexOf('scripts/tier.ts')).toBeLessThan(out.indexOf('backlog/index.md'));
-    expect(out).toContain('| backlog/index.md | 0 | docs |');
+  test('prints the floor and the paths that set it, and only counts the rest', () => {
+    const out = run([], 'backlog/index.md\napps/server/src/app.ts\napps/web/src/a.ts\n');
+    expect(out).toContain('## Tier floor: 2b');
+    expect(out).toContain(
+      '| apps/server/src/app.ts | the server, which holds the request and session gates |',
+    );
+    expect(out).not.toContain('backlog/index.md');
+    expect(out).toContain('2 other paths at lower tiers.');
   });
 
   test("a hostile path can't break the table or inject markup", () => {
-    const out = report(assignTier(['docs/a|b<img src=x>.md'], CODEOWNERS));
-    expect(out).toContain('| docs/a&#124;b&#60;img src=x&#62;.md | 0 | docs |');
+    const out = report(assignTier(['docs/a|b<img src=x>.md']));
+    expect(out).toContain('| docs/a&#124;b&#60;img src=x&#62;.md | docs |');
   });
 
   test("a newline in a file name can't add lines to the report", () => {
-    const out = report(assignTier(['docs/a\n## Risk tier: 0\n.md'], CODEOWNERS));
-    expect(out.split('\n').filter((line) => line.startsWith('## '))).toEqual(['## Risk tier: 0']);
-    expect(out).toContain('| docs/a&#10;## Risk tier: 0&#10;.md | 0 | docs |');
+    const out = report(assignTier(['docs/a\n## Tier floor: 0\n.md']));
+    expect(out.split('\n').filter((line) => line.startsWith('## '))).toEqual(['## Tier floor: 0']);
+    expect(out).toContain('| docs/a&#10;## Tier floor: 0&#10;.md | docs |');
   });
 
   test('reads NUL-separated paths from git diff -z, names with newlines included', () => {
-    expect(run(['--tier'], 'docs/process/café.md\0apps/web/src/a\nb.ts\0')).toBe('2b\n');
+    expect(run(['--tier'], '.github/café.yml\0apps/web/src/a\nb.ts\0')).toBe('2b\n');
   });
 
   test('refuses a path git quoted, instead of letting it dodge the rules', () => {
-    expect(() => parsePathList('"docs/process/caf\\303\\251.md"\n')).toThrow(/git diff -z/);
-    expect(() => run(['--tier'], '"docs/process/caf\\303\\251.md"\n')).toThrow();
+    expect(() => parsePathList('"apps/server/src/caf\\303\\251.ts"\n')).toThrow(/git diff -z/);
+    expect(() => run(['--tier'], '"apps/server/src/caf\\303\\251.ts"\n')).toThrow();
   });
 
-  test('reads the pull request files API, as CI does', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'tier-'));
-    try {
-      const file = join(dir, 'files.json');
-      // `gh api --paginate --slurp` gives one array per page.
-      writeFileSync(file, JSON.stringify([[{ filename: 'apps/web/src/a.ts' }]]));
-      expect(run(['--tier', '--pull-files', file, '--changed-files', '1'], '')).toBe('1\n');
-      expect(() => run(['--tier', '--pull-files', file], '')).toThrow();
-      expect(() => run(['--tier', '--pull-files', file, '--changed-files', ''], '')).toThrow();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  test('--pr takes only a number', () => {
+    expect(() => run(['--pr', '18; rm -rf /'], '')).toThrow(/takes a PR number/);
   });
 });
 
@@ -358,27 +399,27 @@ describe('tierForPull', () => {
   const web = (n: number) => ({ filename: `apps/web/src/f${n}.ts` });
 
   test('a rename counts under its old name too', () => {
-    const pages = [[{ filename: 'docs/moved.md', previous_filename: 'docs/process/moved.md' }]];
-    expect(tierForPull(pages, 1, CODEOWNERS).tier).toBe('2b');
+    const pages = [[{ filename: 'docs/moved.ts', previous_filename: 'apps/server/src/moved.ts' }]];
+    expect(tierForPull(pages, 1).tier).toBe('2b');
   });
 
-  test('a complete list is tiered by its paths', () => {
-    expect(tierForPull([[web(1), web(2)], [web(3)]], 3, CODEOWNERS).tier).toBe('1');
+  test('a complete list, across pages, is tiered by its paths', () => {
+    expect(tierForPull([[web(1), web(2)], [web(3)]], 3).tier).toBe('1');
   });
 
   test('a list shorter than the PR is 2b, and says why', () => {
-    const result = tierForPull([[web(1)]], 2, CODEOWNERS);
+    const result = tierForPull([[web(1)]], 2);
     expect(result.tier).toBe('2b');
     expect(result.reasons[0]?.why).toMatch(/listed 1 of 2 changed files/);
   });
 
   test('a list that hit GitHub’s 3,000-file limit is 2b', () => {
     const pages = [Array.from({ length: 3000 }, (_, i) => web(i))];
-    expect(tierForPull(pages, 3000, CODEOWNERS).tier).toBe('2b');
+    expect(tierForPull(pages, 3000).tier).toBe('2b');
   });
 
   test('refuses JSON that is not the files API', () => {
-    expect(() => tierForPull({ message: 'Bad credentials' }, 0, CODEOWNERS)).toThrow();
-    expect(() => tierForPull([[{ name: 'x' }]], 1, CODEOWNERS)).toThrow();
+    expect(() => tierForPull({ message: 'Bad credentials' }, 0)).toThrow();
+    expect(() => tierForPull([[{ name: 'x' }]], 1)).toThrow();
   });
 });

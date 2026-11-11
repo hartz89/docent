@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { api, followTour } from './api.ts';
 import { HealthPage } from './health-page.tsx';
 import { StatusScreen } from './status-screen.tsx';
+import { ThemeToggle } from './theme.tsx';
 import { TourScreen } from './tour-screen.tsx';
 
 export type Snapshot = ReviewSnapshot;
@@ -23,6 +24,12 @@ export function ReviewPage() {
   const [tour, setTour] = useState<TourState | null>(null);
 
   const data = snapshot.data;
+  // The tab names the PR, "Title · Docent", the usual "page · site" order, so tabs stay
+  // distinguishable when several reviews are open. Until the PR is read, it's just "Docent".
+  const prTitle = data?.pr?.title;
+  useEffect(() => {
+    document.title = prTitle ? `${prTitle} · Docent` : 'Docent';
+  }, [prTitle]);
   useEffect(() => {
     if (!data) return;
     if (data.tour.state !== 'working') {
@@ -48,6 +55,12 @@ export function ReviewPage() {
   useEffect(() => {
     if (missingPr && tour && !stillReading) void refetch();
   }, [missingPr, tour, stillReading, refetch]);
+  // Who answers questions is settled by the time the tour is ready; fetch it then if we missed it.
+  const unknownAuthor = data !== undefined && data !== null && data.author === null;
+  const isReady = tour?.state === 'ready';
+  useEffect(() => {
+    if (unknownAuthor && isReady) void refetch();
+  }, [unknownAuthor, isReady, refetch]);
 
   if (snapshot.isPending) return <div className="app" />;
   if (snapshot.isError) {
@@ -83,6 +96,7 @@ function TopBarShell({ snapshot }: { snapshot: Snapshot }) {
           </div>
         )}
       </div>
+      <ThemeToggle />
     </header>
   );
 }

@@ -1,17 +1,17 @@
-// Assigns a PR's risk tier (0, 1, 2a or 2b) from the paths it changes.
-// The rules are the tier table in docs/process/pull-requests.md, plus one floor: a path that
-// .github/CODEOWNERS gives an owner is 2b, because GitHub makes it wait for the maintainer anyway.
-// Run: git diff -z --name-only --no-renames origin/main...HEAD | node scripts/tier.ts [--tier]
-// It prints a markdown report, or with --tier just the tier. CI runs it on every PR
-// (.github/workflows/tier.yml) with --pull-files <file> --changed-files <n> instead of stdin,
-// and labels the PR with the result.
+// The path floor for a PR's risk tier (0, 1, 2a or 2b). The reviewer agent decides the tier,
+// using the 2b checklist in docs/process/pull-requests.md. This script gives the lowest tier the
+// PR can have, from the paths it changes, so the reviewer can raise the tier above it but never
+// set it lower. Paths can't see everything (a backtest found core logic that hides lines from
+// the reviewer, which only the checklist catches), so the floor never settles a tier on its own.
 //
-// Paths can't show a comments-only or formatting-only change, or a contract change that touches
-// scrubbing, so the result is a floor: people and agents may raise it, never lower it.
-// Changing these rules is tier 2b, and this file is code-owned.
+// Run, as the reviewer:
+//   node scripts/tier.ts --pr <number>      reads the PR's files with `gh api` (GET only)
+//   git diff -z --name-only --no-renames origin/main...HEAD | node scripts/tier.ts
+// It prints the floor and the paths that set it. Add --tier to print just the tier.
 
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename } from 'node:path';
 import { parseArgs } from 'node:util';
 
 const TIERS = ['0', '1', '2a', '2b'] as const;
@@ -35,26 +35,51 @@ const isTest = (path: string) =>
   path.startsWith('e2e/') ||
   path.startsWith('packages/evals/fixtures/');
 
+/** Server tests that pin the read-only session options. They're part of the gate. */
+const PINNING_TESTS = new Set([
+  'apps/server/src/agent.test.ts',
+  'apps/server/src/agent.live.test.ts',
+]);
+
+/** Core logic that decides which lines of a PR the reviewer never sees. */
+const SKIP_PROOFS = new Set(
+  ['proof', 'detect', 'rename', 'gitattributes', 'ledger', 'coverage'].map(
+    (name) => `packages/core/src/${name}.ts`,
+  ),
+);
+
 /**
- * The tier table from docs/process/pull-requests.md, as path rules. The first rule that matches
- * a path decides it. Order matters: harness and contract rules come before the docs and tests
- * rules, so `packages/core/SPEC.md` is a contract and `apps/web/AGENTS.md` is harness.
+ * Path rules. The first rule that matches a path decides it. The 2b rules are the path floor in
+ * docs/process/pull-requests.md, exactly; keep them in step. The rest follow the tier table.
+ * Order matters: 2b and harness rules come before the docs and tests rules, so
+ * `apps/server/src/agent.test.ts` is 2b and `apps/web/AGENTS.md` is harness.
  */
 const RULES: { tier: Tier; why: string; matches: (path: string) => boolean }[] = [
-  { tier: '2b', why: 'permissions and settings', matches: (p) => p.startsWith('.claude/') },
-  { tier: '2b', why: 'CI, releases and repo rules', matches: (p) => p.startsWith('.github/') },
+  { tier: '2b', why: 'CI, the ruleset and repo rules', matches: (p) => p.startsWith('.github/') },
+  { tier: '2b', why: 'the agent runner', matches: (p) => p === 'scripts/as-agent.ts' },
   {
     tier: '2b',
-    why: 'the agent harness',
-    matches: (p) =>
-      ['AGENTS.md', 'CLAUDE.md'].includes(basename(p)) || p.startsWith('docs/process/'),
+    why: 'permission rules and hooks',
+    matches: (p) => /^\.claude\/settings[^/]*\.json$/.test(p),
   },
-  { tier: '2b', why: 'agent identities', matches: (p) => p === 'scripts/as-agent.ts' },
-  { tier: '2b', why: 'the tier rules themselves', matches: (p) => p === 'scripts/tier.ts' },
   {
     tier: '2b',
     why: 'dependencies used by apps/server',
     matches: (p) => p === 'apps/server/package.json',
+  },
+  {
+    tier: '2b',
+    why: 'the server, which holds the request and session gates',
+    matches: (p) => p.startsWith('apps/server/src/') && (!isTest(p) || PINNING_TESTS.has(p)),
+  },
+  { tier: '2b', why: 'skip proofs: what the reviewer sees', matches: (p) => SKIP_PROOFS.has(p) },
+  {
+    tier: '2a',
+    why: 'the agent harness',
+    matches: (p) =>
+      /(^|\/)\.claude\//.test(p) ||
+      ['AGENTS.md', 'CLAUDE.md'].includes(basename(p)) ||
+      p.startsWith('docs/process/'),
   },
   {
     tier: '2a',
@@ -77,66 +102,13 @@ const UNNAMED: { tier: Tier; why: string } = {
   why: 'outside any package, and no rule names it',
 };
 
-type OwnerRule = { pattern: string; owners: string[]; regex: RegExp };
-
-/** Turns one CODEOWNERS pattern (gitignore-style, as GitHub reads it) into a regex. */
-function patternRegex(pattern: string): RegExp {
-  // A leading slash, or a slash in the middle, anchors the pattern at the repo root.
-  const anchored = pattern.startsWith('/') || pattern.slice(0, -1).includes('/');
-  const dirOnly = pattern.endsWith('/');
-  const glob = pattern.replace(/^\//, '').replace(/\/$/, '');
-  let body = '';
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob.charAt(i);
-    if (glob.startsWith('**/', i)) {
-      body += '(?:.*/)?';
-      i += 2;
-    } else if (glob.startsWith('**', i)) {
-      body += '.*';
-      i += 1;
-    } else if (c === '*') {
-      body += '[^/]*';
-    } else if (c === '?') {
-      body += '[^/]';
-    } else {
-      body += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-    }
-  }
-  // A pattern that names a folder covers everything inside it.
-  const end = dirOnly ? '/.*$' : '(?:/.*)?$';
-  return new RegExp(`${anchored ? '^' : '^(?:.*/)?'}${body}${end}`);
-}
-
-export function parseCodeowners(text: string): OwnerRule[] {
-  return text
-    .split('\n')
-    .map((line) => line.replace(/#.*/, '').trim())
-    .filter((line) => line !== '')
-    .map((line) => {
-      const [pattern = '', ...owners] = line.split(/\s+/);
-      return { pattern, owners, regex: patternRegex(pattern) };
-    });
-}
-
-/** The CODEOWNERS pattern that gives this path an owner, if any. The last matching line wins. */
-export function ownedBy(rules: readonly OwnerRule[], path: string): string | undefined {
-  const last = rules.findLast((rule) => rule.regex.test(path));
-  return last !== undefined && last.owners.length > 0 ? last.pattern : undefined;
-}
-
-/** The tier for a set of changed paths, with the reason each path landed where it did. */
-export function assignTier(paths: readonly string[], codeowners: string): TierResult {
-  const owners = parseCodeowners(codeowners);
+/**
+ * The floor for a set of changed paths, with the reason each path landed where it did. The floor
+ * is the highest tier any path reaches, so adding a path can only raise it.
+ */
+export function assignTier(paths: readonly string[]): TierResult {
   const reasons = [...new Set(paths)].map((path): Reason => {
     const rule = RULES.find((r) => r.matches(path)) ?? UNNAMED;
-    const owned = ownedBy(owners, path);
-    if (owned !== undefined && rule.tier !== '2b') {
-      return {
-        path,
-        tier: '2b',
-        why: `${rule.why} (tier ${rule.tier}), but code-owned by \`${owned}\` in CODEOWNERS`,
-      };
-    }
     return { path, tier: rule.tier, why: rule.why };
   });
 
@@ -161,12 +133,12 @@ const LIST_LIMIT = 3000;
 type PullFile = { filename: string; previous_filename?: string };
 
 /**
- * The tier for a PR, from GitHub's list of its files (`gh api --paginate --slurp
+ * The floor for a PR, from GitHub's list of its files (`gh api --paginate --slurp
  * repos/<repo>/pulls/<n>/files`) and its `changed_files` count. A renamed file counts under both
  * names: moving a file out of a 2b folder is 2b. If the list is incomplete, the files it left out
  * could be anything, so the PR is 2b.
  */
-export function tierForPull(pages: unknown, changedFiles: number, codeowners: string): TierResult {
+export function tierForPull(pages: unknown, changedFiles: number): TierResult {
   const files: unknown[] = Array.isArray(pages) ? pages.flat() : [];
   if (!Array.isArray(pages) || !files.every(isPullFile)) {
     throw new Error('expected the JSON from the pull request files API');
@@ -174,7 +146,7 @@ export function tierForPull(pages: unknown, changedFiles: number, codeowners: st
   const paths = files.flatMap((f) =>
     f.previous_filename === undefined ? [f.filename] : [f.filename, f.previous_filename],
   );
-  const result = assignTier(paths, codeowners);
+  const result = assignTier(paths);
   if (files.length === changedFiles && files.length < LIST_LIMIT) return result;
   const unlisted: Reason = {
     path: '(files GitHub did not list)',
@@ -191,6 +163,16 @@ function isPullFile(value: unknown): value is PullFile {
     typeof filename === 'string' &&
     (previous_filename === undefined || typeof previous_filename === 'string')
   );
+}
+
+/** Reads a PR's files and file count from GitHub, for the current repo. GET requests only. */
+function fetchPull(pr: string): TierResult {
+  const gh = (...args: string[]) => execFileSync('gh', ['api', ...args], { encoding: 'utf8' });
+  const changed = Number(gh(`repos/{owner}/{repo}/pulls/${pr}`, '--jq', '.changed_files'));
+  const pages: unknown = JSON.parse(
+    gh('--paginate', '--slurp', `repos/{owner}/{repo}/pulls/${pr}/files`),
+  );
+  return tierForPull(pages, changed);
 }
 
 /**
@@ -210,48 +192,42 @@ export function parsePathList(text: string): string[] {
   return paths;
 }
 
-/** Keeps a path from breaking the markdown table, or injecting markup into the CI summary. */
+/** Keeps a path from breaking the markdown table, or injecting markup into a pasted review. */
 const escapeCell = (text: string) => text.replace(/[|<>&`\\\r\n]/g, (c) => `&#${c.charCodeAt(0)};`);
 
+/** The floor, and the paths that set it. Paths at lower tiers are only counted. */
 export function report({ tier, reasons }: TierResult): string {
-  const rows = [...reasons]
-    .sort((a, b) => rank(b.tier) - rank(a.tier) || a.path.localeCompare(b.path))
-    .map((r) => `| ${escapeCell(r.path)} | ${r.tier} | ${r.why.replaceAll('|', '\\|')} |`);
+  const setBy = reasons
+    .filter((r) => r.tier === tier)
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map((r) => `| ${escapeCell(r.path)} | ${r.why.replaceAll('|', '\\|')} |`);
+  const lower = reasons.length - setBy.length;
   return [
-    `## Risk tier: ${tier}`,
+    `## Tier floor: ${tier}`,
     '',
-    'From the changed paths, by the rules in `docs/process/pull-requests.md`. The highest path wins.',
-    "Paths can't show comments-only changes or what a contract touches, so this is a floor:",
-    'raise it in the description when you know better, never lower it.',
+    'The lowest tier this PR can have, from the paths it changes. Decide the tier with the 2b',
+    'checklist in `docs/process/pull-requests.md`. You may raise it above this floor, never lower it.',
     '',
-    '| Path | Tier | Why |',
-    '| --- | --- | --- |',
-    ...rows,
+    ...(setBy.length === 0
+      ? ['No paths changed.']
+      : [`Set by:`, '', '| Path | Why |', '| --- | --- |', ...setBy]),
+    ...(lower > 0 ? ['', `${lower} other path${lower === 1 ? '' : 's'} at lower tiers.`] : []),
     '',
   ].join('\n');
 }
 
 if (import.meta.main) {
   const { values } = parseArgs({
-    options: {
-      tier: { type: 'boolean', default: false },
-      'pull-files': { type: 'string' },
-      'changed-files': { type: 'string' },
-    },
+    options: { tier: { type: 'boolean', default: false }, pr: { type: 'string' } },
   });
-  const codeowners = readFileSync(join(import.meta.dirname, '..', '.github', 'CODEOWNERS'), 'utf8');
   try {
     let result: TierResult;
-    if (values['pull-files'] === undefined) {
-      result = assignTier(parsePathList(readFileSync(0, 'utf8')), codeowners);
+    if (values.pr === undefined) {
+      result = assignTier(parsePathList(readFileSync(0, 'utf8')));
+    } else if (/^\d+$/.test(values.pr)) {
+      result = fetchPull(values.pr);
     } else {
-      const count = values['changed-files'] ?? '';
-      const changed = Number(count);
-      if (!/^\d+$/.test(count) || !Number.isSafeInteger(changed)) {
-        throw new Error('--pull-files needs --changed-files <n>, the PR changed_files count');
-      }
-      const pages: unknown = JSON.parse(readFileSync(values['pull-files'], 'utf8'));
-      result = tierForPull(pages, changed, codeowners);
+      throw new Error(`--pr takes a PR number, not ${JSON.stringify(values.pr)}`);
     }
     process.stdout.write(values.tier ? `${result.tier}\n` : report(result));
   } catch (error) {

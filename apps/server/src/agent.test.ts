@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { costRecord, readOnlyOptions } from './agent.ts';
+import { costRecord, readOnlyOptions, sdkRunner } from './agent.ts';
 
 describe('the guide session is read-only', () => {
   test('pins the exact options that keep the session read-only', () => {
@@ -31,6 +31,35 @@ describe('the guide session is read-only', () => {
       outputFormat: { type: 'json_schema', schema: { type: 'object' } },
       tools: ['Read', 'Grep', 'Glob'],
       permissionMode: 'dontAsk',
+    });
+  });
+
+  test('a call whose signal is already aborted never starts', async () => {
+    // An abort listener added now would never fire, leaving the session with no time limit.
+    await expect(
+      sdkRunner({
+        job: 'question',
+        prompt: 'never sent',
+        cwd: '/nowhere',
+        model: 'claude-test',
+        signal: AbortSignal.abort(new Error('deadline passed')),
+      }),
+    ).rejects.toThrow('deadline passed');
+  });
+
+  test('a caller can lower or raise the spending cap', () => {
+    expect(
+      readOnlyOptions({ cwd: '/checkout', model: 'claude-test', maxBudgetUsd: 5 }).maxBudgetUsd,
+    ).toBe(5);
+  });
+
+  test("forks the author's session with the same sandbox, and saves no copy", () => {
+    // Fork, never resume in place: a resume would append to the author's own transcript.
+    expect(readOnlyOptions({ cwd: '/checkout', model: 'claude-test', fork: 'author-1' })).toEqual({
+      ...readOnlyOptions({ cwd: '/checkout', model: 'claude-test' }),
+      resume: 'author-1',
+      forkSession: true,
+      persistSession: false,
     });
   });
 });

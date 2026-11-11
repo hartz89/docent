@@ -3,7 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
     <title>Docent</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      // Set the theme before the first paint, so the page never flashes the wrong one. The
+      // same rule as src/theme.tsx: a saved choice, or else the system setting. The server sends
+      // no Content-Security-Policy today; if it ever does, this script needs a hash or nonce.
+      (() => {
+        let saved = null;
+        try {
+          saved = localStorage.getItem('docent:theme');
+        } catch {}
+        const light = matchMedia('(prefers-color-scheme: light)').matches;
+        document.documentElement.dataset.theme =
+          saved === 'light' || saved === 'dark' ? saved : light ? 'light' : 'dark';
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
