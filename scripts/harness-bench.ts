@@ -262,10 +262,18 @@ export function runTask(
     if (task.writes) {
       // Bash always runs in Claude Code's sandbox: writes only inside the copy, and no network.
       // allowUnsandboxedCommands: false stops the model from retrying a command outside it.
-      const sandbox = {
+      // Installed packages are read-only too: the change check skips them, and graders run them
+      // outside the sandbox. The sandbox applies Edit deny rules to Bash writes as well.
+      const settings = {
         sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false },
+        permissions: { deny: ['Edit(./node_modules/**)', 'Edit(./**/node_modules/**)'] },
       };
-      args.push('--settings', JSON.stringify(sandbox), '--tools', 'Read,Grep,Glob,Edit,Write,Bash');
+      args.push(
+        '--settings',
+        JSON.stringify(settings),
+        '--tools',
+        'Read,Grep,Glob,Edit,Write,Bash',
+      );
       args.push('--allowedTools', 'Edit(./**)', 'Write(./**)');
       args.push('--disallowedTools', 'Bash(git push:*)', 'Bash(gh:*)');
       args.push('Bash(node scripts/as-agent.ts:*)');
@@ -366,6 +374,12 @@ function main(): number {
 
   // No session may take more than twice its fair share, so one runaway can't starve the rest.
   const sessionCap = (2 * maxUsd) / (runs * selected.length * harnesses.length);
+  if (sessionCap < 0.05) {
+    console.error(
+      `$${maxUsd} is too little for this many sessions. Raise --max-usd or lower --runs.`,
+    );
+    return 2;
+  }
   const outcomes: Outcome[] = [];
   const skipped: string[] = [];
   let spent = 0;
