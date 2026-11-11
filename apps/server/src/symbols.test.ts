@@ -211,6 +211,11 @@ describe('GET /api/definition', () => {
     const { index } = await definition(capped.api, { symbol: 'helper' });
     expect(index).toMatchObject({ state: 'partial', reason: 'files' });
     expect(index.files).toBeLessThanOrEqual(2);
+    // The total of definitions, imports and exports is capped too, for memory.
+    const dense = await serve({ entries: 4 });
+    const denseIndex = (await definition(dense.api, { symbol: 'helper' })).index;
+    expect(denseIndex).toMatchObject({ state: 'partial', reason: 'entries' });
+    expect(denseIndex.files).toBeLessThan(6);
     const timed = await serve({ ms: -1 });
     expect(await definition(timed.api, { symbol: 'helper' })).toMatchObject({
       candidates: [],

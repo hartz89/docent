@@ -19,6 +19,8 @@ export type IndexLimits = {
   ms: number;
   /** Time for one file; a slower one is skipped. */
   fileMs: number;
+  /** Definitions, imports and exports held in all, which bounds the index's memory. */
+  entries: number;
 };
 
 export const INDEX_LIMITS: IndexLimits = {
@@ -27,11 +29,12 @@ export const INDEX_LIMITS: IndexLimits = {
   totalBytes: 64 * 1024 * 1024,
   ms: 20_000,
   fileMs: 1_000,
+  entries: 500_000,
 };
 
 /** Why an index stopped early. */
 /** `wary`: files kept breaking the parser, so larger ones after them were skipped. */
-export type PartialReason = 'time' | 'files' | 'bytes' | 'listing' | 'wary';
+export type PartialReason = 'time' | 'files' | 'bytes' | 'entries' | 'listing' | 'wary';
 
 /**
  * How much of the repo the index covers. `skipped` counts files in a known language that weren't
@@ -122,6 +125,7 @@ export async function buildIndex(
   );
   const parser = new ParserWorker();
   let strikes = 0;
+  let entries = 0;
   try {
     for await (const { path, text } of head.read(toRead, stop.signal)) {
       read++;
@@ -145,7 +149,19 @@ export async function buildIndex(
       const ms = wary ? limits.fileMs / 4 : limits.fileMs;
       const began = Date.now();
       const parsed = await parser.parse(path, language, text, ms, deadline);
-      if (parsed) symbols.set(path, parsed);
+      if (parsed) {
+        entries +=
+          parsed.definitions.length +
+          parsed.imports.length +
+          parsed.exports.length +
+          parsed.exportsAll.length;
+        // Many small, dense files could otherwise hold hundreds of MB between them.
+        if (entries > limits.entries) {
+          reason ??= 'entries';
+          break;
+        }
+        symbols.set(path, parsed);
+      }
       if (!parsed || Date.now() - began > limits.fileMs / 2) strikes++;
     }
   } finally {
