@@ -817,7 +817,7 @@ describe('POST /api/review/submit', () => {
     const third = await post(app, { event: 'COMMENT', body: 'One more thing' });
 
     // Either racing submit may win; exactly one of them posts.
-    expect([first.status, second.status].sort()).toEqual([200, 409]);
+    expect([first.status, second.status].sort((a, b) => a - b)).toEqual([200, 409]);
     expect(third.status).toBe(409);
     expect(github.posted).toHaveLength(1);
   });

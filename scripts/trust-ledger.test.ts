@@ -124,6 +124,15 @@ describe('the trust ledger, from recorded GitHub history', () => {
     );
   });
 
+  test("a review he leaves after the merge doesn't mean the PR waited for him", () => {
+    const saved = snapshot();
+    const path = `${R}/issues/1/timeline?per_page=100&page=1`;
+    saved[path] = (saved[path] as Record<string, unknown>[]).map((e) =>
+      e.event === 'reviewed' ? { ...e, submitted_at: '2026-12-01T00:00:00Z' } : e,
+    );
+    expect(prIn(ledger(saved), 1).waitedForMaintainer).toBe(false);
+  });
+
   test('escalations and PRs closed without merging', () => {
     const saved = snapshot();
     recordedPull(saved, 42).merged_at = null;
@@ -163,6 +172,7 @@ describe('reading review and PR text', () => {
     ['Approving. I found no real bugs.', false],
     ['### Must fix\n\nNone.\n\n### Nits\n\n1. A typo.', false],
     ['**Should-fix items:** none.', false],
+    ['### Should fix\n\nNone of the tests cover the new branch.', true],
     ['Fresh-context review. No bugs found; approving.', false],
   ])('reportsProblem(%j) is %s', (text, expected) => {
     expect(reportsProblem(text)).toBe(expected);

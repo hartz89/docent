@@ -212,7 +212,7 @@ export function reportsProblem(text: string): boolean {
         .at(-1) ?? '';
     // An empty section, as in "### Must fix\n\nNone." or "Should-fix items: none".
     const after = text.slice(m.index + m[0].length);
-    const emptySection = /^[^\w]*(?:items?|findings?)?[^\w]*none\b/i.test(after);
+    const emptySection = /^[^\w]*(?:items?|findings?)?[^\w]*none[.!*\s]*(?:\n|$)/i.test(after);
     if (!/\b(?:no|not|nothing|without)\b/i.test(sentence) && !emptySection) return true;
   }
   return false;
@@ -250,12 +250,16 @@ export function buildLedger(gh: Gh, backtest: Record<string, Tier> = loadBacktes
     const closedUnmerged = pull.state === 'closed' && !pull.merged_at;
     // Merging isn't a signal: before the agent apps existed (#1 to #11), agents merged
     // through the maintainer's login.
+    // Only events before the merge count: a review he leaves on a merged PR didn't hold it up.
+    const mergedAt = pull.merged_at;
+    const beforeMerge = (e: ApiEvent) => !mergedAt || timeOf(e) < mergedAt;
     const waitedForMaintainer =
       !!escalation ||
       events.some(
         (e) =>
-          (e.event === 'review_requested' && isMaintainer(e.requested_reviewer?.login)) ||
-          (e.event === 'reviewed' && isMaintainer(loginOf(e)) && !isAgentReview(e)),
+          beforeMerge(e) &&
+          ((e.event === 'review_requested' && isMaintainer(e.requested_reviewer?.login)) ||
+            (e.event === 'reviewed' && isMaintainer(loginOf(e)) && !isAgentReview(e))),
       );
 
     return {
@@ -404,7 +408,7 @@ function table(groupName: string, groups: [string, Pr[]][]): string {
     const r = rowFor(members);
     if (r.merged === 0) continue;
     lines.push(
-      `| ${name} | ${r.merged} | ${r.escapes} | ${pct(r.escapes, r.merged)} | ${r.reviewed} | ${r.flagged} | ${r.caughtEscapes} of ${r.reviewedEscapes} | ${r.cleanRun} |`,
+      `| ${name} | ${r.merged} | ${r.escapes} | ${pct(r.escapes, r.merged)} | ${r.reviewed} | ${r.flagged} | ${r.reviewedEscapes === 0 ? '–' : `${r.caughtEscapes} of ${r.reviewedEscapes}`} | ${r.cleanRun} |`,
     );
   }
   return lines.join('\n');
