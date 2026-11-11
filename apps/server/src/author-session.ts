@@ -62,13 +62,14 @@ const NO_MATCH = "The linked session doesn't match this PR";
  * Finds the author session among this machine's Claude Code transcripts.
  * - An explicit id (`docent review --session <id>`) wins. It must exist on this machine. The
  *   reviewer chose it, so it isn't checked against the PR.
- * - Then the records Docent's Claude Code hook writes (packages/claude-code). They can name the
- *   subagent that wrote the code, which a link can't. See `fromRecords`.
  * - Otherwise, a session link in the PR. Links are public, so anyone can paste one into a PR,
  *   and a link alone never picks a session. The link names the session on claude.ai, and the
  *   local transcript records it when remote control starts. That transcript is the author's
- *   only if it is also tied to this PR (see `matchesPr`). Links are tried in order: the PR
- *   body's first, then the commits', newest first.
+ *   only if it is also tied to this PR (see `matchesPr`), or if one of its own subagents is,
+ *   with proof that the subagent did the PR's work (see `fromRecords`, which needs the records
+ *   Docent's Claude Code hook writes). A proven subagent answers in place of its session: it
+ *   wrote the code. Links are tried in order: the PR body's first, then the commits', newest
+ *   first.
  */
 export function localSessions(
   options: {
@@ -101,20 +102,11 @@ export function localSessions(
       };
     }
 
-    const linked = await fromLinks(handoff, transcripts, repoOf);
-    // Records are only consulted when the head branch is in the PR's own repo, as links are.
-    // When the PR's link finds its session, a record can only narrow that down to one of the
-    // session's own subagents, never pick a different session.
-    if (handoff.headInBaseRepo) {
-      const recorded = await fromRecords(handoff, {
-        projectsDir,
-        dataDir,
-        repoOf,
-        within: linked.found ? linked.id : null,
-      });
-      if (recorded) return recorded;
-    }
-    return linked;
+    // Records only look inside a session the PR's link names. They never pick a session on
+    // their own.
+    return fromLinks(handoff, transcripts, repoOf, (within) =>
+      fromRecords(handoff, { projectsDir, dataDir, repoOf, within }),
+    );
   };
 }
 
@@ -126,6 +118,8 @@ async function fromLinks(
   handoff: Handoff,
   transcripts: readonly Transcript[],
   repoOf: (dir: string) => Promise<string | null>,
+  /** The linked session's subagent that wrote the PR, proven, or null. */
+  subagentOf: (session: SessionId) => Promise<AuthorSession | null>,
 ): Promise<AuthorSession> {
   const links = [
     ...(handoff.body.match(SESSION_LINK) ?? []),
@@ -144,6 +138,8 @@ async function fromLinks(
       .filter((c) => c.link === link)
       .sort((a, b) => a.firstSeen.localeCompare(b.firstSeen));
     for (const candidate of forLink) {
+      const subagent = await subagentOf(candidate.id);
+      if (subagent) return subagent;
       const summary = await summarize(candidate.path);
       if (!(await matchesPr(summary, handoff, repoOf))) continue;
       return {
@@ -190,21 +186,23 @@ const MAX_RECORDS = 2000;
 const MAX_RECORD_BYTES = 16 * 1024;
 
 /**
- * Finds the author session through the hook's records.
+ * Narrows the linked author session down to the subagent of it that wrote the code, through the
+ * hook's records. Subagents usually write the code, and no link names them.
  *
- * A record only says where to look: anything that can write to Docent's data folder can write
- * one, so nothing in it is trusted. Each candidate is proved from Claude Code's own transcript,
- * the same way a linked session is:
- * - The transcript is under the projects folder, at the path Claude Code uses for that session
- *   or subagent id, and its own records carry those ids.
+ * Only subagents of `within`, the session the PR's link names (its own `bridge_status` record),
+ * are considered, so a record can never bring in a different session. A record only says where to
+ * look: anything that can write Docent's data folder can write one. Each subagent is proved from
+ * Claude Code's own transcript:
+ * - The transcript is under the projects folder, at the path Claude Code uses for that subagent
+ *   id, and its own records carry those ids.
  * - One of those records shows it on the PR's head branch, in a checkout whose origin is the
- *   PR's repo (`matchesPr`).
- * - It did work in the PR: one of its own tool results shows a commit or push of one of the PR's
- *   commits. That's what a link alone never shows, so this route needs no link.
+ *   PR's repo (`matchesPr`, as for the linked session).
+ * - It did work in the PR: one of its own `git commit` or `git push` commands printed one of the
+ *   PR's commits (see `addCommitted`).
  *
- * Among the proven ones, the session that committed or pushed the newest PR commit wins: it
- * wrote the code last and knows it best. A tie goes to a subagent, which wrote the code, over
- * the coordinator that only delegated it, then to the latest active.
+ * Among the proven subagents, the one behind the newest PR commit wins; it wrote the code last.
+ * Then evidence by SHA beats evidence by subject, then the later subagent. With no proven
+ * subagent, the linked session stands.
  */
 async function fromRecords(
   handoff: Handoff,
@@ -212,107 +210,118 @@ async function fromRecords(
     projectsDir: string;
     dataDir: string;
     repoOf: (dir: string) => Promise<string | null>;
-    /** Only this session and its subagents, when the PR's link already found the session. */
-    within: SessionId | null;
+    within: SessionId;
   },
 ): Promise<AuthorSession | null> {
   const records = (await readRecords(options.dataDir)).filter(
     (r) =>
-      r.repo.toLowerCase() === handoff.repo.toLowerCase() &&
-      (options.within === null || r.sessionId === options.within),
+      r.agentId !== null &&
+      r.sessionId === options.within &&
+      r.repo.toLowerCase() === handoff.repo.toLowerCase(),
   );
   if (records.length === 0 || handoff.commitShas.length === 0) return null;
   const projectsRoot = await realpath(options.projectsDir).catch(() => null);
   if (!projectsRoot) return null;
 
-  let best: { record: SessionRecord; path: string; summary: Summary; newest: number } | null = null;
+  let best: Ranked | null = null;
   // A transcript that never names the head branch can't pass `matchesPr`: skip it unparsed.
   const onBranch = `"gitBranch":${JSON.stringify(handoff.headRef)}`;
   for (const record of records) {
     const path = await transcriptFor(record, projectsRoot);
     if (!path || !(await mentions(path, onBranch))) continue;
     const summary = await summarize(path, (entry) => ownsEntry(entry, record));
-    const newest = newestCommit(summary.committed, handoff);
-    if (newest < 0) continue;
+    const found = evidence(summary.committed, handoff);
+    if (!found) continue;
     if (!(await matchesPr(summary, handoff, options.repoOf))) continue;
-    const candidate = { record, path, summary, newest };
+    const candidate = { record, path, summary, ...found };
     if (!best || ranksAbove(candidate, best)) best = candidate;
   }
   if (!best) return null;
 
   const { record, path, summary } = best;
-  if (record.agentId === null) {
-    return {
-      found: true,
-      id: sessionId(record.sessionId),
-      cwd: summary.lastCwd,
-      via: "the hook's record of the session that worked on this branch",
-      contextTokens: summary.contextTokens,
-    };
-  }
   const copy = await forkableCopy(path, record);
   return {
     found: true,
     id: sessionId(copy.id),
     cwd: summary.lastCwd,
-    via: "the hook's record of the subagent that worked on this branch",
+    via: "the hook's record of the subagent that wrote the code",
     contextTokens: summary.contextTokens,
     transcript: copy.path,
   };
 }
 
-type Ranked = { record: SessionRecord; summary: Summary; newest: number };
+type Ranked = {
+  record: SessionRecord;
+  path: string;
+  summary: Summary;
+  /** The index of the newest PR commit it made or pushed. */
+  newest: number;
+  bySha: boolean;
+};
 
 function ranksAbove(a: Ranked, b: Ranked): boolean {
   if (a.newest !== b.newest) return a.newest > b.newest;
-  const aSub = a.record.agentId !== null;
-  const bSub = b.record.agentId !== null;
-  if (aSub !== bSub) return aSub;
-  // The original over a user's fork of it, which copies its history but starts later.
-  return a.summary.firstSeen < b.summary.firstSeen;
+  if (a.bySha !== b.bySha) return a.bySha;
+  return a.summary.firstSeen > b.summary.firstSeen;
 }
 
-/** Commits a session made or pushed, as its own `git commit` and `git push` commands printed them. */
+/**
+ * Commits a session made or pushed, as its own `git commit` and `git push` commands printed
+ * them.
+ */
 type Committed = {
-  /** SHAs, often abbreviated. */
-  shas: Set<string>;
-  /** Subjects of the commits it made, which survive a rebase that changes their SHAs. */
-  subjects: Set<string>;
+  /** From `git commit`: the branch it was on, the SHA (often abbreviated) and the subject. */
+  commits: { branch: string; sha: string; subject: string }[];
+  /** From `git push`: the SHA a ref was moved to, and the ref. */
+  pushes: { sha: string; to: string }[];
   /** The session's Bash calls that ran `git commit` or `git push`, by tool-use id. */
   gitCalls: Map<string, { commit: boolean; push: boolean }>;
 };
 
 /**
- * The index of the newest PR commit the session made or pushed, or -1. A commit counts by SHA,
- * or by its subject when a later rebase or amend changed its SHA.
+ * The newest PR commit the session made or pushed, or null. A commit counts by SHA, from a
+ * commit or from a push to the PR's head branch. Or it counts by subject, from a commit on the
+ * head branch, for when a later rebase or amend changed the SHA.
  */
-function newestCommit(committed: Committed, handoff: Handoff): number {
+function evidence(
+  committed: Committed,
+  handoff: Handoff,
+): { newest: number; bySha: boolean } | null {
+  const shas = [
+    ...committed.commits.map((c) => c.sha),
+    ...committed.pushes.filter((p) => p.to === handoff.headRef).map((p) => p.sha),
+  ];
+  const subjects = new Set(
+    committed.commits.filter((c) => c.branch === handoff.headRef).map((c) => c.subject),
+  );
   for (let i = handoff.commitShas.length - 1; i >= 0; i--) {
     const full = handoff.commitShas[i]?.toLowerCase() ?? '';
-    for (const sha of committed.shas) if (full.startsWith(sha)) return i;
+    if (shas.some((sha) => full.startsWith(sha))) return { newest: i, bySha: true };
     const subject = handoff.commitMessages[i]?.split('\n')[0]?.trim();
-    if (subject && committed.subjects.has(subject)) return i;
+    if (subject && subjects.has(subject)) return { newest: i, bySha: false };
   }
-  return -1;
+  return null;
 }
 
 /**
  * A commit's summary line, at the start of a line as `git commit` prints it:
- * `[branch abc1234] Subject`, or `[branch (root-commit) abc1234] Subject`. `git log` indents
- * message text, so a commit message quoting this shape doesn't match.
+ * `[branch abc1234] Subject`, `[branch (root-commit) abc1234] Subject` or
+ * `[detached HEAD abc1234] Subject`. `git log` indents message text, so a commit message quoting
+ * this shape doesn't match.
  */
-const COMMIT_LINE = /^\[[^\]\s]+ (?:\([a-z-]+\) )?([0-9a-f]{7,40})\] ([^\n]+)/gm;
+const COMMIT_LINE = /^\[(detached HEAD|[^\]\s]+) (?:\([a-z-]+\) )?([0-9a-f]{7,40})\] ([^\n]+)/gm;
 /**
- * A push's ref update: `   abc1234..def5678  branch -> branch`, or `...` when forced. Only
- * after a push's `To <remote>` line, and never into a remote-tracking ref: a fetch or pull
- * prints the same shape (`abc..def  fix -> origin/fix`) without having written anything.
+ * A push's ref update, after its `To <remote>` line, exactly as git prints it: a space, the flag
+ * (a space, or `+` when forced), a space, then `abc1234..def5678  branch -> branch` (or `...`
+ * when forced). An indented line, as `git log` prints message text, doesn't match.
  */
 const PUSH_START = /^To \S+$/m;
-const PUSH_LINE =
-  /^\s*[+ ]?\s*[0-9a-f]{7,40}\.\.\.?([0-9a-f]{7,40})\s+\S+\s+->\s+(?!origin\/|refs\/remotes\/)\S+/gm;
+const PUSH_LINE = /^ [ +] [0-9a-f]{7,40}\.\.\.?([0-9a-f]{7,40}) +\S+ +-> +(\S+)/gm;
 /** A shell command that runs `git commit` or `git push`, possibly wrapped (`… -- git push`). */
 const GIT_COMMIT = /(?:^|[\s;&|(])git(?:\s+-{1,2}\S+(?:\s+[^\s-]\S*)?)*\s+commit\b/;
 const GIT_PUSH = /(?:^|[\s;&|(])git(?:\s+-{1,2}\S+(?:\s+[^\s-]\S*)?)*\s+push\b/;
+/** A push that writes nothing. */
+const DRY_RUN = /\s(?:--dry-run|-n)\b/;
 
 /**
  * Collects what the session's own `git commit` and `git push` commands printed. Only the
@@ -333,7 +342,10 @@ function addCommitted(entry: Record<string, unknown>, into: Committed): void {
     if (entry.type === 'assistant' && block?.type === 'tool_use' && block.name === 'Bash') {
       const command = (block.input as { command?: unknown } | undefined)?.command;
       if (typeof block.id !== 'string' || typeof command !== 'string') continue;
-      const kind = { commit: GIT_COMMIT.test(command), push: GIT_PUSH.test(command) };
+      const kind = {
+        commit: GIT_COMMIT.test(command),
+        push: GIT_PUSH.test(command) && !DRY_RUN.test(command),
+      };
       if (kind.commit || kind.push) into.gitCalls.set(block.id, kind);
       continue;
     }
@@ -349,14 +361,15 @@ function addCommitted(entry: Record<string, unknown>, into: Committed): void {
               .join('\n')
           : '';
     if (call.commit) {
-      for (const [, sha, subject] of text.matchAll(COMMIT_LINE)) {
-        if (sha) into.shas.add(sha);
-        if (subject?.trim()) into.subjects.add(subject.trim());
+      for (const [, branch, sha, subject] of text.matchAll(COMMIT_LINE)) {
+        if (branch && sha && subject) into.commits.push({ branch, sha, subject: subject.trim() });
       }
     }
     const push = call.push ? PUSH_START.exec(text) : null;
     if (push) {
-      for (const [, sha] of text.slice(push.index).matchAll(PUSH_LINE)) if (sha) into.shas.add(sha);
+      for (const [, sha, to] of text.slice(push.index).matchAll(PUSH_LINE)) {
+        if (sha && to) into.pushes.push({ sha, to });
+      }
     }
   }
 }
@@ -478,16 +491,16 @@ function copiesDir(): Promise<string> {
 }
 
 /**
- * Copies a crashed or killed Docent left behind. Older than a day, so a review still running
+ * Copies a crashed or killed Docent left behind. Older than a week, so a review still open
  * in another Docent keeps its copy.
  */
 async function removeStaleCopies(): Promise<void> {
-  const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
   for (const name of await readdir(tmpdir()).catch(() => [] as string[])) {
     if (!name.startsWith('docent-subagent-')) continue;
     const dir = join(tmpdir(), name);
     const info = await stat(dir).catch(() => null);
-    if (info?.isDirectory() && info.mtimeMs < dayAgo) {
+    if (info?.isDirectory() && info.mtimeMs < weekAgo) {
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
@@ -610,7 +623,7 @@ async function summarize(
     checkoutsByBranch: new Map(),
     lastCwd: null,
     contextTokens: null,
-    committed: { shas: new Set(), subjects: new Set(), gitCalls: new Map() },
+    committed: { commits: [], pushes: [], gitCalls: new Map() },
     firstSeen: '',
   };
   for await (const line of lines(path)) {

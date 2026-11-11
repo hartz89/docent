@@ -14,7 +14,7 @@ It runs locally, on your own agent subscription. There's no hosted service, and 
 
 ## For authors using Claude Code
 
-Docent's Claude Code plugin helps reviewers' questions reach the session, or subagent, that wrote your PR, and lets your agent leave a handoff note for the tour. In Claude Code:
+Docent's Claude Code plugin helps reviewers' questions reach the subagent that wrote your PR, and lets your agent leave a handoff note for the tour. In Claude Code:
 
 ```
 /plugin install docent --marketplace hartz89/docent

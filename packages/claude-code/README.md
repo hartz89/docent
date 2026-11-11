@@ -2,7 +2,7 @@
 
 This plugin is for people who write pull requests with Claude Code. It does two things:
 
-- **A hook** records which session, or which subagent, worked in which checkout. When someone reviews your PR in Docent on this machine, their questions go to a read-only copy of the session that wrote the code. Without the hook, Docent can only find a session through the `Claude-Session:` link in the PR, and that link names the coordinating session, not the subagent that did the work.
+- **A hook** records which session, or which subagent, worked in which checkout. When someone reviews your PR in Docent on this machine, their questions go to a read-only copy of the session that wrote the code. Docent finds your session through the `Claude-Session:` link in the PR, but that link names the coordinating session, not the subagent that did the work. The records let Docent narrow it down to that subagent.
 - **A skill**, `author-handoff`, has your agent leave a short note on the PR when it opens it: intent, key decisions, known gaps and where to look first. Docent shows it on the tour's first stop, as your claims, and its guide checks them against the code.
 
 ## Install
@@ -89,17 +89,22 @@ Set `DOCENT_DATA_DIR` to use another folder; the hook and Docent both read it. T
 
 ## How Docent uses the records
 
-A record only says where to look. Anything that can write to the data folder could write one, so Docent proves each candidate from Claude Code's own transcript before it trusts it:
+Docent still starts from the PR's `Claude-Session:` link. It ties the linked session to the PR, as it always has. Then the records narrow that session down to the subagent of it that wrote the code. A record never brings in a session the link didn't already lead to. A PR with no link gets no session.
 
-1. The transcript is inside `~/.claude/projects`, at the exact path Claude Code uses for that session or subagent, and its records carry those ids.
-2. One of its records shows it on the PR's head branch, in a checkout whose `origin` is the PR's repo. The PR's branch must be in that repo, not a fork.
-3. It did work in the PR. One of its own `git commit` or `git push` commands printed one of the PR's commits, or a commit with the same subject (a later rebase changes SHAs but keeps subjects). Only the output of those commands counts. Text the session merely read, such as `git log`, a file or a fetch, never does.
+A record only says where to look. Anything that can write to the data folder could write one, so Docent proves each subagent from Claude Code's own transcript before it trusts it:
 
-Among the sessions that pass, Docent picks the one that committed or pushed the newest PR commit. A tie goes to a subagent over the coordinator that delegated to it, then to the original session over a later fork of it.
+1. The transcript is inside `~/.claude/projects`, at the exact path Claude Code uses for that subagent of the linked session, and its records carry those ids.
+2. One of its records shows it on the PR's head branch, in a checkout whose `origin` is the PR's repo. That checkout must still exist, so its origin can be read.
+3. It did work in the PR. One of its own `git commit` or `git push` commands printed one of the PR's commits:
+   - a commit by SHA;
+   - a push to the PR's branch;
+   - or, after a rebase changed the SHAs, a commit on the PR's branch with the same subject.
 
-When the PR has a `Claude-Session:` link that Docent can tie to the PR, records can only narrow that session down to one of its own subagents; they never pick a different session. If no record passes, Docent uses the linked session, as before.
+   Only the output of those commands counts. Text it merely read, such as `git log`, a file, a fetch or a dry run, never does.
 
-A subagent's transcript can't be forked as it is. Docent forks a private copy instead, converted to look like a top-level session, and deletes the copy when it exits. Your transcripts are only ever read.
+Among the subagents that pass, Docent picks the one behind the newest PR commit. If none pass, the linked session answers, as before.
+
+A subagent's transcript can't be forked as it is. Docent forks a private copy instead, converted to look like a top-level session. It deletes the copy when it exits, and clears copies a crashed run left behind after a week. Your transcripts are only ever read.
 
 ## Developing
 
