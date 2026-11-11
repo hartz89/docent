@@ -12,6 +12,16 @@ It runs locally, on your own agent subscription. There's no hosted service, and 
 
 > **Status: early development.** Nothing is usable yet. The design is in [`docs/brief.md`](docs/brief.md), and the plan is in [`backlog/index.md`](backlog/index.md).
 
+## For authors using Claude Code
+
+Docent's Claude Code plugin helps reviewers' questions reach the session, or subagent, that wrote your PR, and lets your agent leave a handoff note for the tour. In Claude Code:
+
+```
+/plugin install docent --marketplace hartz89/docent
+```
+
+What it records, and where: [`packages/claude-code`](packages/claude-code/README.md).
+
 ## Developing
 
 You need Node 24 and pnpm 10.

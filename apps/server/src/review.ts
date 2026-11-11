@@ -227,7 +227,8 @@ ${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
                 job: 'question',
                 cwd: workspace.dir,
                 model: this.#options.model,
-                fork: author.id,
+                // A subagent forks from a converted copy of its transcript (see author-session.ts).
+                fork: author.transcript ?? author.id,
                 prompt: authorPrompt(pr, workspace.dir, author.cwd, context, question),
                 signal: limit.signal,
                 maxBudgetUsd: this.#forkBudgetUsd(),
@@ -305,6 +306,7 @@ Question: ${question}`,
         headInBaseRepo: workspace.headInBaseRepo,
         body: pr.body,
         commitMessages: workspace.commitMessages,
+        commitShas: workspace.commitShas,
       })
       .catch(
         (error: unknown): AuthorSession => ({

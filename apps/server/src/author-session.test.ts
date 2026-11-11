@@ -1,18 +1,30 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtempSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { expect, test } from 'vitest';
 import { type Handoff, localSessions } from './author-session.ts';
+
+// No test reads this machine's real hook records unless it says so.
+process.env.DOCENT_DATA_DIR = mkdtempSync(join(tmpdir(), 'docent-no-records-'));
 
 const LINK = 'https://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW';
 const OTHER_LINK = 'https://claude.ai/code/session_01Other';
 const AUTHOR = '7e2cfb5b-77c5-46af-9de2-27ca9a1c1f85';
 const CHECKOUT = '/Users/someone/repo';
+/** Where an isolated subagent worked: a worktree of the same repo. */
+const WORKTREE = '/Users/someone/repo/.claude/worktrees/agent-a1b2c3';
+const SUBAGENT = 'a1b2c3d4e5f6a7b8c';
+const PR_COMMIT = `c0ffee1${'a'.repeat(33)}`;
 
 /** Checkouts on this fake machine, and the GitHub repo each one belongs to. */
 const repoOf = async (dir: string) =>
-  ({ [CHECKOUT]: 'acme/web', '/Users/someone/private': 'someone/private' })[dir] ?? null;
+  ({
+    [CHECKOUT]: 'acme/web',
+    [WORKTREE]: 'acme/web',
+    '/Users/someone/private': 'someone/private',
+  })[dir] ?? null;
 
 /** A line as Claude Code writes it when remote control starts in a session. */
 const bridgeStatus = (session: string, url = LINK, cwd = CHECKOUT) =>
@@ -69,6 +81,7 @@ const pr = (overrides: Partial<Handoff> = {}): Handoff => ({
   headInBaseRepo: true,
   body: 'Fixes the origin.',
   commitMessages: [`Reflect the origin\n\nClaude-Session: ${LINK}`],
+  commitShas: [PR_COMMIT],
   ...overrides,
 });
 
@@ -216,4 +229,202 @@ test('an explicit session must be a session id that exists on this machine', asy
     id: AUTHOR,
     via: 'the --session flag',
   });
+});
+
+// ---- Through the hook's records (packages/claude-code). ----
+
+/**
+ * A record of one of the session's own commands, as Claude Code writes a tool result. A
+ * subagent's records carry its agent id and `isSidechain`.
+ */
+const toolResult = (
+  output: string,
+  {
+    session = AUTHOR,
+    cwd = CHECKOUT,
+    gitBranch = 'fix',
+    agentId,
+  }: { session?: string; cwd?: string; gitBranch?: string; agentId?: string } = {},
+) =>
+  JSON.stringify({
+    type: 'user',
+    sessionId: session,
+    ...(agentId ? { agentId, isSidechain: true } : { isSidechain: false }),
+    timestamp: '2026-11-07T11:30:00.000Z',
+    cwd,
+    gitBranch,
+    message: {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 't1', content: output }],
+    },
+  });
+
+const subagentTurn = (cwd = WORKTREE, gitBranch = 'fix') =>
+  JSON.stringify({
+    type: 'assistant',
+    sessionId: AUTHOR,
+    agentId: SUBAGENT,
+    isSidechain: true,
+    timestamp: '2026-11-07T11:20:00.000Z',
+    cwd,
+    gitBranch,
+    message: {
+      usage: { input_tokens: 5, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 0 },
+    },
+  });
+
+const COORDINATOR_PATH = `project/${AUTHOR}.jsonl`;
+const SUBAGENT_PATH = `project/${AUTHOR}/subagents/agent-${SUBAGENT}.jsonl`;
+
+/**
+ * A fake machine with the hook installed: Claude Code's projects folder, and Docent's records,
+ * each made from the projects folder's path.
+ */
+async function machine(
+  files: Record<string, string[]>,
+  records: ((projectsDir: string) => Record<string, unknown>)[],
+) {
+  const projectsDir = await mkdtemp(join(tmpdir(), 'docent-projects-'));
+  for (const [path, lines] of Object.entries(files)) {
+    await mkdir(dirname(join(projectsDir, path)), { recursive: true });
+    await writeFile(join(projectsDir, path), `${lines.join('\n')}\n`);
+  }
+  const dataDir = await mkdtemp(join(tmpdir(), 'docent-data-'));
+  await mkdir(join(dataDir, 'sessions'));
+  for (const [i, make] of records.entries()) {
+    await writeFile(join(dataDir, 'sessions', `${i}.json`), JSON.stringify(make(projectsDir)));
+  }
+  return { projectsDir, dataDir, locate: localSessions({ projectsDir, dataDir, repoOf }) };
+}
+
+/** The hook's record of the author session, or of its subagent. */
+const recorded =
+  (agentId: string | null, overrides: (projectsDir: string) => object = () => ({})) =>
+  (projectsDir: string) => ({
+    version: 1,
+    event: agentId ? 'SubagentStart' : 'SessionStart',
+    sessionId: AUTHOR,
+    agentId,
+    parentSessionId: agentId ? AUTHOR : null,
+    cwd: agentId ? WORKTREE : CHECKOUT,
+    // The branch when the session started, before it made the PR's branch.
+    branch: 'main',
+    origin: 'git@github.com:acme/web.git',
+    transcriptPath: join(projectsDir, agentId ? SUBAGENT_PATH : COORDINATOR_PATH),
+    recordedAt: '2026-11-07T09:00:00.000Z',
+    ...overrides(projectsDir),
+  });
+
+/** The coordinator, which delegated the work and then pushed the branch. */
+const coordinator = [
+  turn(AUTHOR, '2026-11-07T09:00:00.000Z', 'fix'),
+  toolResult('To https://github.com/acme/web.git\n   1234567..c0ffee1  fix -> fix'),
+];
+
+/** The subagent that wrote and committed the code, in its own worktree. */
+const subagent = (cwd = WORKTREE) => [
+  subagentTurn(cwd),
+  toolResult('[fix c0ffee1] Reflect the origin\n 2 files changed', { cwd, agentId: SUBAGENT }),
+];
+
+/** A PR that names no session at all: only the records can find its author. */
+const unlinked = (overrides: Partial<Handoff> = {}) =>
+  pr({ body: 'Fixes the origin.', commitMessages: ['Reflect the origin'], ...overrides });
+
+const noAuthor = { found: false, reason: 'The PR names no author session' };
+
+test('prefers the subagent that wrote the code over the coordinator that delegated it', async () => {
+  const { projectsDir, locate } = await machine(
+    { [COORDINATOR_PATH]: coordinator, [SUBAGENT_PATH]: subagent() },
+    [recorded(null), recorded(SUBAGENT)],
+  );
+  const original = await readFile(join(projectsDir, SUBAGENT_PATH), 'utf8');
+
+  const found = await locate(unlinked());
+
+  expect(found).toMatchObject({
+    found: true,
+    cwd: WORKTREE,
+    via: "the hook's record of the subagent that worked on this branch",
+    contextTokens: 40_005,
+  });
+  if (!found.found || !found.transcript) throw new Error('expected a copy of the transcript');
+  // The fork reads a converted copy: a top-level session under a fresh id.
+  expect(found.id).not.toBe(AUTHOR);
+  expect(found.transcript.endsWith(`${found.id}.jsonl`)).toBe(true);
+  const copy = (await readFile(found.transcript, 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  expect(copy).toHaveLength(2);
+  for (const entry of copy) {
+    expect(entry).toMatchObject({ sessionId: found.id, isSidechain: false });
+    expect(entry).not.toHaveProperty('agentId');
+  }
+  // The original is untouched.
+  expect(await readFile(join(projectsDir, SUBAGENT_PATH), 'utf8')).toBe(original);
+  // Docent deletes the copy when it exits; a test worker may not exit that way.
+  await rm(dirname(found.transcript), { recursive: true });
+});
+
+test('without a subagent, the recorded session that pushed the PR is found', async () => {
+  const { locate } = await machine({ [COORDINATOR_PATH]: coordinator }, [recorded(null)]);
+
+  expect(await locate(unlinked())).toEqual({
+    found: true,
+    id: AUTHOR,
+    cwd: CHECKOUT,
+    via: "the hook's record of the session that worked on this branch",
+    contextTokens: 100_002,
+  });
+});
+
+test('a recorded session on another branch or repo, or with none of the PR commits, is refused', async () => {
+  const located = async (lines: string[], handoff: Handoff) =>
+    (await machine({ [SUBAGENT_PATH]: lines }, [recorded(SUBAGENT)])).locate(handoff);
+
+  // The PR's head is `other`; the subagent worked on `fix`.
+  expect(await located(subagent(), unlinked({ headRef: 'other' }))).toEqual(noAuthor);
+  // The subagent's checkout belongs to someone/private, whatever the record says.
+  expect(await located(subagent('/Users/someone/private'), unlinked())).toEqual(noAuthor);
+  // A PR from a fork never uses records, as it never uses links.
+  expect(await located(subagent(), unlinked({ headInBaseRepo: false }))).toEqual(noAuthor);
+  // Right branch and repo, but none of the PR's commits came from this session.
+  expect(await located(subagent(), unlinked({ commitShas: ['d'.repeat(40)] }))).toEqual(noAuthor);
+});
+
+test('with no records, the transcript scan finds the linked session as before', async () => {
+  const { locate } = await machine({ [COORDINATOR_PATH]: authorTranscript().lines }, []);
+
+  expect(await locate(pr())).toMatchObject({
+    found: true,
+    id: AUTHOR,
+    via: 'the session link in the PR',
+  });
+});
+
+test('a forged record pointing at a transcript from another repo, or outside Claude Code, is refused', async () => {
+  const other = randomUUID();
+  const otherPath = `project/${other}.jsonl`;
+  // A real session in another repo, on a branch also called `fix`, that committed the PR's SHA.
+  const elsewhere = [
+    turn(other, '2026-11-07T09:00:00.000Z', 'fix', '/Users/someone/private'),
+    toolResult('[fix c0ffee1] x', { session: other, cwd: '/Users/someone/private' }),
+  ];
+  // A transcript planted outside the projects folder, claiming everything the PR needs.
+  const planted = join(await mkdtemp(join(tmpdir(), 'docent-planted-')), `${AUTHOR}.jsonl`);
+  await writeFile(planted, `${coordinator.join('\n')}\n`);
+
+  const { locate } = await machine({ [otherPath]: elsewhere }, [
+    // Claims the author's id, but points at the other session's file.
+    recorded(null, (dir) => ({ transcriptPath: join(dir, otherPath) })),
+    // Names the other session honestly, and claims this repo's origin.
+    recorded(null, (dir) => ({ sessionId: other, transcriptPath: join(dir, otherPath) })),
+    // Points outside Claude Code's projects folder.
+    recorded(null, () => ({ transcriptPath: planted })),
+    // Climbs out of it.
+    recorded(null, (dir) => ({ transcriptPath: join(dir, '..', `${AUTHOR}.jsonl`) })),
+  ]);
+
+  expect(await locate(unlinked())).toEqual(noAuthor);
 });

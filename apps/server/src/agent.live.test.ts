@@ -103,6 +103,7 @@ describe.skipIf(!process.env.DOCENT_LIVE)('live: a question forks the author ses
       headInBaseRepo: true,
       body: '',
       commitMessages: [],
+      commitShas: [],
     });
     expect(located).toMatchObject({ found: true, id: author });
 

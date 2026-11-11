@@ -94,6 +94,8 @@ importers:
         specifier: 8.3.6
         version: 8.3.6(@types/node@24.19.2)
 
+  packages/claude-code: {}
+
   packages/core: {}
 
   packages/evals: {}

@@ -1,10 +1,13 @@
 // Finds the PR author's Claude Code session on this machine, so a question can fork it and get an
 // answer that knows why the change was built the way it was.
-import { createReadStream, existsSync } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import { createReadStream, createWriteStream, existsSync, rmSync } from 'node:fs';
+import { mkdtemp, readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { basename, join, relative, sep } from 'node:path';
 import { createInterface } from 'node:readline';
+import { finished } from 'node:stream/promises';
 import { type SessionId, sessionId } from '@docent/core';
 import { git } from './github.ts';
 
@@ -19,6 +22,11 @@ export type AuthorSession =
       via: string;
       /** The session's context size at its last turn, which a fork pays to cache. */
       contextTokens: number | null;
+      /**
+       * A transcript file to fork instead of the session id: a private copy of a subagent's
+       * transcript, converted so it forks like a top-level session. The original is never touched.
+       */
+      transcript?: string;
     }
   | { found: false; reason: string };
 
@@ -31,6 +39,8 @@ export type Handoff = {
   body: string;
   /** Oldest first, as GitHub lists them. */
   commitMessages: readonly string[];
+  /** The PR's commits' full SHAs, oldest first, like `commitMessages`. */
+  commitShas: readonly string[];
 };
 
 export type SessionLocator = (handoff: Handoff) => Promise<AuthorSession>;
@@ -52,6 +62,8 @@ const NO_MATCH = "The linked session doesn't match this PR";
  * Finds the author session among this machine's Claude Code transcripts.
  * - An explicit id (`docent review --session <id>`) wins. It must exist on this machine. The
  *   reviewer chose it, so it isn't checked against the PR.
+ * - Then the records Docent's Claude Code hook writes (packages/claude-code). They can name the
+ *   subagent that wrote the code, which a link can't. See `fromRecords`.
  * - Otherwise, a session link in the PR. Links are public, so anyone can paste one into a PR,
  *   and a link alone never picks a session. The link names the session on claude.ai, and the
  *   local transcript records it when remote control starts. That transcript is the author's
@@ -62,11 +74,14 @@ export function localSessions(
   options: {
     explicit?: string;
     projectsDir?: string;
+    /** Docent's data folder, where the hook writes its records. */
+    dataDir?: string;
     /** The `owner/repo` a local checkout belongs to. Tests replace the git lookup. */
     repoOf?: (dir: string) => Promise<string | null>;
   } = {},
 ): SessionLocator {
   const projectsDir = options.projectsDir ?? join(homedir(), '.claude', 'projects');
+  const dataDir = options.dataDir ?? defaultDataDir();
   const repoOf = options.repoOf ?? originRepo;
   return async (handoff) => {
     const transcripts = await listTranscripts(projectsDir);
@@ -84,6 +99,12 @@ export function localSessions(
         via: 'the --session flag',
         contextTokens: summary.contextTokens,
       };
+    }
+
+    // Records are only consulted when the head branch is in the PR's own repo, as links are.
+    if (handoff.headInBaseRepo) {
+      const recorded = await fromRecords(handoff, { projectsDir, dataDir, repoOf });
+      if (recorded) return recorded;
     }
 
     const links = [
@@ -116,6 +137,241 @@ export function localSessions(
     }
     return { found: false, reason: NO_MATCH };
   };
+}
+
+/**
+ * Docent's data folder, where the Claude Code hook writes its records. The hook
+ * (packages/claude-code/hooks/record-session.mjs) computes the same path; keep the two in step.
+ */
+export function defaultDataDir(): string {
+  if (process.env.DOCENT_DATA_DIR) return process.env.DOCENT_DATA_DIR;
+  if (process.platform === 'darwin') {
+    return join(homedir(), 'Library', 'Application Support', 'docent');
+  }
+  if (process.platform === 'win32') {
+    return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'docent');
+  }
+  return join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'docent');
+}
+
+/** What the hook records when a session or subagent starts. */
+type SessionRecord = {
+  sessionId: string;
+  /** Null for a top-level session. */
+  agentId: string | null;
+  /** `owner/repo`, from the origin URL the hook read. */
+  repo: string;
+  transcriptPath: string;
+};
+
+const AGENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** At most this many records are read, newest files first. */
+const MAX_RECORDS = 2000;
+
+/**
+ * Finds the author session through the hook's records.
+ *
+ * A record only says where to look: anything that can write to Docent's data folder can write
+ * one, so nothing in it is trusted. Each candidate is proved from Claude Code's own transcript,
+ * the same way a linked session is:
+ * - The transcript is under the projects folder, at the path Claude Code uses for that session
+ *   or subagent id, and its own records carry those ids.
+ * - One of those records shows it on the PR's head branch, in a checkout whose origin is the
+ *   PR's repo (`matchesPr`).
+ * - It did work in the PR: one of its own tool results shows a commit or push of one of the PR's
+ *   commits. That's what a link alone never shows, so this route needs no link.
+ *
+ * Among the proven ones, the session that committed or pushed the newest PR commit wins: it
+ * wrote the code last and knows it best. A tie goes to a subagent, which wrote the code, over
+ * the coordinator that only delegated it, then to the latest active.
+ */
+async function fromRecords(
+  handoff: Handoff,
+  options: {
+    projectsDir: string;
+    dataDir: string;
+    repoOf: (dir: string) => Promise<string | null>;
+  },
+): Promise<AuthorSession | null> {
+  const records = (await readRecords(options.dataDir)).filter(
+    (r) => r.repo.toLowerCase() === handoff.repo.toLowerCase(),
+  );
+  if (records.length === 0 || handoff.commitShas.length === 0) return null;
+  const projectsRoot = await realpath(options.projectsDir).catch(() => null);
+  if (!projectsRoot) return null;
+
+  let best: { record: SessionRecord; path: string; summary: Summary; newest: number } | null = null;
+  for (const record of records) {
+    const path = await transcriptFor(record, projectsRoot);
+    if (!path) continue;
+    const summary = await summarize(path, (entry) => ownsEntry(entry, record));
+    const newest = newestCommit(summary.committed, handoff.commitShas);
+    if (newest < 0) continue;
+    if (!(await matchesPr(summary, handoff, options.repoOf))) continue;
+    const candidate = { record, path, summary, newest };
+    if (!best || ranksAbove(candidate, best)) best = candidate;
+  }
+  if (!best) return null;
+
+  const { record, path, summary } = best;
+  if (record.agentId === null) {
+    return {
+      found: true,
+      id: sessionId(record.sessionId),
+      cwd: summary.lastCwd,
+      via: "the hook's record of the session that worked on this branch",
+      contextTokens: summary.contextTokens,
+    };
+  }
+  const copy = await forkableCopy(path, record);
+  return {
+    found: true,
+    id: sessionId(copy.id),
+    cwd: summary.lastCwd,
+    via: "the hook's record of the subagent that worked on this branch",
+    contextTokens: summary.contextTokens,
+    transcript: copy.path,
+  };
+}
+
+type Ranked = { record: SessionRecord; summary: Summary; newest: number };
+
+function ranksAbove(a: Ranked, b: Ranked): boolean {
+  if (a.newest !== b.newest) return a.newest > b.newest;
+  const aSub = a.record.agentId !== null;
+  const bSub = b.record.agentId !== null;
+  if (aSub !== bSub) return aSub;
+  return a.summary.lastSeen > b.summary.lastSeen;
+}
+
+/** The index of the newest PR commit among `committed` (abbreviated SHAs), or -1. */
+function newestCommit(committed: ReadonlySet<string>, commitShas: readonly string[]): number {
+  for (let i = commitShas.length - 1; i >= 0; i--) {
+    const full = commitShas[i]?.toLowerCase() ?? '';
+    for (const sha of committed) if (full.startsWith(sha)) return i;
+  }
+  return -1;
+}
+
+/** A commit's summary line: `[branch abc1234] Subject`, or `[branch (root-commit) abc1234]`. */
+const COMMIT_LINE = /\[[^\]\s]+ (?:\([a-z-]+\) )?([0-9a-f]{7,40})\]/g;
+/** A push's ref update: `   abc1234..def5678  branch -> branch`, or `...` when forced. */
+const PUSH_LINE = /\b[0-9a-f]{7,40}\.\.\.?([0-9a-f]{7,40})\s+\S+\s+->\s+\S+/g;
+
+/** SHAs the session's own commands printed when they committed or pushed, from tool results. */
+function committedShas(entry: Record<string, unknown>): string[] {
+  const content = (entry.message as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return [];
+  const found: string[] = [];
+  for (const block of content as { type?: unknown; content?: unknown }[]) {
+    if (block?.type !== 'tool_result') continue;
+    const text =
+      typeof block.content === 'string'
+        ? block.content
+        : Array.isArray(block.content)
+          ? (block.content as { text?: unknown }[])
+              .map((part) => (typeof part?.text === 'string' ? part.text : ''))
+              .join('\n')
+          : '';
+    for (const pattern of [COMMIT_LINE, PUSH_LINE]) {
+      for (const match of text.matchAll(pattern)) if (match[1]) found.push(match[1]);
+    }
+  }
+  return found;
+}
+
+/** A transcript record that is the recorded session's own, not another session's or agent's. */
+function ownsEntry(entry: Record<string, unknown>, record: SessionRecord): boolean {
+  if (entry.sessionId !== record.sessionId) return false;
+  return record.agentId === null
+    ? entry.agentId === undefined && entry.isSidechain !== true
+    : entry.agentId === record.agentId;
+}
+
+/**
+ * The record's transcript, if it is where Claude Code keeps that session's or subagent's
+ * transcript: `<projects>/<project>/<session>.jsonl`, or
+ * `<projects>/<project>/<session>/subagents/agent-<id>.jsonl`. Links are resolved first, so a
+ * record can't point outside the projects folder, or at another session's file.
+ */
+async function transcriptFor(record: SessionRecord, projectsRoot: string): Promise<string | null> {
+  const path = await realpath(record.transcriptPath).catch(() => null);
+  if (!path) return null;
+  const parts = relative(projectsRoot, path).split(sep);
+  const expected =
+    record.agentId === null
+      ? [`${record.sessionId}.jsonl`]
+      : [record.sessionId, 'subagents', `agent-${record.agentId}.jsonl`];
+  const [project, ...rest] = parts;
+  if (!project || project === '..' || project.startsWith('.')) return null;
+  if (rest.length !== expected.length || rest.some((part, i) => part !== expected[i])) return null;
+  const info = await stat(path).catch(() => null);
+  if (!info?.isFile()) return null;
+  if (info.size > MAX_TRANSCRIPT_BYTES) {
+    console.warn(`Skipped a transcript too big to search (${info.size} bytes): ${path}`);
+    return null;
+  }
+  return path;
+}
+
+/** The hook's records that are well formed and name a GitHub origin. Newest files first. */
+async function readRecords(dataDir: string): Promise<SessionRecord[]> {
+  const dir = join(dataDir, 'sessions');
+  const names = (await readdir(dir).catch(() => [] as string[])).filter((n) => n.endsWith('.json'));
+  const dated = await Promise.all(
+    names.map(async (name) => ({
+      name,
+      mtime: (await stat(join(dir, name)).catch(() => null))?.mtimeMs ?? 0,
+    })),
+  );
+  dated.sort((a, b) => b.mtime - a.mtime);
+  const records: SessionRecord[] = [];
+  for (const { name } of dated.slice(0, MAX_RECORDS)) {
+    const value = parse(await readFile(join(dir, name), 'utf8').catch(() => ''));
+    const record = value && toRecord(value);
+    if (record) records.push(record);
+  }
+  return records;
+}
+
+function toRecord(value: Record<string, unknown>): SessionRecord | null {
+  const { version, sessionId: id, agentId, origin, transcriptPath } = value;
+  if (version !== 1) return null;
+  if (typeof id !== 'string' || !UUID.test(id)) return null;
+  if (agentId !== null && (typeof agentId !== 'string' || !AGENT_ID.test(agentId))) return null;
+  if (typeof transcriptPath !== 'string' || typeof origin !== 'string') return null;
+  const repo = githubRepo(origin);
+  if (!repo) return null;
+  return { sessionId: id, agentId, repo, transcriptPath };
+}
+
+/**
+ * A copy of a subagent's transcript that forks like a top-level session: a fresh `sessionId` on
+ * every record, `isSidechain` false and `agentId` dropped (docs/research/2026-11-11-session-
+ * snapshots.md). Only the subagent's own records are kept. The copy is private to this user and
+ * deleted when Docent exits; the original is only read.
+ */
+async function forkableCopy(
+  path: string,
+  record: SessionRecord,
+): Promise<{ id: string; path: string }> {
+  const dir = await mkdtemp(join(tmpdir(), 'docent-subagent-'));
+  process.once('exit', () => rmSync(dir, { recursive: true, force: true }));
+  const id = randomUUID();
+  const copy = join(dir, `${id}.jsonl`);
+  const out = createWriteStream(copy, { mode: 0o600 });
+  for await (const line of lines(path)) {
+    const entry = parse(line);
+    if (!entry || !ownsEntry(entry, record)) continue;
+    const { agentId: _dropped, ...rest } = entry;
+    if (!out.write(`${JSON.stringify({ ...rest, sessionId: id, isSidechain: false })}\n`)) {
+      await once(out, 'drain');
+    }
+  }
+  out.end();
+  await finished(out);
+  return { id, path: copy };
 }
 
 /** A locator that always gives the same answer: for fixtures and tests. */
@@ -217,14 +473,34 @@ type Summary = {
   checkoutsByBranch: Map<string, Set<string>>;
   lastCwd: string | null;
   contextTokens: number | null;
+  /** Commit SHAs (often abbreviated) that the session's own commits and pushes printed. */
+  committed: Set<string>;
+  /** The last record's timestamp. */
+  lastSeen: string;
 };
 
-/** What a transcript says about where it worked, and how big its context got. */
-async function summarize(path: string): Promise<Summary> {
-  const summary: Summary = { checkoutsByBranch: new Map(), lastCwd: null, contextTokens: null };
+/**
+ * What a transcript says about where it worked, what it committed, and how big its context got.
+ * `owns` picks the records that are the session's own; by default, all of them.
+ */
+async function summarize(
+  path: string,
+  owns: (entry: Record<string, unknown>) => boolean = () => true,
+): Promise<Summary> {
+  const summary: Summary = {
+    checkoutsByBranch: new Map(),
+    lastCwd: null,
+    contextTokens: null,
+    committed: new Set(),
+    lastSeen: '',
+  };
   for await (const line of lines(path)) {
     const entry = parse(line);
-    if (!entry) continue;
+    if (!entry || !owns(entry)) continue;
+    if (typeof entry.timestamp === 'string') summary.lastSeen = entry.timestamp;
+    if (entry.type === 'user') {
+      for (const sha of committedShas(entry)) summary.committed.add(sha);
+    }
     if (typeof entry.cwd === 'string') {
       summary.lastCwd = entry.cwd;
       if (typeof entry.gitBranch === 'string') {
@@ -267,7 +543,12 @@ function parse(line: string): Record<string, unknown> | null {
 async function originRepo(dir: string): Promise<string | null> {
   if (!existsSync(dir)) return null;
   const { stdout } = await git(dir, ['remote', 'get-url', 'origin']);
-  const match = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(stdout.trim());
+  return githubRepo(stdout.trim());
+}
+
+/** The `owner/repo` a GitHub remote URL names, or null. */
+function githubRepo(url: string): string | null {
+  const match = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(url);
   return match ? `${match[1]}/${match[2]}` : null;
 }
 

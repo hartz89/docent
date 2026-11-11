@@ -21,12 +21,17 @@ export const printReview: ReviewRecorder = (review) =>
 export function fixtureSource(dir: string, record: ReviewRecorder = printReview): PrSource {
   return async (onStep) => {
     onStep('Loading the recorded pull request');
-    const pr = JSON.parse(await readFile(join(dir, 'pr.json'), 'utf8')) as PrInfo;
+    // Fixtures recorded before the handoff existed have none.
+    const pr: PrInfo = {
+      handoff: null,
+      ...(JSON.parse(await readFile(join(dir, 'pr.json'), 'utf8')) as Omit<PrInfo, 'handoff'>),
+    };
     return {
       pr,
       diffText: await readFile(join(dir, 'diff.patch'), 'utf8'),
       // Not recorded: a replay names its author session with --session, or has none.
       commitMessages: [],
+      commitShas: [],
       headInBaseRepo: false,
       dir: join(dir, 'files', 'head'),
       readFile: async (side, path) => {

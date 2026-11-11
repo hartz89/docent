@@ -1,0 +1,7 @@
+{
+  "name": "@docent/claude-code",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Docent's Claude Code plugin: records which session wrote a branch, and writes the author handoff."
+}
