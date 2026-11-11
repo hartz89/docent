@@ -4,10 +4,16 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import type { Job } from '@docent/core';
 import type { AgentReply, AgentRunner } from './agent.ts';
 import { isSafeRepoPath, type PrInfo, type PrSource, type ReviewPost } from './github.ts';
 
-type RecordedReplies = Partial<Record<'tour' | 'question', AgentReply[]>>;
+type RecordedJob = 'tour' | 'question' | 'answer_check';
+type RecordedReplies = Partial<Record<RecordedJob, AgentReply[]>>;
+
+/** Questions and answer checks are recorded on their own; every other job is the tour's. */
+const recordedJob = (job: Job): RecordedJob =>
+  job === 'question' || job === 'answer_check' ? job : 'tour';
 
 const fileAt = (dir: string, side: 'old' | 'new', path: string) =>
   join(dir, 'files', side === 'new' ? 'head' : 'base', path);
@@ -45,10 +51,10 @@ export function fixtureSource(dir: string, record: ReviewRecorder = printReview)
 /** Replays the recorded replies for each job in order, repeating the last one. */
 export function fixtureRunner(dir: string): AgentRunner {
   let replies: RecordedReplies | undefined;
-  const used = { tour: 0, question: 0 };
+  const used: Record<RecordedJob, number> = { tour: 0, question: 0, answer_check: 0 };
   return async (request) => {
     replies ??= JSON.parse(await readFile(join(dir, 'replies.json'), 'utf8')) as RecordedReplies;
-    const job = request.job === 'question' ? 'question' : 'tour';
+    const job = recordedJob(request.job);
     const list = replies[job] ?? [];
     const reply = list[Math.min(used[job]++, list.length - 1)];
     if (!reply) throw new Error(`The fixture has no recorded ${job} reply.`);
@@ -83,7 +89,7 @@ export function recording(
     },
     runner: async (request) => {
       const reply = await runner(request);
-      const job = request.job === 'question' ? 'question' : 'tour';
+      const job = recordedJob(request.job);
       replies[job] = [...(replies[job] ?? []), reply];
       await save(join(dir, 'replies.json'), `${JSON.stringify(replies, null, 2)}\n`);
       return reply;

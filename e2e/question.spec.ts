@@ -36,3 +36,42 @@ test("with the author's session, the author answers", async ({ page }) => {
     await docent.stop();
   }
 });
+
+// The fixture's second recorded author answer is wrong about the code, and its second recorded
+// answer check says so. The first check finds nothing to say.
+test("the guide stays quiet on a sound answer, and notes what the code does when it isn't", async ({
+  page,
+}) => {
+  const session = '11111111-2222-4333-8444-555555555555';
+  const docent = await launch('cli.js', ['review', '--fixture', fixture, '--session', session]);
+  try {
+    await page.goto(docent.url);
+    const guide = page.getByRole('complementary', { name: 'The guide' });
+    const notes = guide.locator('.callout.correction');
+
+    await guide.getByLabel('Your question').fill('What does it return with no Origin header?');
+    await guide.getByRole('button', { name: 'Ask the author' }).click();
+    await expect(guide.locator('.exchange-answer')).toHaveCount(1);
+
+    await guide.getByLabel('Ask a follow-up').fill('And what header does that request get?');
+    await guide.getByRole('button', { name: 'Ask the author' }).click();
+    await expect(guide.locator('.exchange-answer')).toHaveCount(2);
+
+    // One note, under the second answer only, saying what the code does, with its lines.
+    await expect(notes).toHaveCount(1);
+    await expect(guide.locator('.exchange').first().locator('.callout')).toHaveCount(0);
+    const note = guide.locator('.exchange').nth(1).locator('.callout.correction');
+    await expect(note).toContainText('The code returns origin || null when credentials are on');
+    await expect(note.locator('.correction-source')).toHaveText(
+      /^Noted by the guide, from the code at head · <\$0\.01$/,
+    );
+
+    await note.getByRole('button', { name: 'index.ts 109–112' }).click();
+    await expect(page.locator('.code-range')).toHaveText(
+      "lines 109–112 · cited by the guide's note",
+    );
+    await expect(page.locator('.code-path')).toHaveText('src/middleware/cors/index.ts');
+  } finally {
+    await docent.stop();
+  }
+});
