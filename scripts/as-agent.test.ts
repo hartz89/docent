@@ -791,8 +791,10 @@ describe('as-agent as a process', () => {
       cwd: repo,
       env: { HOME: dir, PATH: '/usr/bin:/bin', DOCENT_BUILDER_APP_KEY: pem },
       stdio: ['ignore', 'pipe', 'pipe'],
-      // Under vitest's own 5s limit, so a hung runner is killed rather than left behind.
+      // Under vitest's own 5s limit, so a hung runner is killed rather than left behind. SIGKILL,
+      // because the runner catches SIGTERM and would wait on a hung revoke.
       timeout: 4_000,
+      killSignal: 'SIGKILL',
     });
     // Whoever reads the output goes away at once, as `| head` does after its lines.
     child.stdout.destroy();
