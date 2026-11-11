@@ -21,8 +21,14 @@ export type PrPreview = {
   cached: boolean;
 };
 
-/** A running review server, as `startServer` returns it. */
-export type OpenedReview = { origin: string; token: string; close: () => Promise<void> };
+/** A running review server, as `startServer` returns it, plus whether its tour failed. */
+export type OpenedReview = {
+  origin: string;
+  token: string;
+  close: () => Promise<void>;
+  /** The tour failed, so reopening should start afresh rather than show the failure again. */
+  failed: () => boolean;
+};
 
 export type LauncherOptions = {
   /** The launcher's own port. Requests must name it in their Host. */
@@ -37,6 +43,8 @@ export type LauncherOptions = {
   start: (pr: PrPreview) => Promise<OpenedReview>;
   /** The clock, for the rate limit. */
   now?: () => number;
+  /** Where to say that a review server was closed to make room. */
+  log?: (line: string) => void;
 };
 
 /** What a fresh tour costs, roughly, on the default model. Shown on the confirm page. */
@@ -50,9 +58,9 @@ export const MAX_OPEN_REVIEWS = 10;
 const PREVIEW_TTL_MS = 30_000;
 
 /**
- * Headers on every launcher response, unless a route sets its own. No framing (clickjacking), no scripts, no Referer, no
- * caching (the confirm page holds a CSRF token), and no other origin may embed or open-and-read
- * what we send. Forms may post to ourselves, and the confirm redirect may go to a review server
+ * Headers on every launcher response, unless a route sets its own. No framing (clickjacking),
+ * no scripts, no Referer, no caching (the confirm page holds a CSRF token), and no other origin
+ * may embed or open-and-read what we send. Forms may post to ourselves, and the confirm redirect may go to a review server
  * on another 127.0.0.1 port (Chrome applies form-action to redirects).
  */
 const SECURITY_HEADERS: Record<string, string> = {
@@ -73,9 +81,11 @@ export function createLauncher(options: LauncherOptions) {
   const now = options.now ?? Date.now;
   const allowed = new Set(options.allowedRepos.map((repo) => repo.toLowerCase()));
   const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-  // Per process: a token from an earlier launch, or from another machine, never validates.
+  // Per process: a token from an earlier launch, or from another machine, never validates. It
+  // binds the commit the page showed, so a click never starts a head whose cost it didn't state.
   const secret = randomBytes(32);
-  const csrfFor = (url: string) => createHmac('sha256', secret).update(url).digest('base64url');
+  const csrfFor = (pr: { url: string; head: string }) =>
+    createHmac('sha256', secret).update(`${pr.url}\n${pr.head}`).digest('base64url');
 
   const previews = new Map<string, { at: number; pr: Promise<PrPreview> }>();
   const cachedPreview = (url: string) => {
@@ -91,13 +101,17 @@ export function createLauncher(options: LauncherOptions) {
   const open = new Map<string, Entry>();
   let starts: number[] = [];
 
-  /** Reuses the PR's review server if it's at the same head; otherwise starts one, if allowed. */
+  /**
+   * Reuses the PR's review server if it's at the same head and its tour hasn't failed. Otherwise
+   * starts one, if the rate limit allows.
+   */
   async function openReview(pr: PrPreview): Promise<OpenedReview | 'rate-limited'> {
     const existing = open.get(pr.url);
     if (existing?.head === pr.head) {
       existing.opened = now();
       try {
-        return await existing.review;
+        const review = await existing.review;
+        if (!review.failed()) return review;
       } catch {
         // It failed to start. Fall through and try again, which counts as a new start.
       }
@@ -113,6 +127,9 @@ export function createLauncher(options: LauncherOptions) {
     while (open.size > MAX_OPEN_REVIEWS) {
       const [oldestUrl, oldest] = [...open].sort(([, a], [, b]) => a.opened - b.opened)[0] ?? [];
       if (!oldestUrl || !oldest) break;
+      options.log?.(
+        `Closed the review of ${oldestUrl} to make room: at most ${MAX_OPEN_REVIEWS} stay open.`,
+      );
       void closeEntry(oldestUrl, oldest);
     }
     return entry.review;
@@ -175,7 +192,7 @@ export function createLauncher(options: LauncherOptions) {
       }
       // The page's own POST must carry its real Origin, and under no-referrer browsers send
       // `Origin: null` instead. same-origin still sends nothing to any other origin.
-      return c.html(confirmPage(pr, csrfFor(pr.url)), 200, { 'Referrer-Policy': 'same-origin' });
+      return c.html(confirmPage(pr, csrfFor(pr)), 200, { 'Referrer-Policy': 'same-origin' });
     })
     .post('/open', async (c) => {
       // Cross-site requests: a browser always sends Origin on a POST, and a page on another
@@ -189,8 +206,17 @@ export function createLauncher(options: LauncherOptions) {
       const form = await c.req.parseBody();
       const target = checkTarget(typeof form.pr === 'string' ? form.pr : undefined);
       if (target.refusal) return c.html(target.refusal.html, target.refusal.status);
-      if (!sameSecret(form.csrf, csrfFor(target.url))) {
-        return c.text('Forbidden: this confirm page has expired. Open the link again.', 403);
+      const head = typeof form.head === 'string' ? form.head : '';
+      if (!sameSecret(form.csrf, csrfFor({ url: target.url, head }))) {
+        return c.html(
+          page(
+            'Confirm page expired',
+            `<h1>This confirm page has expired</h1>
+            <p>The launcher restarted since it was opened, so nothing started.
+            <a href="${escapeHtml(openLink(target.url))}">Open it again</a> to confirm.</p>`,
+          ),
+          403,
+        );
       }
 
       let pr: PrPreview;
@@ -198,6 +224,14 @@ export function createLauncher(options: LauncherOptions) {
         pr = await cachedPreview(target.url);
       } catch (error) {
         return c.html(couldNotRead(target.url, error), 502);
+      }
+      if (pr.head !== head) {
+        // Pushed to since the page was shown: its cost line may be wrong. Show the page again.
+        return c.html(
+          confirmPage(pr, csrfFor(pr), 'The pull request changed since that page opened.'),
+          409,
+          { 'Referrer-Policy': 'same-origin' },
+        );
       }
       let review: OpenedReview | 'rate-limited';
       try {
@@ -210,7 +244,8 @@ export function createLauncher(options: LauncherOptions) {
           page(
             'Too many reviews',
             `<h1>Too many reviews started just now</h1>
-            <p>The launcher starts at most ${MAX_STARTS} reviews every ${START_WINDOW_MS / 60_000} minutes, so a runaway page can't spend money. Wait a few minutes, then reload this page.</p>`,
+            <p>The launcher starts at most ${MAX_STARTS} reviews every ${START_WINDOW_MS / 60_000} minutes, so a runaway page can't spend money. Wait a few minutes, then
+            <a href="${escapeHtml(openLink(pr.url))}">open it again</a>.</p>`,
           ),
           429,
         );
@@ -273,7 +308,12 @@ function sameSecret(sent: unknown, expected: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function confirmPage(pr: PrPreview, csrf: string): string {
+/** The launcher's own link to a PR's confirm page. */
+function openLink(url: string): string {
+  return `/open?pr=${encodeURIComponent(url)}`;
+}
+
+function confirmPage(pr: PrPreview, csrf: string, notice?: string): string {
   const repo = escapeHtml(pr.repo);
   const cost = pr.cached
     ? `<p class="cost cached"><strong>Cached, no cost.</strong> A tour for this commit is already written.</p>`
@@ -281,6 +321,7 @@ function confirmPage(pr: PrPreview, csrf: string): string {
   return page(
     `Open ${pr.repo}#${pr.number}?`,
     `<h1>Open this review?</h1>
+    ${notice ? `<p class="notice">${escapeHtml(notice)} Check it again before you start.</p>` : ''}
     <div class="pr">
       <div class="quiet">${repo} · #${pr.number} · <code>${escapeHtml(pr.head.slice(0, 7))}</code></div>
       <div class="title">${escapeHtml(pr.title)}</div>
@@ -288,6 +329,7 @@ function confirmPage(pr: PrPreview, csrf: string): string {
     ${cost}
     <form method="post" action="/open">
       <input type="hidden" name="pr" value="${escapeHtml(pr.url)}">
+      <input type="hidden" name="head" value="${escapeHtml(pr.head)}">
       <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
       <button type="submit">Start the review</button>
     </form>
@@ -342,7 +384,8 @@ function page(title: string, body: string): string {
   .pr { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; }
   .title { font-weight: 600; margin-top: 4px; overflow-wrap: anywhere; }
   .quiet { color: var(--muted); font-size: 13px; }
-  .cost strong { color: var(--brass-text); }
+  .cost strong, .notice { color: var(--brass-text); }
+  a { color: var(--brass-text); }
   .cost.cached strong { color: var(--ok); }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; overflow-wrap: anywhere; }
   button { font: inherit; font-weight: 600; color: var(--brass-ink); background: var(--brass-fill); border: 0; border-radius: 8px; padding: 10px 18px; cursor: pointer; pointer-events: none; opacity: 0.55; animation: arm 0s 0.8s forwards; }

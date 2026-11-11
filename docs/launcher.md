@@ -6,7 +6,7 @@
 http://127.0.0.1:4917/open?pr=https://github.com/hartz89/docent/pull/52
 ```
 
-The link shows a confirm page. It names the PR and says what opening it costs: **"Cached, no cost"** when a tour for the PR's current head is already written, or **"About $1 to write"** when it isn't. Nothing starts until you click **Start the review**. The launcher then starts a review server for that PR (or reuses the one already running at that commit) and sends your browser to it.
+The link shows a confirm page. It names the PR and says what opening it costs: **"Cached, no cost"** when a tour for the PR's current head is already written, or **"About $1 to write"** when it isn't. Nothing starts until you click **Start the review**. The launcher then starts a review server for that PR and sends your browser to it. It reuses the one already running at that commit, unless that tour failed. If the PR was pushed to after the page opened, nothing starts: the page shows the new commit and its cost, to confirm again.
 
 Code: [`apps/server/src/launcher.ts`](../apps/server/src/launcher.ts) (the HTTP app and its defenses) and [`apps/server/src/serve-cli.ts`](../apps/server/src/serve-cli.ts) (config, port, start and stop).
 
@@ -17,6 +17,8 @@ pnpm docent serve              # run it in this terminal
 pnpm docent serve --stop       # stop the one on the configured port
 pnpm docent serve --help
 ```
+
+`pnpm docent` builds first. To skip that, run the built CLI directly: `node apps/server/dist/cli.js serve --stop`.
 
 **Keep links cheap with `--prepare`.** `pnpm docent review <pr-url> --prepare` writes the tour to the cache. The confirm page then says "Cached, no cost", and the tour opens at once. A push changes the head, so prepare again after one.
 
@@ -30,7 +32,7 @@ One JSON file: `$DOCENT_CONFIG` if set, otherwise `~/.config/docent/config.json`
 { "allowedRepos": ["hartz89/docent"], "port": 4917 }
 ```
 
-- **`allowedRepos`:** the only repositories a link may open, as `owner/name`. Matching ignores case, like GitHub. A PR in any other repo gets a refusal page that says how to add it. **With no config file, the default is the repository Docent itself was cloned from** (its `origin` remote), or nothing if that can't be read. Restart the launcher after changing it.
+- **`allowedRepos`:** the only repositories a link may open, as `owner/name`. Matching ignores case, like GitHub. A PR in any other repo gets a refusal page that says how to add it. **When `allowedRepos` isn't set, the default is the repository Docent itself was cloned from** (its `origin` remote), or nothing if that can't be read. Restart the launcher after changing it.
 - **`port`:** defaults to 4917. `--port` overrides it.
 
 ## Starting it at login on macOS
@@ -77,6 +79,8 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.docent.launcher.plis
 launchctl bootout gui/$(id -u)/dev.docent.launcher                                  # stop, and don't start at login
 ```
 
+If the port is already taken (say, you ran `docent serve` by hand while launchd's copy runs), the launcher says so and exits 0, so launchd doesn't keep retrying. A bad config file exits 1, and launchd retries every 10 seconds or so; the reason is in `/tmp/docent-launcher.log`.
+
 `docent serve --stop` also works. It sends SIGTERM to the PID the launcher wrote to `<cache>/launcher-<port>.pid`, after checking that PID still runs `cli.js serve`. The launcher exits cleanly, so launchd leaves it stopped until the next login.
 
 ## Can a claude.ai artifact open the link?
@@ -94,12 +98,13 @@ The launcher is the only Docent server that other websites are meant to link to.
 | Attack | Defense |
 | --- | --- |
 | A link or hidden request starts a review | `GET /open` only renders the confirm page. Only a `POST` starts one. |
-| A hostile page submits the `POST` | The `POST` must carry `Origin` equal to the launcher's own origin, and `Sec-Fetch-Site: same-origin` when the browser sends it. It must also carry a CSRF token: an HMAC of the PR URL under a secret made fresh each launch. The token is only in the confirm page, which other origins can't read: there's no CORS, framing is refused, and COOP cuts the opener's handle to the tab. |
+| A hostile page submits the `POST` | The `POST` must carry `Origin` equal to the launcher's own origin, and `Sec-Fetch-Site: same-origin` when the browser sends it. It must also carry a CSRF token: an HMAC of the PR URL and the head commit the page showed, under a secret made fresh each launch. The token is only in the confirm page, which other origins can't read: there's no CORS, framing is refused, and COOP cuts the opener's handle to the tab. |
 | DNS rebinding (`evil.example` resolves to 127.0.0.1) | The launcher binds 127.0.0.1 only. Every request's `Host` must be exactly `127.0.0.1:<port>` or `localhost:<port>`, checked both in the URL and in the raw header. |
 | Clickjacking the confirm button | `frame-ancestors 'none'` and `X-Frame-Options: DENY`. Against a pop-up opened under the cursor ("double-clickjacking"), the button ignores clicks for its first 0.8 s on screen. |
 | Stealing the review token | It appears only in the `303` redirect after a valid confirm, as a URL fragment, which browsers never send to servers or in a `Referer`. Every launcher response is `Referrer-Policy: no-referrer`, except the confirm page itself, which is `same-origin`: under `no-referrer`, browsers send `Origin: null` on the page's own POST, which would break the Origin check. The token is never logged. |
 | Making the launcher hit GitHub in the background | `GET /open` refuses loads that aren't a page in a tab (`Sec-Fetch-Dest` other than `document`), and lookups are reused for 30 s. |
 | Opening a PR from a repo you don't trust | Only `allowedRepos`. The check happens before anything asks GitHub about the PR. |
+| A stale page starting a costlier commit | The token binds the head commit the page showed. After a push, the click starts nothing and shows the page again, with the new cost. |
 | Spending money by repeated confirms | At most 5 new reviews start in any 5 minutes. Reopening a running review is free. At most 10 run at once; the least recently opened closes first. |
 | Running the PR's code | Nothing new. The review server reads the PR as before: a hardened checkout, never executed. |
 

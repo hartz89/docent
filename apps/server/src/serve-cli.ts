@@ -33,8 +33,8 @@ Options:
 
 Config: ${configPath()}
   { "allowedRepos": ["owner/repo"], "port": ${DEFAULT_PORT} }
-  Links open only PRs in allowedRepos. With no config file, only the repository Docent itself
-  was cloned from is allowed.`;
+  Links open only PRs in allowedRepos. When allowedRepos isn't set, only the repository Docent
+  itself was cloned from is allowed.`;
 
 const { values } = parseArgs({
   args: process.argv.slice(3),
@@ -97,10 +97,11 @@ async function serve() {
     await once(server, 'listening');
   } catch (error) {
     if ((error as { code?: string }).code === 'EADDRINUSE') {
+      // Exit 0: most likely a launcher is already running, and launchd shouldn't retry forever.
       console.error(
         `Port ${port} is in use. If the launcher is already running, it's ready; stop it with: docent serve --stop`,
       );
-      process.exit(1);
+      process.exit(0);
     }
     throw error;
   }
@@ -109,6 +110,7 @@ async function serve() {
     port: actualPort,
     allowedRepos,
     configPath: configPath(),
+    log: (line) => console.log(line),
     preview,
     start: async (pr) => {
       if (!existsSync(webRoot)) throw new Error(webMissing);
@@ -129,13 +131,16 @@ async function serve() {
             model,
             cacheDir,
           });
+      let failed = false;
       review.subscribe((tour) => {
-        if (tour.state === 'failed') console.error(`${pr.url}: tour failed: ${tour.reason}`);
+        if (tour.state !== 'failed') return;
+        failed = true;
+        console.error(`${pr.url}: tour failed: ${tour.reason}`);
       });
       const server = await startServer({ webRoot, review });
       // Never the token: logs outlive the review.
       console.log(`Opened ${pr.url} at ${server.origin}`);
-      return server;
+      return { ...server, failed: () => failed };
     },
   });
 
@@ -216,7 +221,10 @@ async function loadConfig(path: string): Promise<{ allowedRepos?: string[]; port
   ) {
     return fail('"allowedRepos" must be a list like ["owner/repo"]');
   }
-  if (port !== undefined && !(Number.isInteger(port) && (port as number) > 0)) {
+  if (
+    port !== undefined &&
+    !(Number.isInteger(port) && (port as number) > 0 && (port as number) <= 65535)
+  ) {
     return fail('"port" must be a port number');
   }
   return {

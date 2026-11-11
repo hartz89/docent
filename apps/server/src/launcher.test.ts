@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import { createLauncher, MAX_STARTS, type PrPreview } from './launcher.ts';
+import {
+  createLauncher,
+  MAX_OPEN_REVIEWS,
+  MAX_STARTS,
+  type PrPreview,
+  START_WINDOW_MS,
+} from './launcher.ts';
 
 // The launcher in-process. Its two boundaries are faked: reading a PR from GitHub, and starting a
 // review server. Each test gets a fresh launcher, so starts and the rate limit don't leak.
@@ -11,8 +17,13 @@ const reviewToken = 'review-token-must-stay-secret';
 function setup(overrides: Partial<PrPreview> = {}) {
   const previewed: string[] = [];
   const started: PrPreview[] = [];
+  /** Origins of the review servers the launcher closed. */
+  const closed: string[] = [];
+  /** Origins of review servers whose tour has failed. */
+  const failed = new Set<string>();
   let clock = 0;
   const heads = new Map<string, string>();
+  const headOf = (url: string) => heads.get(url) ?? 'a'.repeat(40);
   const launcher = createLauncher({
     port,
     allowedRepos: ['hartz89/Docent'],
@@ -26,17 +37,21 @@ function setup(overrides: Partial<PrPreview> = {}) {
         repo: 'hartz89/docent',
         number,
         title: 'Open a tour from a link',
-        head: heads.get(url) ?? 'a'.repeat(40),
+        head: headOf(url),
         cached: false,
         ...overrides,
       };
     },
     start: async (pr) => {
       started.push(pr);
+      const origin = `http://127.0.0.1:${5000 + started.length}`;
       return {
-        origin: `http://127.0.0.1:${5000 + started.length}`,
+        origin,
         token: reviewToken,
-        close: async () => {},
+        close: async () => {
+          closed.push(origin);
+        },
+        failed: () => failed.has(origin),
       };
     },
   });
@@ -45,6 +60,8 @@ function setup(overrides: Partial<PrPreview> = {}) {
     app,
     previewed,
     started,
+    closed,
+    failed,
     tick: (ms: number) => {
       clock += ms;
     },
@@ -56,11 +73,12 @@ function setup(overrides: Partial<PrPreview> = {}) {
       const html = await (await app.request(`${own}/open?pr=${encodeURIComponent(url)}`)).text();
       return /name="csrf" value="([^"]+)"/.exec(html)?.[1] ?? '';
     },
+    /** Posts the confirm form. Unless the test says otherwise, it names the PR's current head. */
     confirm: (form: Record<string, string>, headers: Record<string, string> = { Origin: own }) =>
       app.request(`${own}/open`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
-        body: new URLSearchParams(form).toString(),
+        body: new URLSearchParams({ head: headOf(form.pr ?? ''), ...form }).toString(),
       }),
   };
 }
@@ -164,8 +182,8 @@ describe('confirming starts the review and hands the browser its token', () => {
     expect(started.map((pr) => pr.url)).toEqual([prUrl]);
   });
 
-  test('reuses the running review for the same commit, and starts afresh after a push', async () => {
-    const { confirm, csrf, started, setHead, tick } = setup();
+  test('reuses the running review for the same commit; after a push, starts afresh and closes the old one', async () => {
+    const { confirm, csrf, started, closed, setHead, tick } = setup();
     const token = await csrf();
 
     await confirm({ pr: prUrl, csrf: token });
@@ -174,10 +192,61 @@ describe('confirming starts the review and hands the browser its token', () => {
 
     setHead(prUrl, 'b'.repeat(40));
     tick(60_000); // Past the time a PR's preview is remembered.
-    const res = await confirm({ pr: prUrl, csrf: token });
+    const res = await confirm({ pr: prUrl, csrf: await csrf() });
 
     expect(res.headers.get('location')).toBe(`http://127.0.0.1:5002/#token=${reviewToken}`);
     expect(started.map((pr) => pr.head)).toEqual(['a'.repeat(40), 'b'.repeat(40)]);
+    expect(closed).toEqual(['http://127.0.0.1:5001']);
+  });
+
+  test('a page shown before a push starts nothing, and shows the new commit and its cost', async () => {
+    const { confirm, csrf, started, setHead, tick } = setup();
+    const stale = await csrf();
+
+    setHead(prUrl, 'b'.repeat(40));
+    tick(60_000);
+    const res = await confirm({ pr: prUrl, head: 'a'.repeat(40), csrf: stale });
+    const html = await res.text();
+
+    expect(res.status).toBe(409);
+    expect(html).toContain('The pull request changed since that page opened.');
+    expect(html).toContain('bbbbbbb');
+    expect(started).toEqual([]);
+  });
+
+  test('reopening a review whose tour failed starts it again', async () => {
+    const { confirm, csrf, started, failed, closed } = setup();
+    const token = await csrf();
+    await confirm({ pr: prUrl, csrf: token });
+
+    failed.add('http://127.0.0.1:5001');
+    const res = await confirm({ pr: prUrl, csrf: token });
+
+    expect(res.headers.get('location')).toBe(`http://127.0.0.1:5002/#token=${reviewToken}`);
+    expect(started).toHaveLength(2);
+    expect(closed).toEqual(['http://127.0.0.1:5001']);
+  });
+
+  test('keeps a bounded number of reviews open, closing the least recently opened', async () => {
+    const { confirm, csrf, closed, tick } = setup();
+    const urls = Array.from(
+      { length: MAX_OPEN_REVIEWS + 1 },
+      (_, i) => `https://github.com/hartz89/docent/pull/${i + 1}`,
+    );
+    for (const url of urls.slice(0, MAX_OPEN_REVIEWS)) {
+      tick(START_WINDOW_MS); // Clear of the rate limit.
+      await confirm({ pr: url, csrf: await csrf(url) });
+    }
+    // Reopen the first, so the second becomes the least recently opened.
+    tick(1);
+    await confirm({ pr: urls[0] ?? '', csrf: await csrf(urls[0]) });
+    expect(closed).toEqual([]);
+
+    tick(START_WINDOW_MS);
+    const last = urls.at(-1) ?? '';
+    await confirm({ pr: last, csrf: await csrf(last) });
+
+    expect(closed).toEqual(['http://127.0.0.1:5002']);
   });
 
   test('starts at most a few new reviews in a short window, so a runaway page cannot spend money', async () => {
@@ -275,6 +344,8 @@ describe('a hostile page cannot start a review', () => {
     const res = await second.confirm({ pr: prUrl, csrf: await first.csrf() });
 
     expect(res.status).toBe(403);
+    // The page says what happened, and links back to a fresh confirm page.
+    expect(await res.text()).toContain(`href="/open?pr=${encodeURIComponent(prUrl)}"`);
     expect(second.started).toEqual([]);
   });
 });
