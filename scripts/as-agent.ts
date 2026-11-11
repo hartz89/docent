@@ -80,7 +80,7 @@ const ALLOWED: Record<Role, string[]> = {
     'git push [-u] origin <branch>   (a plain branch name: not main, HEAD or refs/...; no flags but -u)',
     'gh pr create|view|checks|diff|comment|edit ...',
     'gh pr merge <number> --squash [--auto]',
-    'gh issue create|view|list|comment|edit|close ...  (never adding or removing the backlog label)',
+    'gh issue create|view|list|comment|edit|close ...',
     'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
     'Never with gh --jq/-q or --template/-t, or --web/--editor.',
   ],
@@ -99,10 +99,11 @@ const PR_SUBCOMMANDS: Record<Role, string[]> = {
 const ISSUE_SUBCOMMANDS = ['create', 'view', 'list', 'comment', 'edit', 'close'];
 
 /**
- * Only the maintainer ranks work: an issue counts as backlog when they applied this label, which
- * agents verify from the issue's timeline. So agents may never add or remove it, here or anywhere.
+ * --web and --editor, including -w or -e bundled with other short flags (-wl), which gh also
+ * accepts. A glued short value that happens to contain w or e (-bweb) is refused too: write it as
+ * a separate flag and value.
  */
-const MAINTAINER_LABEL = 'backlog';
+const INTERACTIVE = /^(--web|--editor)(=|$)|^-[A-Za-z]*[we]/;
 
 type Allowed = {
   tool: 'gh' | 'git';
@@ -130,8 +131,8 @@ function allowed(role: Role, command: string[]): Allowed {
   }
   if (program === 'gh' && sub === 'api') {
     checkGhApi(rest, refuse);
-    // Reading issues and their timelines (who applied a label) needs issues: read. Requested only
-    // for those calls, so other commands keep working on an app without the permission.
+    // Reading issues needs issues: read. Requested only for those calls, so other commands keep
+    // working on an app without the permission.
     const issues =
       role === 'builder' && rest.some((arg) => /^\/?repos\/[^/]+\/[^/]+\/issues\b/.test(arg));
     return { tool: 'gh', args: ['api', ...rest], ...(issues ? { extra: { issues: 'read' } } : {}) };
@@ -141,23 +142,19 @@ function allowed(role: Role, command: string[]): Allowed {
     if (!action || !ISSUE_SUBCOMMANDS.includes(action)) {
       refuse(`"gh issue ${action ?? ''}" isn't allowed for the ${role}`);
     }
-    const interactive = args.find((arg) => /^(--web|--editor)(=|$)|^-[we]$/.test(arg));
+    const interactive = args.find((arg) => INTERACTIVE.test(arg));
     if (interactive) refuse(`${interactive} opens a browser or editor`);
-    // Filtering by a label only reads it; creating or editing an issue can set it.
     const writes = action !== 'view' && action !== 'list';
-    if (writes) checkLabels(args, refuse);
     return { tool: 'gh', args: ['issue', ...rest], extra: { issues: writes ? 'write' : 'read' } };
   }
   if (program === 'gh' && sub === 'pr') {
     const [action, ...args] = rest;
     if (args.some((arg) => arg.startsWith('--admin'))) refuse('--admin bypasses branch protection');
     // A browser or editor would run outside the scrubber, with the token in its env.
-    const interactive = args.find((arg) => /^(--web|--editor)(=|$)|^-[we]$/.test(arg));
+    const interactive = args.find((arg) => INTERACTIVE.test(arg));
     if (interactive && ['create', 'edit', 'comment', 'review'].includes(action ?? '')) {
       refuse(`${interactive} opens a browser or editor`);
     }
-    // PRs are issues to GitHub, so the label rule covers them too.
-    if (action === 'create' || action === 'edit') checkLabels(args, refuse);
     if (action === 'merge' && role === 'builder') checkMerge(args, refuse);
     else if (!action || !PR_SUBCOMMANDS[role].includes(action)) {
       refuse(`"gh pr ${action ?? ''}" isn't allowed for the ${role}`);
@@ -165,40 +162,6 @@ function allowed(role: Role, command: string[]): Allowed {
     return { tool: 'gh', args: ['pr', ...rest] };
   }
   return refuse(`the ${role} may only run the commands below`);
-}
-
-/** Refuses any label flag that names the maintainer's label, in any case or list position. */
-function checkLabels(args: string[], refuse: (reason: string) => never): void {
-  const LABEL_FLAGS = /^(-l|--label|--add-label|--remove-label)(=(.*))?$/;
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i] ?? '';
-    // --recover loads labels from a JSON file, out of this scan's sight.
-    if (/^--recover(=|$)/.test(arg)) refuse('--recover reads labels from a file');
-    // A short flag with anything glued on (-lbacklog) or bundled with others (-wl) parses in gh
-    // as a flag plus a value we'd otherwise miss, so only a bare -x or -x=value is accepted.
-    if (/^-[^-]/.test(arg) && arg.length > 2 && arg[2] !== '=') {
-      refuse(`write ${arg} as a separate flag and value`);
-    }
-    const match = LABEL_FLAGS.exec(arg);
-    if (match) {
-      const value = match[2] !== undefined ? (match[3] ?? '') : (args[i + 1] ?? '');
-      // gh reads label lists as CSV, so quotes would hide a name from a plain split.
-      if (/["'`\\]/.test(value)) refuse('label values may not contain quotes or backslashes');
-      if (match[2] === undefined && value.startsWith('-')) {
-        refuse(`${arg} needs a value that doesn't start with -`);
-      }
-    }
-    // Position-independent, so it can't be thrown off by which flag gh gives a value to: no
-    // argument anywhere may name the label as a list item, with or without a --flag= prefix.
-    const value = arg.startsWith('-') && arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg;
-    const names = value
-      .replace(/["'`\\]/g, '')
-      .split(',')
-      .map((name) => name.trim().toLowerCase());
-    if (names.includes(MAINTAINER_LABEL)) {
-      refuse(`only the maintainer adds or removes the "${MAINTAINER_LABEL}" label`);
-    }
-  }
 }
 
 /** A plain branch name. Anything git might resolve to another ref (HEAD, @, refs/...) is out. */

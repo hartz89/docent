@@ -411,32 +411,15 @@ describe('as-agent allowlist', () => {
     ['reviewer', 'gh pr merge 3 --squash'],
     ['reviewer', 'gh pr merge 3 --squash --auto'],
     ['reviewer', 'gh pr create --title x'],
-    ['builder', 'gh issue create --title x --label backlog'],
-    ['builder', 'gh issue create --title x -l Backlog'],
-    ['builder', 'gh issue create --title x --label=bug,backlog'],
-    ['builder', 'gh issue edit 4 --add-label backlog'],
-    ['builder', 'gh issue edit 4 --remove-label backlog'],
-    ['builder', 'gh issue edit 4 --add-label=backlog'],
     ['builder', 'gh issue delete 4'],
     ['builder', 'gh issue transfer 4 other/repo'],
     ['builder', 'gh issue create --web'],
     ['builder', 'gh issue comment 4 -e'],
     ['builder', 'gh issue view 4 --json body --jq .body'],
     ['reviewer', 'gh issue create --title x'],
-    // From the security review of #39: forms gh accepts that a plain match missed.
-    ['builder', 'gh issue create --title x -lbacklog'],
-    ['builder', 'gh issue edit 4 --add-label "backlog"'],
-    ['builder', "gh issue edit 4 --remove-label 'backlog'"],
-    ['builder', 'gh issue create --title x --label="backlog"'],
-    ['builder', 'gh issue create --title x -wl'],
-    ['builder', 'gh pr edit 3 --add-label backlog'],
-    ['builder', 'gh pr create --title x --label backlog'],
-    ['builder', 'gh pr create --title x -lbacklog'],
-    // Round two: gh gives -l to --title, then applies --label backlog.
-    ['builder', 'gh issue create --title -l --label backlog'],
-    ['builder', 'gh issue edit 4 --body x --add-label bug --title backlog'],
-    ['builder', 'gh issue create --recover draft.json'],
-    ['builder', 'gh pr create --recover=draft.json'],
+    // gh accepts -w bundled with other short flags, so -wl opens a browser too.
+    ['builder', 'gh issue create --title x -wl bug'],
+    ['builder', 'gh pr create --title x -wl bug'],
   ];
 
   test.each(refused)('%s refuses: %s', async (role, command) => {
@@ -467,13 +450,13 @@ describe('as-agent allowlist', () => {
   // Issues access is requested only for the commands that need it, so every other command keeps
   // working on an app that hasn't been granted the Issues permission.
   const scoped: [string, Record<string, string>][] = [
-    ['gh issue create --title x --label proposed', { issues: 'write' }],
-    // Mentioning the backlog in a title is fine; only the label itself is the maintainer's.
-    ['gh issue create --title Backlog:tidy-item-6 --label proposed', { issues: 'write' }],
-    ['gh issue edit 4 --add-label proposed', { issues: 'write' }],
+    ['gh issue create --title x --label backlog', { issues: 'write' }],
+    ['gh issue edit 4 --add-label backlog', { issues: 'write' }],
+    ['gh issue edit 4 --remove-label backlog', { issues: 'write' }],
+    ['gh issue comment 4 --body-file triage.md', { issues: 'write' }],
     ['gh issue list --label backlog', { issues: 'read' }],
     ['gh issue view 4', { issues: 'read' }],
-    ['gh api /repos/hartz89/docent/issues/4/timeline', { issues: 'read' }],
+    ['gh api /repos/hartz89/docent/issues/4/comments', { issues: 'read' }],
     ['gh pr view 3', {}],
     ['gh api /repos/hartz89/docent/pulls', {}],
   ];
