@@ -2,10 +2,17 @@
 // saves one from a real run; `--fixture` replays it with no GitHub or model calls. A review
 // submitted in fixture mode is printed, never posted.
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile as readFileText, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { AgentReply, AgentRunner } from './agent.ts';
-import { isSafeRepoPath, type PrInfo, type PrSource, type ReviewPost } from './github.ts';
+import {
+  fileFromText,
+  isSafeRepoPath,
+  type PrInfo,
+  type PrSource,
+  type RepoTree,
+  type ReviewPost,
+} from './github.ts';
 
 type RecordedReplies = Partial<Record<'tour' | 'question', AgentReply[]>>;
 
@@ -21,17 +28,27 @@ export const printReview: ReviewRecorder = (review) =>
 export function fixtureSource(dir: string, record: ReviewRecorder = printReview): PrSource {
   return async (onStep) => {
     onStep('Loading the recorded pull request');
-    const pr = JSON.parse(await readFile(join(dir, 'pr.json'), 'utf8')) as PrInfo;
+    const pr = JSON.parse(await readFileText(join(dir, 'pr.json'), 'utf8')) as PrInfo;
+    // Recorded files are trusted test data, so they're read from disk.
+    const readFile = async (side: 'old' | 'new', path: string) => {
+      const file = fileAt(dir, side, path);
+      return isSafeRepoPath(path) && existsSync(file) ? readFileText(file, 'utf8') : null;
+    };
     return {
       pr,
-      diffText: await readFile(join(dir, 'diff.patch'), 'utf8'),
+      diffText: await readFileText(join(dir, 'diff.patch'), 'utf8'),
       // Not recorded: a replay names its author session with --session, or has none.
       commitMessages: [],
       headInBaseRepo: false,
       dir: join(dir, 'files', 'head'),
-      readFile: async (side, path) => {
-        const file = fileAt(dir, side, path);
-        return isSafeRepoPath(path) && existsSync(file) ? readFile(file, 'utf8') : null;
+      readFile,
+      open: async (side, path) => fileFromText(await readFile(side, path)),
+      // The recorded tree, or none: older fixtures didn't record one.
+      tree: async () => {
+        const file = join(dir, 'tree.json');
+        return existsSync(file)
+          ? (JSON.parse(await readFileText(file, 'utf8')) as RepoTree)
+          : { entries: [], truncated: false };
       },
       currentHead: async () => pr.head,
       postReview: async (review) => {
@@ -47,7 +64,9 @@ export function fixtureRunner(dir: string): AgentRunner {
   let replies: RecordedReplies | undefined;
   const used = { tour: 0, question: 0 };
   return async (request) => {
-    replies ??= JSON.parse(await readFile(join(dir, 'replies.json'), 'utf8')) as RecordedReplies;
+    replies ??= JSON.parse(
+      await readFileText(join(dir, 'replies.json'), 'utf8'),
+    ) as RecordedReplies;
     const job = request.job === 'question' ? 'question' : 'tour';
     const list = replies[job] ?? [];
     const reply = list[Math.min(used[job]++, list.length - 1)];
@@ -78,6 +97,16 @@ export function recording(
           const text = await workspace.readFile(side, path);
           if (text !== null) await save(fileAt(dir, side, path), text);
           return text;
+        },
+        open: async (side, path) => {
+          const file = await workspace.open(side, path);
+          if (file.kind === 'text') await save(fileAt(dir, side, path), file.text);
+          return file;
+        },
+        tree: async () => {
+          const tree = await workspace.tree();
+          await save(join(dir, 'tree.json'), `${JSON.stringify(tree, null, 1)}\n`);
+          return tree;
         },
       };
     },

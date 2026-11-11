@@ -8,9 +8,6 @@ import { Busy } from './author-session.ts';
 import { isSafeRepoPath } from './github.ts';
 import { type Review, SubmitRefused, type TourState, verdict } from './review.ts';
 
-/** The code view shows text files up to this size. */
-const MAX_FILE_CHARS = 2_000_000;
-
 export type AppOptions = {
   /** Per-launch secret. Every /api request must send it as a bearer token. */
   token: string;
@@ -77,15 +74,34 @@ export function createApp({ token, origin, version, webRoot, review }: AppOption
       async (c) => {
         if (!review) return c.json(noReview, 404);
         const { path, side } = c.req.valid('query');
-        const text = await review.readFile(side, path);
-        if (text === null) return c.json({ error: `${path} does not exist at ${side}` }, 404);
-        if (text.length > MAX_FILE_CHARS) {
-          return c.json({ error: `${path} is too large to show (over 2 MB)` }, 413);
+        const file = await review.open(side, path);
+        switch (file.kind) {
+          case 'text':
+            return c.json({ path, side, text: file.text }, 200);
+          case 'missing':
+            return c.json(
+              { error: `${path} isn't a file at ${side === 'new' ? 'head' : 'base'}` },
+              404,
+            );
+          case 'too_large':
+            return c.json({ error: 'Too large to show (over 2 MB).' }, 413);
+          case 'binary':
+            return c.json({ error: 'A binary file, not shown.' }, 415);
+          case 'symlink':
+            return c.json(
+              { error: `A symbolic link to ${file.target}. Docent doesn't follow links.` },
+              415,
+            );
         }
-        if (text.includes('\0')) return c.json({ error: `${path} is a binary file` }, 415);
-        return c.json({ path, side, text }, 200);
       },
     )
+    // Every path in the repo at the PR's head, read from git, for the file browser.
+    .get('/api/tree', async (c) => {
+      if (!review) return c.json(noReview, 404);
+      const tree = await review.tree();
+      if (!tree) return c.json({ error: 'The pull request is still loading.' }, 503);
+      return c.json({ head: tree.head, ...tree.tree }, 200);
+    })
     .post(
       '/api/questions',
       validator('json', (body: { stopId?: unknown; question?: unknown } | null, c) => {
