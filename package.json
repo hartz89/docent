@@ -8,12 +8,13 @@
     "node": ">=24"
   },
   "scripts": {
-    "verify": "tsc -b && biome check && node scripts/check-agents-md.ts && vitest run",
+    "verify": "tsc -b && biome check && node scripts/check-agents-md.ts && node scripts/check-context-footprint.ts && vitest run",
     "test:e2e": "pnpm build && playwright test",
     "dev": "pnpm --filter @docent/web dev",
     "docent": "pnpm -s build && node apps/server/dist/cli.js",
     "fix": "biome check --write",
     "check:context": "node scripts/check-context-loading.ts",
+    "bench:harness": "node scripts/harness-bench.ts",
     "build": "tsc -b && pnpm --filter @docent/web build",
     "prepare": "lefthook install"
   },
