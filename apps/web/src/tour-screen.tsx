@@ -19,11 +19,13 @@ import {
 import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
 import { Markdown } from './markdown.tsx';
-import type { Ready } from './review-page.tsx';
+import type { Ready, Working } from './review-page.tsx';
+import { TourProgress } from './status-screen.tsx';
 import { ThemeToggle } from './theme.tsx';
 import { postedLabel, VerdictForm } from './verdict.tsx';
 
-type Props = { snapshot: ReviewSnapshot; tour: Ready };
+/** The finished tour, or the stops written and checked so far while the guide writes the rest. */
+type Props = { snapshot: ReviewSnapshot; tour: Ready | Working };
 type Diff = NonNullable<ReviewSnapshot['diff']>;
 type Viewing = { path: string; side: 'old' | 'new' };
 
@@ -36,7 +38,10 @@ const KIND_LABELS: Record<StopView['kind'], string> = {
 };
 
 export function TourScreen({ snapshot, tour }: Props) {
-  const { stops, skips } = tour.tour;
+  const ready = tour.state === 'ready' ? tour : null;
+  const stops = ready ? ready.tour.stops : (tour as Working).stops;
+  const skips = ready?.tour.skips ?? [];
+  const writing = ready ? null : (tour as Working);
   const [index, setIndex] = useState(0);
   const [anchorIndex, setAnchorIndex] = useState(0);
   // A file opened from the skip list or the overview, in place of the stop's citation.
@@ -116,18 +121,24 @@ export function TourScreen({ snapshot, tour }: Props) {
 
   const diff = snapshot.diff as Diff;
   const changes = useMemo(() => changedLines(diff), [diff]);
-  if (!stop || !snapshot.pr) return null;
+  if (!snapshot.pr) return null;
 
-  const anchor = stop.anchors[anchorIndex] ?? null;
+  const anchor = stop?.anchors[anchorIndex] ?? null;
   const shown: Viewing | null =
     viewing ?? (anchor ? { path: anchor.path, side: anchor.side } : null);
-  const cited = shown
-    ? stop.anchors.filter((a) => a.path === shown.path && a.side === shown.side)
-    : [];
+  const cited =
+    shown && stop ? stop.anchors.filter((a) => a.path === shown.path && a.side === shown.side) : [];
 
   return (
     <div className="app">
-      <TopBar snapshot={snapshot} diff={diff} index={index} total={stops.length} posted={posted} />
+      <TopBar
+        snapshot={snapshot}
+        diff={diff}
+        index={index}
+        total={stops.length}
+        finished={ready !== null}
+        posted={posted}
+      />
       <div className="columns">
         <nav className="column" aria-label="The route">
           <Route
@@ -136,7 +147,8 @@ export function TourScreen({ snapshot, tour }: Props) {
             onSelect={go}
             skips={skips}
             onOpenSkip={(path) => setViewing({ path, side: sideFor(diff, path) })}
-            tour={tour}
+            tour={ready}
+            writing={writing}
           />
         </nav>
         <section className="column code-column" aria-label="Code">
@@ -167,25 +179,38 @@ export function TourScreen({ snapshot, tour }: Props) {
           )}
         </section>
         <aside className="column" aria-label="The guide" ref={guide}>
-          <Narration
-            key={stop.id}
-            stop={stop}
-            author={snapshot.author}
-            exchanges={threads[stop.id] ?? []}
-            onAsk={(question) => void ask(stop.id, question)}
-            activeAnchor={viewing ? -1 : anchorIndex}
-            onAnchor={(i) => {
-              setAnchorIndex(i);
-              setViewing(null);
-            }}
-            isLast={index === stops.length - 1}
-            onNext={() => go(index + 1)}
-            verdict={
-              stop.kind === 'verdict_prompt' ? (
-                <VerdictForm pr={snapshot.pr} posted={posted} onPosted={setPosted} />
-              ) : null
-            }
-          />
+          {!stop ? (
+            <div className="narration">
+              <div className="narration-body fade-in">
+                <TourProgress tour={writing} />
+              </div>
+            </div>
+          ) : (
+            <Narration
+              key={stop.id}
+              stop={stop}
+              author={snapshot.author}
+              exchanges={threads[stop.id] ?? []}
+              onAsk={(question) => void ask(stop.id, question)}
+              activeAnchor={viewing ? -1 : anchorIndex}
+              onAnchor={(i) => {
+                setAnchorIndex(i);
+                setViewing(null);
+              }}
+              isLast={index === stops.length - 1}
+              onNext={() => go(index + 1)}
+              finished={ready !== null}
+              verdict={
+                stop.kind !== 'verdict_prompt' ? null : ready ? (
+                  <VerdictForm pr={snapshot.pr} posted={posted} onPosted={setPosted} />
+                ) : (
+                  <p className="waiting-note">
+                    Your verdict opens once the whole tour is written and checked.
+                  </p>
+                )
+              }
+            />
+          )}
         </aside>
       </div>
     </div>
@@ -197,12 +222,15 @@ function TopBar({
   diff,
   index,
   total,
+  finished,
   posted,
 }: {
   snapshot: ReviewSnapshot;
   diff: Diff;
   index: number;
   total: number;
+  /** False while stops are still being written, so the total isn't known yet. */
+  finished: boolean;
   posted: PostedReview | null;
 }) {
   const pr = snapshot.pr;
@@ -237,18 +265,27 @@ function TopBar({
       </div>
       <div className="progress">
         <span>
-          Stop {index + 1} of {total}
+          {total === 0
+            ? 'Preparing the tour'
+            : finished
+              ? `Stop ${index + 1} of ${total}`
+              : `Stop ${index + 1} of ${total} so far`}
         </span>
-        <div
-          className="progress-track"
-          role="progressbar"
-          aria-valuemin={1}
-          aria-valuemax={total}
-          aria-valuenow={index + 1}
-          aria-label="Tour progress"
-        >
-          <div className="progress-fill" style={{ width: `${((index + 1) / total) * 100}%` }} />
-        </div>
+        {finished ? (
+          <div
+            className="progress-track"
+            role="progressbar"
+            aria-valuemin={1}
+            aria-valuemax={total}
+            aria-valuenow={index + 1}
+            aria-label="Tour progress"
+          >
+            <div className="progress-fill" style={{ width: `${((index + 1) / total) * 100}%` }} />
+          </div>
+        ) : (
+          // Same size, no fill: until the route is finished, a fraction would be a guess.
+          <div className="progress-track" aria-hidden="true" />
+        )}
       </div>
       {posted ? (
         <a className="verdict-button posted" href={posted.url} target="_blank" rel="noreferrer">
@@ -276,15 +313,18 @@ function Route({
   skips,
   onOpenSkip,
   tour,
+  writing,
 }: {
   stops: readonly StopView[];
   index: number;
   onSelect: (index: number) => void;
   skips: Ready['tour']['skips'];
   onOpenSkip: (path: string) => void;
-  tour: Ready;
+  /** The finished tour, or null while it's still being written. */
+  tour: Ready | null;
+  writing: Working | null;
 }) {
-  const spent = tour.costs.reduce((sum, c) => sum + c.costMicroUsd, 0);
+  const spent = tour?.costs.reduce((sum, c) => sum + c.costMicroUsd, 0) ?? 0;
   return (
     <div className="route">
       <h2 className="section-label">The route</h2>
@@ -317,11 +357,14 @@ function Route({
             </li>
           );
         })}
+        {writing && <UpcomingStop stops={stops} writing={writing} />}
       </ol>
 
       <section className="skips" aria-label="Skipped">
-        <h2 className="section-label">Skipped, with reasons ({skips.length})</h2>
-        {skips.length === 0 ? (
+        <h2 className="section-label">Skipped, with reasons{tour ? ` (${skips.length})` : ''}</h2>
+        {!tour ? (
+          <p className="empty-note">Listed once the whole tour is checked.</p>
+        ) : skips.length === 0 ? (
           <p className="empty-note">Nothing skipped: every changed line is on the route.</p>
         ) : (
           <ul className="skip-list">
@@ -340,7 +383,7 @@ function Route({
         )}
       </section>
 
-      {tour.problems.length > 0 && (
+      {tour && tour.problems.length > 0 && (
         <details className="checks">
           <summary>
             {tour.problems.length} unresolved check{tour.problems.length === 1 ? '' : 's'}
@@ -354,11 +397,36 @@ function Route({
       )}
 
       <p className="cost-line">
-        {tour.cached
-          ? `Loaded from cache · no model calls (first written for ${formatUsd(spent)})`
-          : `Tour written for ${formatUsd(spent)} · ${tour.attempts} attempt${tour.attempts === 1 ? '' : 's'} · ${tour.model}`}
+        {!tour
+          ? 'The guide is still writing. Its cost shows here when it finishes.'
+          : tour.cached
+            ? `Loaded from cache · no model calls (first written for ${formatUsd(spent)})`
+            : `Tour written for ${formatUsd(spent)} · ${tour.attempts} attempt${tour.attempts === 1 ? '' : 's'} · ${tour.model}`}
       </p>
     </div>
+  );
+}
+
+/** The route's next row while the guide writes: says what's happening, never how long it'll take. */
+function UpcomingStop({ stops, writing }: { stops: readonly StopView[]; writing: Working }) {
+  const step = writing.steps.find((s) => s.status === 'active')?.id;
+  const verdictIn = stops.at(-1)?.kind === 'verdict_prompt';
+  const label =
+    writing.attempt > 1
+      ? 'Fixing what the checker found'
+      : step === 'checking' || verdictIn
+        ? 'Checking the whole tour'
+        : step === 'writing'
+          ? `Writing stop ${stops.length + 1}`
+          : 'Planning the route';
+  return (
+    <li className="upcoming-stop" aria-live="polite">
+      <span className="upcoming-dot" aria-hidden="true" />
+      <span>
+        <span className="stop-kind">In progress</span>
+        <span className="upcoming-title">{label}…</span>
+      </span>
+    </li>
   );
 }
 
@@ -429,6 +497,7 @@ function Narration({
   onAnchor,
   isLast,
   onNext,
+  finished,
   verdict,
 }: {
   stop: StopView;
@@ -439,6 +508,8 @@ function Narration({
   onAnchor: (index: number) => void;
   isLast: boolean;
   onNext: () => void;
+  /** False while the rest of the tour is still being written and checked. */
+  finished: boolean;
   /** The verdict form, on the verdict stop. */
   verdict: ReactNode;
 }) {
@@ -498,76 +569,84 @@ function Narration({
 
         {verdict}
 
-        <div className="question">
-          {exchanges.map((exchange, i) => (
-            <div className="exchange fade-in" key={exchange.id}>
-              <p
-                className="exchange-question"
-                ref={i === exchanges.length - 1 ? newest : undefined}
-              >
-                {exchange.question}
-              </p>
-              {exchange.answer ? (
-                <>
-                  <div className="exchange-answer">
-                    <Markdown text={exchange.answer.text} />
+        {!finished ? (
+          <p className="waiting-note">Questions open once the whole tour is written and checked.</p>
+        ) : (
+          <div className="question">
+            {exchanges.map((exchange, i) => (
+              <div className="exchange fade-in" key={exchange.id}>
+                <p
+                  className="exchange-question"
+                  ref={i === exchanges.length - 1 ? newest : undefined}
+                >
+                  {exchange.question}
+                </p>
+                {exchange.answer ? (
+                  <>
+                    <div className="exchange-answer">
+                      <Markdown text={exchange.answer.text} />
+                    </div>
+                    <div className="exchange-source">{answerSource(exchange.answer)}</div>
+                  </>
+                ) : exchange.error ? (
+                  <div className="exchange-source" role="alert">
+                    Couldn't answer: {exchange.error}
                   </div>
-                  <div className="exchange-source">{answerSource(exchange.answer)}</div>
-                </>
-              ) : exchange.error ? (
-                <div className="exchange-source" role="alert">
-                  Couldn't answer: {exchange.error}
-                </div>
-              ) : (
-                <div className="exchange-source" aria-live="polite">
-                  {author?.found
-                    ? "The author's session is thinking it over…"
-                    : 'The guide is reading the code…'}
-                </div>
-              )}
-            </div>
-          ))}
-          <label
-            htmlFor={`question-${stop.id}`}
-            className={exchanges.length > 0 ? 'follow-up' : undefined}
-          >
-            {exchanges.length > 0 ? 'Ask a follow-up' : 'Your question'}
-          </label>
-          <textarea
-            id={`question-${stop.id}`}
-            value={draft}
-            placeholder="Why is it built this way? What calls this?"
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-                event.preventDefault();
-                submit();
-              }
-            }}
-          />
-          <div className="question-actions">
-            <span>
-              <kbd>⌘</kbd> <kbd>Enter</kbd> to ask
-            </span>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={submit}
-              disabled={!draft.trim() || pending}
+                ) : (
+                  <div className="exchange-source" aria-live="polite">
+                    {author?.found
+                      ? "The author's session is thinking it over…"
+                      : 'The guide is reading the code…'}
+                  </div>
+                )}
+              </div>
+            ))}
+            <label
+              htmlFor={`question-${stop.id}`}
+              className={exchanges.length > 0 ? 'follow-up' : undefined}
             >
-              {pending ? 'Asking…' : author?.found ? 'Ask the author' : 'Ask the guide'}
-            </button>
+              {exchanges.length > 0 ? 'Ask a follow-up' : 'Your question'}
+            </label>
+            <textarea
+              id={`question-${stop.id}`}
+              value={draft}
+              placeholder="Why is it built this way? What calls this?"
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  submit();
+                }
+              }}
+            />
+            <div className="question-actions">
+              <span>
+                <kbd>⌘</kbd> <kbd>Enter</kbd> to ask
+              </span>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={submit}
+                disabled={!draft.trim() || pending}
+              >
+                {pending ? 'Asking…' : author?.found ? 'Ask the author' : 'Ask the guide'}
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       <footer className="narration-footer">
         <span className="batch-note">Pending batch · no changes yet</span>
-        {!isLast && (
+        {!isLast ? (
           <button type="button" className="primary-button" onClick={onNext}>
             Next stop <span aria-hidden="true">→</span>
           </button>
-        )}
+        ) : !finished && stop.kind !== 'verdict_prompt' ? (
+          <button type="button" className="primary-button" disabled>
+            Writing the next stop…
+          </button>
+        ) : null}
       </footer>
     </div>
   );

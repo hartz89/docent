@@ -9,8 +9,12 @@ import { TourScreen } from './tour-screen.tsx';
 
 export type Snapshot = ReviewSnapshot;
 type Ready = Extract<TourState, { state: 'ready' }>;
+type Working = Extract<TourState, { state: 'working' }>;
 
-/** The review screen: progress while the tour is written, then the tour itself. */
+/**
+ * The review screen. Once the PR is read, it's the tour screen from then on: the description and
+ * files while the guide reads, each stop as it's written and checked, then the finished tour.
+ */
 export function ReviewPage() {
   const snapshot = useQuery({
     queryKey: ['review'],
@@ -73,8 +77,8 @@ export function ReviewPage() {
   if (data === null || data === undefined) return <HealthPage />;
 
   const current = tour ?? data.tour;
-  return current.state === 'ready' && data.pr && data.diff ? (
-    <TourScreen snapshot={{ ...data, tour: current }} tour={current as Ready} />
+  return current.state !== 'failed' && data.pr && data.diff ? (
+    <TourScreen snapshot={{ ...data, tour: current }} tour={current} />
   ) : (
     <div className="app">
       <TopBarShell snapshot={data} />
@@ -101,4 +105,4 @@ function TopBarShell({ snapshot }: { snapshot: Snapshot }) {
   );
 }
 
-export type { Ready, StopView };
+export type { Ready, StopView, Working };
