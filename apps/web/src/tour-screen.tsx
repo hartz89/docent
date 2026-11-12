@@ -22,6 +22,13 @@ import { CodeView } from './code-view.tsx';
 import { FileTree } from './file-tree.tsx';
 import { Markdown } from './markdown.tsx';
 import type { Ready, Working } from './review-page.tsx';
+import {
+  DRAWER_QUERY,
+  RouteDrawer,
+  RouteIcon,
+  STACKED_QUERY,
+  useMediaQuery,
+} from './route-drawer.tsx';
 import { report } from './run-log.ts';
 import { TourProgress } from './status-screen.tsx';
 import { ThemeToggle } from './theme.tsx';
@@ -99,6 +106,25 @@ export function TourScreen({ snapshot, tour }: Props) {
     }
   }, []);
 
+  // Under 1200px wide the route leaves its column for a drawer; under 800px the layout stacks,
+  // and a bottom bar moves between stops.
+  const drawer = useMediaQuery(DRAWER_QUERY);
+  const stacked = useMediaQuery(STACKED_QUERY);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const routeOpen = drawer && drawerOpen;
+  const openRoute = useCallback(() => setDrawerOpen(true), []);
+  const closeRoute = useCallback(() => setDrawerOpen(false), []);
+  // Widening past 1200px with the drawer open (a rotated tablet, a zoom) takes the drawer and its
+  // opener away. Forget it was open, so narrowing again doesn't reopen it, and move focus to the
+  // current stop in the route's column rather than leaving it on the page body.
+  useEffect(() => {
+    if (drawer || !drawerOpen) return;
+    setDrawerOpen(false);
+    document
+      .querySelector<HTMLElement>('nav[aria-label="Route and files"] [aria-current="step"]')
+      ?.focus();
+  }, [drawer, drawerOpen]);
+
   const stop = stops[index];
   // When the finished tour replaces the streamed stops, a repair may have added a stop before
   // this one. Follow the stop the reviewer was reading, by its title, not its number.
@@ -120,13 +146,17 @@ export function TourScreen({ snapshot, tour }: Props) {
     }
     reading.current = { stops, title };
   }, [stops, index]);
-  // The guide column outlives each stop, so it would keep the last stop's scroll position.
-  // A stop seen for the first time opens at the top; a revisited stop opens where it was left.
+  // The guide outlives each stop, so it would keep the last stop's scroll position. A stop seen
+  // for the first time opens at the top; a revisited stop opens where it was left. The guide
+  // scrolls in its own column, or, in the stacked phone layout, the columns scroll together.
   const guide = useRef<HTMLElement>(null);
-  const scrollByStop = useRef(new Map<string, number>());
+  const columns = useRef<HTMLDivElement>(null);
+  const scrollByStop = useRef(new Map<string, [number, number]>());
   const go = useCallback(
     (next: number) => {
-      if (stop && guide.current) scrollByStop.current.set(stop.id, guide.current.scrollTop);
+      if (stop && guide.current && columns.current) {
+        scrollByStop.current.set(stop.id, [guide.current.scrollTop, columns.current.scrollTop]);
+      }
       setIndex(Math.max(0, Math.min(stops.length - 1, next)));
       setAnchorIndex(0);
       setOverviewFirst(false);
@@ -150,13 +180,17 @@ export function TourScreen({ snapshot, tour }: Props) {
     if (stopId) report({ kind: 'ui.stop', stop: index + 1, stopId });
   }, [stopId, index]);
   useLayoutEffect(() => {
-    if (guide.current && stopId) guide.current.scrollTop = scrollByStop.current.get(stopId) ?? 0;
+    if (!guide.current || !columns.current || !stopId) return;
+    const [guideTop, columnsTop] = scrollByStop.current.get(stopId) ?? [0, 0];
+    guide.current.scrollTop = guideTop;
+    columns.current.scrollTop = columnsTop;
   }, [stopId]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      // In the route drawer, keys belong to the drawer.
+      if (target?.closest('input, textarea, select, [contenteditable="true"], dialog')) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (event.key === 'ArrowRight') {
         event.preventDefault();
@@ -176,11 +210,12 @@ export function TourScreen({ snapshot, tour }: Props) {
       if (event.key !== 'p' || !(event.metaKey || event.ctrlKey) || event.altKey) return;
       event.preventDefault();
       setPane('files');
+      if (drawer) setDrawerOpen(true);
       requestAnimationFrame(() => goToFile.current?.focus());
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [drawer]);
 
   const diff = snapshot.diff as Diff;
   const changes = useMemo(() => changedLines(diff), [diff]);
@@ -196,6 +231,63 @@ export function TourScreen({ snapshot, tour }: Props) {
   const cited =
     shown && stop ? stop.anchors.filter((a) => a.path === shown.path && a.side === shown.side) : [];
 
+  // The route and the file tree, as tabs: in their own column, or in the drawer.
+  const leftPane = (
+    <>
+      <div className="pane-switch" role="tablist" aria-label="Left pane">
+        <button
+          type="button"
+          role="tab"
+          id="tab-route"
+          aria-selected={pane === 'route'}
+          aria-controls="pane-route"
+          onClick={() => setPane('route')}
+        >
+          Route <span className="pane-count">{stops.length} stops</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-files"
+          aria-selected={pane === 'files'}
+          aria-controls="pane-files"
+          onClick={() => setPane('files')}
+        >
+          Files <span className="pane-count">{diff.files.length} changed</span>
+        </button>
+      </div>
+      <div role="tabpanel" id="pane-route" aria-labelledby="tab-route" hidden={pane !== 'route'}>
+        <Route
+          stops={stops}
+          index={index}
+          onSelect={(i) => {
+            go(i);
+            closeRoute();
+          }}
+          skips={skips}
+          onOpenSkip={(path) => {
+            setViewing({ path, side: sideFor(diff, path) });
+            closeRoute();
+          }}
+          tour={ready}
+          writing={writing}
+        />
+      </div>
+      <div role="tabpanel" id="pane-files" aria-labelledby="tab-files" hidden={pane !== 'files'}>
+        <FileTree
+          diff={diff}
+          onRoute={onRoute}
+          selected={shown?.side === 'new' ? shown.path : null}
+          onOpen={(path) => {
+            setViewing({ path, side: 'new' });
+            closeRoute();
+          }}
+          filterRef={goToFile}
+        />
+      </div>
+    </>
+  );
+
   return (
     <div className="app">
       <TopBar
@@ -205,67 +297,26 @@ export function TourScreen({ snapshot, tour }: Props) {
         total={stops.length}
         finished={ready !== null}
         posted={posted}
+        drawer={drawer ? { open: routeOpen, onOpen: openRoute } : null}
       />
-      <div className="columns">
-        <nav className="column left-column" aria-label="Route and files">
-          <div className="pane-switch" role="tablist" aria-label="Left pane">
-            <button
-              type="button"
-              role="tab"
-              id="tab-route"
-              aria-selected={pane === 'route'}
-              aria-controls="pane-route"
-              onClick={() => setPane('route')}
-            >
-              Route <span className="pane-count">{stops.length} stops</span>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              id="tab-files"
-              aria-selected={pane === 'files'}
-              aria-controls="pane-files"
-              onClick={() => setPane('files')}
-            >
-              Files <span className="pane-count">{diff.files.length} changed</span>
-            </button>
-          </div>
-          <div
-            role="tabpanel"
-            id="pane-route"
-            aria-labelledby="tab-route"
-            hidden={pane !== 'route'}
-          >
-            <Route
-              stops={stops}
-              index={index}
-              onSelect={go}
-              skips={skips}
-              onOpenSkip={(path) => setViewing({ path, side: sideFor(diff, path) })}
-              tour={ready}
-              writing={writing}
-            />
-          </div>
-          <div
-            role="tabpanel"
-            id="pane-files"
-            aria-labelledby="tab-files"
-            hidden={pane !== 'files'}
-          >
-            <FileTree
-              diff={diff}
-              onRoute={onRoute}
-              selected={shown?.side === 'new' ? shown.path : null}
-              onOpen={(path) => setViewing({ path, side: 'new' })}
-              filterRef={goToFile}
-            />
-          </div>
-        </nav>
+      <div className="columns" ref={columns}>
+        {drawer ? (
+          <RouteDrawer open={routeOpen} onClose={closeRoute}>
+            {leftPane}
+          </RouteDrawer>
+        ) : (
+          <nav className="column left-column" aria-label="Route and files">
+            {leftPane}
+          </nav>
+        )}
         <section className="column code-column" aria-label="Code">
           {shown ? (
             <>
               <div className="code-header">
-                <span className="code-path">{shown.path}</span>
+                {/* Truncates from the start, so the file name stays in view. */}
+                <span className="code-path" title={shown.path}>
+                  <bdi>{shown.path}</bdi>
+                </span>
                 <span className="code-range">
                   {viewing
                     ? (viewing.label ??
@@ -351,7 +402,60 @@ export function TourScreen({ snapshot, tour }: Props) {
           )}
         </aside>
       </div>
+      {stacked && (
+        <StopBar
+          index={index}
+          total={stops.length}
+          finished={ready !== null}
+          onGo={go}
+          onOpenRoute={openRoute}
+        />
+      )}
     </div>
+  );
+}
+
+/** The phone layout's bottom bar: the route, and the way between stops. */
+function StopBar({
+  index,
+  total,
+  finished,
+  onGo,
+  onOpenRoute,
+}: {
+  index: number;
+  total: number;
+  finished: boolean;
+  onGo: (index: number) => void;
+  onOpenRoute: () => void;
+}) {
+  return (
+    <nav className="stop-bar" aria-label="Stops">
+      <button type="button" className="stop-bar-route" aria-haspopup="dialog" onClick={onOpenRoute}>
+        <RouteIcon /> Route
+      </button>
+      <div className="stop-bar-steps">
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Previous stop"
+          disabled={index === 0}
+          onClick={() => onGo(index - 1)}
+        >
+          <span aria-hidden="true">←</span>
+        </button>
+        <span className="stop-bar-count">{progressText(index, total, finished)}</span>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Next stop"
+          disabled={index >= total - 1}
+          onClick={() => onGo(index + 1)}
+        >
+          <span aria-hidden="true">→</span>
+        </button>
+      </div>
+    </nav>
   );
 }
 
@@ -362,6 +466,7 @@ function TopBar({
   total,
   finished,
   posted,
+  drawer,
 }: {
   snapshot: ReviewSnapshot;
   diff: Diff;
@@ -370,6 +475,8 @@ function TopBar({
   /** False while stops are still being written, so the total isn't known yet. */
   finished: boolean;
   posted: PostedReview | null;
+  /** How to open the route when it's a drawer; null when it has its own column. */
+  drawer: { open: boolean; onOpen: () => void } | null;
 }) {
   const pr = snapshot.pr;
   const lines = diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
@@ -377,13 +484,27 @@ function TopBar({
   const removed = lines.filter((l) => l.kind === 'removed').length;
   return (
     <header className="topbar">
+      {drawer && (
+        <button
+          type="button"
+          className="icon-button route-toggle"
+          aria-label="Open the route"
+          title="Open the route"
+          aria-haspopup="dialog"
+          aria-expanded={drawer.open}
+          onClick={drawer.onOpen}
+        >
+          <RouteIcon />
+        </button>
+      )}
       <span className="brand">Docent</span>
       <div className="pr-heading">
         <h1 className="pr-title" title={pr?.title}>
           {pr?.title}
         </h1>
+        {/* Narrow windows drop meta items by priority: the commit first, then files, then repo. */}
         <div className="pr-meta">
-          <span>{pr?.repo}</span>
+          <span className="meta-repo">{pr?.repo}</span>
           <a
             href={pr?.url}
             target="_blank"
@@ -392,8 +513,8 @@ function TopBar({
           >
             #{pr?.number}
           </a>
-          <span className="mono">{pr?.head.slice(0, 7)}</span>
-          <span>
+          <span className="mono meta-head">{pr?.head.slice(0, 7)}</span>
+          <span className="meta-files">
             {diff.files.length} file{diff.files.length === 1 ? '' : 's'}
           </span>
           <span>
@@ -401,33 +522,37 @@ function TopBar({
           </span>
         </div>
       </div>
-      <div className="progress">
-        <span>
-          {total === 0
-            ? 'Preparing the tour'
-            : finished
-              ? `Stop ${index + 1} of ${total}`
-              : `Stop ${index + 1} of ${total} so far`}
-        </span>
-        {finished ? (
-          <div
-            className="progress-track"
-            role="progressbar"
-            aria-valuemin={1}
-            aria-valuemax={total}
-            aria-valuenow={index + 1}
-            aria-label="Tour progress"
-          >
-            <div className="progress-fill" style={{ width: `${((index + 1) / total) * 100}%` }} />
-          </div>
-        ) : (
-          // Same size, no fill: until the route is finished, a fraction would be a guess.
-          <div className="progress-track" aria-hidden="true" />
-        )}
-      </div>
+      {drawer ? (
+        <button
+          type="button"
+          className="progress progress-button"
+          aria-haspopup="dialog"
+          aria-expanded={drawer.open}
+          aria-label={`${progressText(index, total, finished)}. Open the route.`}
+          onClick={drawer.onOpen}
+        >
+          <span>
+            {progressText(index, total, finished)} <span aria-hidden="true">▾</span>
+          </span>
+          <ProgressTrack index={index} total={total} finished={finished} />
+        </button>
+      ) : (
+        <div className="progress">
+          <span>{progressText(index, total, finished)}</span>
+          <ProgressTrack index={index} total={total} finished={finished} />
+        </div>
+      )}
+      {/* On narrow windows the label collapses to its icon; screen readers still hear it. */}
       {posted ? (
-        <a className="verdict-button posted" href={posted.url} target="_blank" rel="noreferrer">
-          <span aria-hidden="true">✓</span> {postedLabel(posted)}
+        <a
+          className="verdict-button posted"
+          href={posted.url}
+          target="_blank"
+          rel="noreferrer"
+          title={postedLabel(posted)}
+        >
+          <span aria-hidden="true">✓</span>{' '}
+          <span className="verdict-button-label">{postedLabel(posted)}</span>
         </a>
       ) : (
         <button
@@ -436,11 +561,62 @@ function TopBar({
           disabled
           title="Comes at the end of the tour"
         >
-          Verdict at the end
+          <FlagIcon /> <span className="verdict-button-label">Verdict at the end</span>
         </button>
       )}
       <ThemeToggle />
     </header>
+  );
+}
+
+/** Where the reader is. While stops are still being written, the total so far. */
+function progressText(index: number, total: number, finished: boolean): string {
+  if (total === 0) return 'Preparing the tour';
+  return finished ? `Stop ${index + 1} of ${total}` : `Stop ${index + 1} of ${total} so far`;
+}
+
+function ProgressTrack({
+  index,
+  total,
+  finished,
+}: {
+  index: number;
+  total: number;
+  finished: boolean;
+}) {
+  // Same size, no fill: until the route is finished, a fraction would be a guess.
+  if (!finished) return <div className="progress-track" aria-hidden="true" />;
+  return (
+    <div
+      className="progress-track"
+      role="progressbar"
+      aria-valuemin={1}
+      aria-valuemax={total}
+      aria-valuenow={index + 1}
+      aria-label="Tour progress"
+    >
+      <div className="progress-fill" style={{ width: `${((index + 1) / total) * 100}%` }} />
+    </div>
+  );
+}
+
+/** The verdict button's icon, shown alone when the window is too narrow for its label. */
+function FlagIcon() {
+  return (
+    <svg
+      className="verdict-button-icon"
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3.5 14.5V2M3.5 2.5h8l-1.8 3 1.8 3h-8" />
+    </svg>
   );
 }
 
