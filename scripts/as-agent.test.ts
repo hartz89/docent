@@ -854,6 +854,14 @@ describe('as-agent PR descriptions', () => {
     expect(ran()).toEqual([command.join(' ')]);
   });
 
+  test('counts a <details> tag written as code, since it hides nothing', async () => {
+    const { deps, logs } = setup();
+    const file = description(`Put gaps in \`<details>\`.\n\n${words(400)}\n\n\`</details>\``);
+    const command = ['gh', 'pr', 'create', '--body-file', file];
+    expect(await asAgent(['builder', '--', ...command], deps)).toBe(1);
+    expect(logs()[0]).toContain('over the limit of 350');
+  });
+
   test.each([
     ['gh pr edit 3 --body <long>', ['edit', '3', '--body', words(400)]],
     ['gh pr edit 3 --body=<long>', ['edit', '3', `--body=${words(400)}`]],

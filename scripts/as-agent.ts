@@ -273,9 +273,13 @@ function descriptions(args: string[], cwd: string, refuse: (reason: string) => n
   return found;
 }
 
-/** Words a reader sees: everything outside <details>...</details>, split on whitespace. */
+/**
+ * Words a reader sees: everything outside <details>...</details>, split on whitespace. A tag
+ * written in code (`<details>`) shows as text and hides nothing, so code is defanged first.
+ */
 export function visibleWords(text: string): number {
-  const visible = text.replace(/<details[\s>][\s\S]*?<\/details>/gi, ' ');
+  const defanged = text.replace(/```[\s\S]*?```|`[^`\n]*`/g, (code) => code.replaceAll('<', ' '));
+  const visible = defanged.replace(/<details[\s>][\s\S]*?<\/details>/gi, ' ');
   return visible.split(/\s+/).filter(Boolean).length;
 }
 
