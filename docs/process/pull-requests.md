@@ -36,7 +36,15 @@ Tiers set how deep the agent review goes. They don't send a PR to the maintainer
 
 **The agent review is a practice.** It's posted on the PR before auto-merge is queued. GitHub doesn't check that today.
 
-**Reviews live on the PR.** Post the fresh-context agent review as the `reviewer` app, with `gh pr review --comment` (or `--request-changes` when something blocks). Agents never approve. Posting the review is a separate step from queueing the merge, never folded into the same command. That way the review is on record, and the merge can point to it. A 2b PR whose security review found issues, which were then fixed, gets a follow-up review saying so, and merges like any other.
+**Reviews live on the PR.** Every review is posted to its PR as the `reviewer` app, before anything merges. That includes security reviews and reviews run inside a building agent. A review that's only reported back doesn't count. Post it as a comment, or as a request for changes when something blocks. Agents never approve. Posting the review is a separate step from queueing the merge, never folded into the same command. That way the review is on record, and the merge can point to it. A 2b PR whose security review found issues, which were then fixed, gets a follow-up review saying so, and merges like any other.
+
+**Findings go on their lines.** Post the review with the reviewer form in [`agent-identities.md`](agent-identities.md), with each finding as an inline comment on the lines it concerns. The review body holds only the verdict, plus feedback no line can carry, like "the premise is wrong". An inline comment must sit on a line inside the PR's diff, or GitHub rejects the whole review; feedback about lines outside the diff goes in the body.
+
+**Each finding starts with its kind and weight,** in bold, like `**Bug · must-fix:**`.
+- Kinds: `Bug`, `Security`, `Design`, `Test gap`, `Docs`.
+- Weights: `must-fix` (blocks the merge), `should-fix` (fix it or say why not), `nit` (take it or leave it).
+
+**The builder answers every finding in its thread,** with the builder reply form: `Fixed in <sha>`, `Won't fix: <why>`, or `Deferred to #<issue>`. These outcomes are the record that the trust metric and learning across reviews read.
 
 **Follow-up, not done yet: a GitHub-enforced agent gate.** An independent reviewer runs outside the builder's session and posts a required status check. That needs the `reviewer` app to get Checks: write. Required approvals can't do this job: the builder's session can't approve its own PR, and the reviewer app has no write access.
 

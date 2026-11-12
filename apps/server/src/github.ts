@@ -74,6 +74,21 @@ export function defaultCacheDir(): string {
   return join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'docent');
 }
 
+/**
+ * Where Docent keeps what it wants to hold on to, like run logs: the OS data folder. The same
+ * rules as the author-session hook's records (PR #55); whichever lands second shares this one.
+ */
+export function defaultDataDir(): string {
+  if (process.env.DOCENT_DATA_DIR) return process.env.DOCENT_DATA_DIR;
+  if (process.platform === 'darwin') {
+    return join(homedir(), 'Library', 'Application Support', 'docent');
+  }
+  if (process.platform === 'win32') {
+    return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'docent');
+  }
+  return join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'docent');
+}
+
 export function githubSource(url: string, cacheDir: string): PrSource {
   const ref = parsePrUrl(url);
   if (!ref) throw new Error(`Not a GitHub pull request URL: ${url}`);

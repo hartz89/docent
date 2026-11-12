@@ -757,6 +757,21 @@ code,
   line-height: 1.55;
 }
 
+/* The guide's note under an author answer: close to the answer it's about. */
+.callout.correction {
+  margin-top: 10px;
+}
+
+.callout.correction .chips {
+  margin: 10px 0 0;
+}
+
+.correction-source {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
 .question {
   margin-top: 30px;
   padding-top: 22px;

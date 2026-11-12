@@ -9,9 +9,20 @@
 
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import { createPrivateKey, type KeyObject, sign } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  constants as fsConstants,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { constants, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 
 const ROLES = ['builder', 'reviewer'] as const;
 export type Role = (typeof ROLES)[number];
@@ -80,12 +91,18 @@ const ALLOWED: Record<Role, string[]> = {
     'git push [-u] origin <branch>   (a plain branch name: not main, HEAD or refs/...; no flags but -u)',
     'gh pr create|view|checks|diff|comment|edit ...',
     'gh pr merge <number> --squash [--auto]',
+    'gh issue create|view|list|comment|edit|close ...',
     'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
+    'gh api --method POST /repos/hartz89/docent/pulls/<n>/comments/<id>/replies --input <file.json>',
+    '                                (reply to a review comment; the file is exactly {"body": string})',
     'Never with gh --jq/-q or --template/-t, or --web/--editor.',
   ],
   reviewer: [
     'gh pr view|diff|checks|review|comment ...',
     'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
+    'gh api --method POST /repos/hartz89/docent/pulls/<n>/reviews --input <file.json>',
+    '                                (keys: body, event, commit_id, comments; each comment: path,',
+    '                                line, side, start_line, start_side, body; nothing else)',
     'Never with gh --jq/-q or --template/-t, or --web/--editor.',
   ],
 };
@@ -95,10 +112,26 @@ const PR_SUBCOMMANDS: Record<Role, string[]> = {
   reviewer: ['view', 'diff', 'checks', 'review', 'comment'],
 };
 
-type Allowed = { tool: 'gh' | 'git'; args: string[] };
+const ISSUE_SUBCOMMANDS = ['create', 'view', 'list', 'comment', 'edit', 'close'];
+
+/**
+ * --web and --editor, including -w or -e bundled with other short flags (-wl), which gh also
+ * accepts. A glued short value that happens to contain w or e (-bweb) is refused too: write it as
+ * a separate flag and value.
+ */
+const INTERACTIVE = /^(--web|--editor)(=|$)|^-[A-Za-z]*[we]/;
+
+type Allowed = {
+  tool: 'gh' | 'git';
+  args: string[];
+  /** Permissions this command needs beyond the role's base set. */
+  extra?: Record<string, 'read' | 'write'>;
+  /** When set, exactly what the command reads on standard input. */
+  stdin?: string;
+};
 
 /** Returns the exact command to run, or throws why it's refused. */
-function allowed(role: Role, command: string[]): Allowed {
+function allowed(role: Role, command: string[], cwd: string): Allowed {
   const [program, sub, ...rest] = command;
   const refuse = (reason: string): never => {
     throw new AgentError(
@@ -114,15 +147,32 @@ function allowed(role: Role, command: string[]): Allowed {
     const formatter = rest.find((arg) => /^(-q|-t|--jq|--template)(=|$)|^-[qt]./.test(arg));
     if (formatter) refuse(`${formatter} can print the token in a form the scrubber can't catch`);
   }
+  if (program === 'gh' && sub === 'api' && rest.includes('--input')) {
+    return ghApiPost(role, rest, cwd, refuse);
+  }
   if (program === 'gh' && sub === 'api') {
     checkGhApi(rest, refuse);
-    return { tool: 'gh', args: ['api', ...rest] };
+    // Reading issues needs issues: read. Requested only for those calls, so other commands keep
+    // working on an app without the permission.
+    const issues =
+      role === 'builder' && rest.some((arg) => /^\/?repos\/[^/]+\/[^/]+\/issues\b/.test(arg));
+    return { tool: 'gh', args: ['api', ...rest], ...(issues ? { extra: { issues: 'read' } } : {}) };
+  }
+  if (program === 'gh' && sub === 'issue' && role === 'builder') {
+    const [action, ...args] = rest;
+    if (!action || !ISSUE_SUBCOMMANDS.includes(action)) {
+      refuse(`"gh issue ${action ?? ''}" isn't allowed for the ${role}`);
+    }
+    const interactive = args.find((arg) => INTERACTIVE.test(arg));
+    if (interactive) refuse(`${interactive} opens a browser or editor`);
+    const writes = action !== 'view' && action !== 'list';
+    return { tool: 'gh', args: ['issue', ...rest], extra: { issues: writes ? 'write' : 'read' } };
   }
   if (program === 'gh' && sub === 'pr') {
     const [action, ...args] = rest;
     if (args.some((arg) => arg.startsWith('--admin'))) refuse('--admin bypasses branch protection');
     // A browser or editor would run outside the scrubber, with the token in its env.
-    const interactive = args.find((arg) => /^(--web|--editor)(=|$)|^-[we]$/.test(arg));
+    const interactive = args.find((arg) => INTERACTIVE.test(arg));
     if (interactive && ['create', 'edit', 'comment', 'review'].includes(action ?? '')) {
       refuse(`${interactive} opens a browser or editor`);
     }
@@ -189,6 +239,128 @@ function checkGhApi(args: string[], refuse: (reason: string) => never): void {
       refuse(`gh api ${arg} sends a request body`);
     }
   }
+}
+
+// The two write forms of gh api. Each is one exact shape: one endpoint, one method, and a JSON
+// body checked key by key. The runner reads the file once, checks it, and pipes its own
+// re-serialized copy to gh on stdin. So the bytes gh sends are the bytes that were checked, even
+// if the file changes, and duplicate keys can't hide a value the check never saw.
+const PULL = `/?repos/${REPO}/pulls/[1-9][0-9]{0,9}`;
+const POST_FORMS: Record<Role, { endpoint: RegExp; check: (body: unknown) => string | undefined }> =
+  {
+    reviewer: { endpoint: new RegExp(`^${PULL}/reviews$`), check: checkReview },
+    builder: {
+      endpoint: new RegExp(`^${PULL}/comments/[1-9][0-9]{0,19}/replies$`),
+      check: checkReply,
+    },
+  };
+/** Plenty for a long review, and keeps a stray huge file from being read whole. */
+const MAX_BODY_BYTES = 1_000_000;
+
+function ghApiPost(
+  role: Role,
+  args: string[],
+  cwd: string,
+  refuse: (reason: string) => never,
+): Allowed {
+  const [method, verb, endpoint, input, path, ...extra] = args;
+  if (method !== '--method' || verb !== 'POST' || input !== '--input' || extra.length > 0) {
+    refuse('gh api --input only as "gh api --method POST <endpoint> --input <file.json>"');
+  }
+  if (!endpoint || !POST_FORMS[role].endpoint.test(endpoint)) {
+    refuse(`the ${role} can't POST to ${endpoint ?? '(none)'}`);
+  }
+  if (!path || path.startsWith('-')) refuse('--input needs a file path');
+  const text = readSmallFile(resolvePath(cwd, path as string), refuse);
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    refuse(`${path} isn't valid JSON`);
+  }
+  const problem = POST_FORMS[role].check(body);
+  if (problem) refuse(`${path}: ${problem}`);
+  return {
+    tool: 'gh',
+    args: ['api', '--method', 'POST', endpoint as string, '--input', '-'],
+    stdin: JSON.stringify(body),
+  };
+}
+
+/** Reads a regular file once, without hanging on a pipe or reading something huge. */
+function readSmallFile(path: string, refuse: (reason: string) => never): string {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) refuse(`${path} isn't a regular file`);
+    if (stat.size > MAX_BODY_BYTES) refuse(`${path} is over ${MAX_BODY_BYTES} bytes`);
+    const bytes = readFileSync(fd);
+    if (bytes.length > MAX_BODY_BYTES) refuse(`${path} is over ${MAX_BODY_BYTES} bytes`);
+    return bytes.toString('utf8');
+  } catch (error) {
+    if (error instanceof AgentError) throw error;
+    return refuse(`couldn't read ${path}`);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+type Field = (value: unknown) => boolean;
+const isString: Field = (value) => typeof value === 'string';
+const isLine: Field = (value) => Number.isInteger(value) && (value as number) > 0;
+const isSide: Field = (value) => value === 'LEFT' || value === 'RIGHT';
+
+/** An error if the value isn't an object with only known keys, of the right types, and all required ones. */
+function checkObject(
+  value: unknown,
+  what: string,
+  fields: Record<string, Field>,
+  required: string[],
+): string | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return `${what} must be a JSON object`;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    const field = Object.hasOwn(fields, key) ? fields[key] : undefined;
+    if (!field) return `${what} may not have "${key}"`;
+    if (!field(record[key])) return `${what} has a bad "${key}"`;
+  }
+  const missing = required.find((key) => !Object.hasOwn(record, key));
+  return missing ? `${what} needs "${missing}"` : undefined;
+}
+
+const REVIEW_FIELDS: Record<string, Field> = {
+  body: isString,
+  event: (value) => value === 'COMMENT' || value === 'REQUEST_CHANGES' || value === 'APPROVE',
+  commit_id: (value) => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value),
+  comments: Array.isArray,
+};
+
+const COMMENT_FIELDS: Record<string, Field> = {
+  path: (value) => typeof value === 'string' && value !== '',
+  line: isLine,
+  side: isSide,
+  start_line: isLine,
+  start_side: isSide,
+  body: isString,
+};
+
+function checkReview(review: unknown): string | undefined {
+  // event is required: without it, GitHub leaves the review pending and unposted.
+  const problem = checkObject(review, 'the review', REVIEW_FIELDS, ['event']);
+  if (problem) return problem;
+  const comments = (review as { comments?: unknown[] }).comments ?? [];
+  for (const [i, comment] of comments.entries()) {
+    const bad = checkObject(comment, `comment ${i + 1}`, COMMENT_FIELDS, ['path', 'line', 'body']);
+    if (bad) return bad;
+  }
+  return undefined;
+}
+
+function checkReply(reply: unknown): string | undefined {
+  return checkObject(reply, 'the reply', { body: isString }, ['body']);
 }
 
 function loadConfig(path: string, role: Role): AppConfig {
@@ -422,17 +594,22 @@ function run(
     deps: Deps;
     secrets: string[];
     onSpawn: (child: ChildProcess) => void;
+    stdin: string | undefined;
   },
 ): Promise<number> {
   return new Promise((resolve, reject) => {
     const out = scrubber(opts.deps.stdout, opts.secrets);
     const err = scrubber(opts.deps.stderr, opts.secrets);
-    const child = spawn(file, args, {
-      env: opts.env,
-      cwd: opts.cwd,
-      stdio: ['inherit', 'pipe', 'pipe'],
-    });
+    const options = { env: opts.env, cwd: opts.cwd };
+    // stdin is the checked request body when there is one, and otherwise the caller's.
+    const child =
+      opts.stdin === undefined
+        ? spawn(file, args, { ...options, stdio: ['inherit', 'pipe', 'pipe'] })
+        : spawn(file, args, { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
     opts.onSpawn(child);
+    // If gh exits without reading it all, the pipe breaks; gh's exit code tells that story.
+    child.stdin?.on('error', () => {});
+    if (opts.stdin !== undefined) child.stdin?.end(opts.stdin);
     child.stdout.setEncoding('utf8').on('data', out.push);
     child.stderr.setEncoding('utf8').on('data', err.push);
     child.on('error', () => reject(new AgentError(`couldn't start ${file}`)));
@@ -473,7 +650,7 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
   };
   try {
     const { role, command } = parseArgs(argv);
-    const { tool, args } = allowed(role, command);
+    const { tool, args, extra, stdin } = allowed(role, command, deps.cwd ?? process.cwd());
     const file = findTool(tool, deps);
     const base = baseEnv(deps.env);
     checkLocalGitConfig(findTool('git', deps), deps.cwd);
@@ -505,7 +682,10 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
       path: `/app/installations/${installation.id}/access_tokens`,
       auth: `Bearer ${jwt}`,
       hint: `Check that the key belongs to the ${role} app and that it has these permissions.`,
-      body: { repositories: [REPO.split('/')[1]], permissions: TOKEN_PERMISSIONS[role] },
+      body: {
+        repositories: [REPO.split('/')[1]],
+        permissions: { ...TOKEN_PERMISSIONS[role], ...extra },
+      },
     });
     const basicAuth = Buffer.from(`x-access-token:${token}`).toString('base64');
     secrets.push(token, basicAuth);
@@ -529,7 +709,7 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
     const onSpawn = (spawned: ChildProcess) => {
       child = spawned;
     };
-    const code = await run(file, args, { env, cwd: deps.cwd, deps, secrets, onSpawn });
+    const code = await run(file, args, { env, cwd: deps.cwd, deps, secrets, onSpawn, stdin });
     if (code !== 0) say(`${tool} exited with ${code}`);
     return code;
   } catch (error) {
@@ -544,6 +724,9 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 
 if (import.meta.main) {
+  // If whoever reads our output goes away (`| head`), a write fails with EPIPE. Unhandled, that
+  // kills the runner before it revokes the token. Dropping the output is the lesser harm.
+  for (const stream of [process.stdout, process.stderr]) stream.on('error', () => {});
   process.exitCode = await asAgent(process.argv.slice(2), {
     fetch,
     env: process.env,
