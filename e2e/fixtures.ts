@@ -11,27 +11,31 @@ type Docent = {
 
 /**
  * Starts a built entry point (`apps/server/dist/*.js`) and reads the startup URL it prints, the
- * same way a user would. Stop it with the returned function, which kills that process by PID.
+ * same way a user would. `output` holds every line it has printed so far. Stop it with the
+ * returned function, which kills that process by PID.
  */
 export async function launch(
   entry: string,
   args: readonly string[] = [],
-): Promise<{ url: string; stop: () => Promise<void> }> {
+): Promise<{ url: string; output: string[]; stop: () => Promise<void> }> {
   const script = fileURLToPath(new URL(`../apps/server/dist/${entry}`, import.meta.url));
   const child: ChildProcess = spawn(process.execPath, [script, ...args], {
     stdio: ['ignore', 'pipe', 'inherit'],
     env: { ...process.env, CI: '1' },
   });
+  const output: string[] = [];
   const url = await new Promise<string>((resolve, reject) => {
     child.once('exit', (code) => reject(new Error(`${entry} exited early with code ${code}`)));
     if (!child.stdout) return reject(new Error('No stdout'));
     createInterface({ input: child.stdout }).on('line', (line) => {
+      output.push(line);
       const match = line.match(/https?:\/\/\S+/);
       if (match) resolve(match[0]);
     });
   });
   return {
     url,
+    output,
     stop: async () => {
       child.kill();
       await once(child, 'exit');

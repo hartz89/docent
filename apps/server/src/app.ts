@@ -6,10 +6,15 @@ import { streamSSE } from 'hono/streaming';
 import { validator } from 'hono/validator';
 import { Busy } from './author-session.ts';
 import { isSafeRepoPath } from './github.ts';
-import type { Review, TourState } from './review.ts';
+import { type Review, SubmitRefused, type TourState, verdict } from './review.ts';
 
 /** The code view shows text files up to this size. */
 const MAX_FILE_CHARS = 2_000_000;
+
+/** One identifier, in any of the indexed languages. */
+const SYMBOL = /^[\p{L}\p{Nl}_$][\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}$]{0,199}$/u;
+/** An import specifier: printable, no control characters. */
+const SPECIFIER = /^[^\p{Cc}]{1,1000}$/u;
 
 export type AppOptions = {
   /** Per-launch secret. Every /api request must send it as a bearer token. */
@@ -25,6 +30,8 @@ export type AppOptions = {
 
 export function createApp({ token, origin, version, webRoot, review }: AppOptions) {
   const noReview = { error: 'No review is open. Start Docent with: docent review <pr-url>' };
+  const stillLoading = { error: 'The pull request is still loading.' };
+  const indexFailed = { error: "Docent couldn't index the repository." };
 
   const app = new Hono()
     .use(ownOriginOnly(origin))
@@ -86,6 +93,68 @@ export function createApp({ token, origin, version, webRoot, review }: AppOption
         return c.json({ path, side, text }, 200);
       },
     )
+    // Jump to definition: every place a symbol may be defined at the PR's head, best first.
+    .get(
+      '/api/definition',
+      validator('query', (query, c) => {
+        const { symbol, from, line } = query;
+        if (typeof symbol !== 'string' || !SYMBOL.test(symbol)) {
+          return c.json({ error: 'Send a symbol: one identifier, up to 200 characters' }, 400);
+        }
+        if (from !== undefined && (typeof from !== 'string' || !isSafeRepoPath(from))) {
+          return c.json({ error: 'Send from as a path inside the repository' }, 400);
+        }
+        if (line !== undefined && (typeof line !== 'string' || !/^[1-9]\d{0,6}$/.test(line))) {
+          return c.json({ error: 'Send line as a line number' }, 400);
+        }
+        const valid: { symbol: string; from?: string; line?: string } = { symbol };
+        if (from !== undefined) valid.from = from;
+        if (line !== undefined) valid.line = line;
+        return valid;
+      }),
+      async (c) => {
+        if (!review) return c.json(noReview, 404);
+        const { symbol, from, line } = c.req.valid('query');
+        const at =
+          from === undefined
+            ? undefined
+            : line
+              ? { path: from, line: Number(line) }
+              : { path: from };
+        try {
+          const found = await review.definitions(symbol, at);
+          if (!found) return c.json(stillLoading, 503);
+          return c.json({ symbol, ...found }, 200);
+        } catch {
+          return c.json(indexFailed, 500);
+        }
+      },
+    )
+    // Jump to an import: the repo file an import specifier names, if it names one.
+    .get(
+      '/api/import',
+      validator('query', (query, c) => {
+        const { from, spec } = query;
+        if (typeof from !== 'string' || !isSafeRepoPath(from)) {
+          return c.json({ error: 'Send from as a path inside the repository' }, 400);
+        }
+        if (typeof spec !== 'string' || !SPECIFIER.test(spec)) {
+          return c.json({ error: 'Send spec: an import specifier, up to 1000 characters' }, 400);
+        }
+        return { from, spec };
+      }),
+      async (c) => {
+        if (!review) return c.json(noReview, 404);
+        const { from, spec } = c.req.valid('query');
+        try {
+          const found = await review.resolveImport(from, spec);
+          if (!found) return c.json(stillLoading, 503);
+          return c.json({ from, spec, ...found }, 200);
+        } catch {
+          return c.json(indexFailed, 500);
+        }
+      },
+    )
     .post(
       '/api/questions',
       validator('json', (body: { stopId?: unknown; question?: unknown } | null, c) => {
@@ -107,6 +176,25 @@ export function createApp({ token, origin, version, webRoot, review }: AppOption
           const message = error instanceof Error ? error.message : String(error);
           if (error instanceof Busy) return c.json({ error: message }, 429);
           return c.json({ error: message }, 502);
+        }
+      },
+    )
+    // Posts the reviewer's verdict to GitHub as them. The PR, repo and commit come from the
+    // review this server holds; the client chooses only the event and the summary.
+    .post(
+      '/api/review/submit',
+      validator('json', (body: { event?: unknown; body?: unknown } | null, c) => {
+        const result = verdict(body?.event, body?.body);
+        return typeof result === 'string' ? c.json({ error: result }, 400) : result;
+      }),
+      async (c) => {
+        if (!review) return c.json(noReview, 404);
+        try {
+          const posted = await review.submit(c.req.valid('json'));
+          return c.json({ posted }, 200);
+        } catch (error) {
+          if (!(error instanceof SubmitRefused)) throw error;
+          return c.json({ error: error.message }, error.reason === 'github' ? 502 : 409);
         }
       },
     );

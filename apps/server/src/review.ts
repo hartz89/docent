@@ -4,10 +4,25 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { type CostRecord, type Diff, parseUnifiedDiff, type SessionId } from '@docent/core';
+import {
+  type Candidate,
+  type CommitSha,
+  type CostRecord,
+  type Diff,
+  parseUnifiedDiff,
+  type SessionId,
+} from '@docent/core';
 import { AgentError, type AgentRunner, forkCostEstimateUsd } from './agent.ts';
 import { type AuthorSession, Busy, oneAtATime, type SessionLocator } from './author-session.ts';
-import type { PrInfo, PrSource, Workspace } from './github.ts';
+import {
+  GitHubRefusal,
+  type PrInfo,
+  type PrSource,
+  REVIEW_EVENTS,
+  type ReviewEvent,
+  type Workspace,
+} from './github.ts';
+import { type BuiltIndex, buildIndex, type IndexLimits, type IndexStatus } from './symbols.ts';
 import {
   generateTour,
   TOUR_PROMPT_VERSION,
@@ -35,7 +50,50 @@ export type ReviewSnapshot = {
   diff: Diff | null;
   tour: TourState;
   author: AuthorView;
+  /** The review the reviewer posted to GitHub from here, once they have. */
+  posted: PostedReview | null;
 };
+
+/**
+ * The reviewer's verdict. Approve may go without a summary; Request changes and Comment need
+ * one, as on GitHub. `verdict()` checks that.
+ */
+export type Verdict = { event: ReviewEvent; body: string };
+
+/** GitHub's own limit on a review body. */
+const MAX_SUMMARY_CHARS = 65_536;
+
+/** A Verdict, or why the input isn't one. */
+export function verdict(event: unknown, body: unknown): Verdict | string {
+  if (!REVIEW_EVENTS.includes(event as ReviewEvent)) {
+    return `Send an event: ${REVIEW_EVENTS.join(', ')}`;
+  }
+  const summary = typeof body === 'string' ? body.trim() : '';
+  if (summary.length > MAX_SUMMARY_CHARS) return 'The summary is longer than GitHub allows.';
+  if (event !== 'APPROVE' && !summary) {
+    return event === 'COMMENT'
+      ? 'A comment needs a summary.'
+      : 'Requesting changes needs a summary saying what to change.';
+  }
+  return { event: event as ReviewEvent, body: summary };
+}
+
+/** A review posted on the PR, bound to the commit the tour was written for. */
+export type PostedReview = {
+  event: ReviewEvent;
+  body: string;
+  commitId: CommitSha;
+  url: string;
+};
+
+/** Why a review wasn't posted. `stale` and `conflict` are the reviewer's to resolve. */
+export class SubmitRefused extends Error {
+  readonly reason: 'not_ready' | 'conflict' | 'stale' | 'github';
+  constructor(reason: SubmitRefused['reason'], message: string) {
+    super(message);
+    this.reason = reason;
+  }
+}
 
 /**
  * Q2, Q4: who answered, and the head commit the question was asked at. A guide answer says why
@@ -62,7 +120,15 @@ export type ReviewOptions = {
   forkBudgetUsd?: number;
   /** How long one answer may take, author or guide, before it's abandoned. Default 3 minutes. */
   questionTimeoutMs?: number;
+  /** Caps on the symbol index. Default `INDEX_LIMITS`. */
+  indexLimits?: IndexLimits;
+  /** How long a failed index build is remembered before one is tried again. Default 30 s. */
+  indexRetryMs?: number;
 };
+
+/** A jump returns at most this many candidates; `truncated` says when there were more. */
+export const MAX_CANDIDATES = 50;
+const INDEX_RETRY_MS = 30_000;
 
 const DEFAULT_FORK_BUDGET_USD = 2;
 const DEFAULT_QUESTION_TIMEOUT_MS = 180_000;
@@ -82,6 +148,10 @@ export class Review {
   #author: AuthorSession | null = null;
   #tour: TourState = working('reading', null, 1);
   #listeners = new Set<(tour: TourState) => void>();
+  #posted: PostedReview | null = null;
+  #posting = false;
+  /** The symbol index, built on first use. A review is bound to one head, so this is per head. */
+  #symbols: Promise<BuiltIndex> | null = null;
   readonly done: Promise<void>;
 
   constructor(options: ReviewOptions) {
@@ -100,6 +170,7 @@ export class Review {
         : author.found
           ? { found: true, session: author.id, via: author.via }
           : { found: false, reason: author.reason },
+      posted: this.#posted,
     };
   }
 
@@ -108,6 +179,47 @@ export class Review {
     this.#listeners.add(listener);
     listener(this.#tour);
     return () => this.#listeners.delete(listener);
+  }
+
+  /**
+   * Where `symbol` may be defined, ranked, from the index of the PR's head. Null until the PR
+   * has been read.
+   */
+  async definitions(
+    symbol: string,
+    from?: { path: string; line?: number },
+  ): Promise<{ candidates: Candidate[]; truncated: boolean; index: IndexStatus } | null> {
+    const built = await this.#symbolIndex();
+    if (!built) return null;
+    return { ...built.index.definitions(symbol, from, MAX_CANDIDATES), index: built.status };
+  }
+
+  /** The repo file an import specifier names, or a null path when it doesn't resolve. */
+  async resolveImport(
+    from: string,
+    spec: string,
+  ): Promise<{ path: string | null; index: IndexStatus } | null> {
+    const built = await this.#symbolIndex();
+    if (!built) return null;
+    return { path: built.index.resolveImport(from, spec), index: built.status };
+  }
+
+  #symbolIndex(): Promise<BuiltIndex> | null {
+    const workspace = this.#workspace;
+    if (!workspace) return null;
+    // Concurrent first requests share one build. A failed one is kept for a while, so a failure
+    // that always happens doesn't cost a whole new build on every click, then retried.
+    this.#symbols ??= buildIndex(workspace.headFiles, this.#options.indexLimits).catch(
+      (error: unknown) => {
+        console.error(`Docent couldn't index the repository: ${String(error)}`);
+        const failed = this.#symbols;
+        setTimeout(() => {
+          if (this.#symbols === failed) this.#symbols = null;
+        }, this.#options.indexRetryMs ?? INDEX_RETRY_MS).unref();
+        throw error;
+      },
+    );
+    return this.#symbols;
   }
 
   async readFile(side: 'old' | 'new', path: string): Promise<string | null> {
@@ -273,6 +385,43 @@ Question: ${question}`,
       found: false,
       reason: `The author's session is too big to ask within budget (about $${estimate.toFixed(2)} a question; the budget is $${budget.toFixed(2)})`,
     };
+  }
+
+  /**
+   * Posts the reviewer's verdict as one GitHub review on this PR, at the head the tour covered.
+   * Refuses if the PR has moved on since, so an approval never covers code the tour didn't see.
+   * Posts at most once per launch. The head can still move between the check and the post;
+   * `commit_id` keeps the review on the commit the tour covered either way.
+   */
+  async submit(verdict: Verdict): Promise<PostedReview> {
+    const workspace = this.#workspace;
+    if (!workspace || this.#tour.state !== 'ready') {
+      throw new SubmitRefused('not_ready', 'The tour is not ready yet.');
+    }
+    if (this.#posted) throw new SubmitRefused('conflict', 'This review is already on GitHub.');
+    if (this.#posting) throw new SubmitRefused('conflict', 'This review is already being posted.');
+    this.#posting = true;
+    try {
+      const head = workspace.pr.head;
+      if ((await workspace.currentHead()) !== head) {
+        throw new SubmitRefused(
+          'stale',
+          'The PR has new commits since this tour. Reopen it in Docent to review them.',
+        );
+      }
+      const { url } = await workspace.postReview({
+        commitId: head,
+        event: verdict.event,
+        body: verdict.body,
+      });
+      this.#posted = { event: verdict.event, body: verdict.body, commitId: head, url };
+      return this.#posted;
+    } catch (error) {
+      if (error instanceof GitHubRefusal) throw new SubmitRefused('github', error.message);
+      throw error;
+    } finally {
+      this.#posting = false;
+    }
   }
 
   #set(tour: TourState) {
