@@ -414,34 +414,42 @@ describe('GET /api/review/events', () => {
  * The model boundary, writing its output a few characters at a time through `onOutput`, the way
  * the SDK streams it. `holdAfterStops` pauses once that many stops are out, until `release()`.
  */
-function streaming(tours: unknown[], options: { holdAfterStops?: number } = {}) {
+function streaming(
+  tours: unknown[],
+  options: { holdAfterStops?: number; failAfterStops?: number } = {},
+) {
   let release = () => {};
   const held = new Promise<void>((resolve) => {
     release = resolve;
   });
   let call = 0;
   const runner: AgentRunner = async (request) => {
-    const structured = tours[call++];
+    const structured = tours[call++] as { stops?: unknown[] };
     const json = JSON.stringify(structured);
-    // Where each stop's object closes, so the hold can wait right after one.
-    const stopEnds = (structured as { stops?: unknown[] }).stops?.map((_, i, all) => {
-      const upTo = JSON.stringify({ stops: all.slice(0, i + 1) });
-      return upTo.length - 2;
-    });
-    for (let at = 7; at <= json.length; at += 7) {
-      request.onOutput?.(json.slice(0, at));
+    /** Where stop N's object closes in the output. */
+    const endOf = (n: number | undefined) => {
+      const stop = n === undefined ? undefined : structured.stops?.[n - 1];
+      return stop === undefined
+        ? Number.POSITIVE_INFINITY
+        : json.indexOf(JSON.stringify(stop)) + JSON.stringify(stop).length;
+    };
+    const holdAt = endOf(options.holdAfterStops);
+    const failAt = endOf(options.failAfterStops);
+    let holding = true;
+    for (let at = 7; at < json.length + 7; at += 7) {
+      request.onOutput?.(json.slice(0, Math.min(at, json.length)));
+      // No pause here: the stop's checks are still running when the call fails.
+      if (at >= failAt)
+        throw new AgentError(
+          'The agent stopped without an answer (error_max_budget_usd)',
+          cost('tour', 900),
+        );
       await new Promise((resolve) => setImmediate(resolve));
-      const hold = options.holdAfterStops;
-      if (
-        hold !== undefined &&
-        stopEnds?.[hold - 1] !== undefined &&
-        at >= (stopEnds[hold - 1] ?? 0) &&
-        at < (stopEnds[hold - 1] ?? 0) + 7
-      ) {
+      if (holding && at >= holdAt) {
+        holding = false;
         await held;
       }
     }
-    request.onOutput?.(json);
     return { sessionId: 'session-1', text: '', structured, denials: [], cost: cost('tour', 1500) };
   };
   return { runner, release: () => release() };
@@ -515,6 +523,52 @@ describe('the tour, while it is written', () => {
     const states = await watch(streaming([backwards, repairOf()]).runner);
 
     expect(titlesShown(states)).toEqual([['The origin is reflected']]);
+  });
+
+  test('a guide that fails after the first stop leaves a failed tour, not one still writing', async () => {
+    const states = await watch(streaming([goodTour], { failAfterStops: 1 }).runner);
+
+    expect(states.at(-1)).toMatchObject({ state: 'failed', costs: [{ costMicroUsd: 900 }] });
+  });
+
+  test('after a stop is turned away, progress still counts the stops being written', async () => {
+    const broken = {
+      ...goodTour,
+      stops: stops([
+        {
+          kind: 'core_change',
+          title: 'Bad lines',
+          body: 'b',
+          flags: [],
+          citations: [cite('new', 2, 90)],
+        },
+        { kind: 'edge', title: 'After it', body: 'd', flags: [], citations: [cite('old', 2)] },
+      ]),
+    };
+    const states = await watch(streaming([broken, repairOf()]).runner);
+
+    const writing = states.flatMap((s) => (s.state === 'working' && s.detail ? [s.detail] : []));
+    expect(writing).toContain('Writing stop 4');
+    expect(new Set(titlesShown(states).flat())).toEqual(new Set(['Why']));
+  });
+
+  test('order problems get a whole new tour, since a repair can only replace or add stops', async () => {
+    const twoVerdicts = {
+      ...goodTour,
+      stops: [...goodTour.stops, { ...goodTour.stops[2], title: 'Another call' }],
+    };
+    const { runner, requests } = scripted(twoVerdicts, goodTour);
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(requests[1]?.prompt).toContain('return the complete corrected tour');
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.stops.map((s) => s.title)).toEqual([
+      'Why',
+      'The origin is reflected',
+      'Your call',
+    ]);
   });
 });
 

@@ -84,7 +84,7 @@ export function fixtureRunner(dir: string, options: { paceMs?: number } = {}): A
       const json = JSON.stringify(reply.structured);
       for (let at = 40; at < json.length + 40; at += 40) {
         await new Promise((resolve) => setTimeout(resolve, options.paceMs));
-        request.onOutput(json.slice(0, at));
+        request.onOutput(json.slice(0, Math.min(at, json.length)));
       }
     }
     return reply;

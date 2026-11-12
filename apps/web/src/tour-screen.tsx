@@ -46,6 +46,9 @@ export function TourScreen({ snapshot, tour }: Props) {
   const [anchorIndex, setAnchorIndex] = useState(0);
   // A file opened from the skip list or the overview, in place of the stop's citation.
   const [viewing, setViewing] = useState<Viewing | null>(null);
+  // A reviewer who opened the review while the tour was still being written is reading the PR's
+  // description. Stops arriving don't take the code column away from it; moving does.
+  const [overviewFirst, setOverviewFirst] = useState(tour.state !== 'ready');
   // Each stop's questions and answers, kept here so they survive moving between stops.
   const [threads, setThreads] = useState<Record<string, Exchange[]>>({});
   // The review posted to GitHub from here, if any. A reload gets it from the snapshot.
@@ -73,6 +76,23 @@ export function TourScreen({ snapshot, tour }: Props) {
   }, []);
 
   const stop = stops[index];
+  // When the finished tour replaces the streamed stops, a repair may have added a stop before
+  // this one. Follow the stop the reviewer was reading, by its title, not its number.
+  const reading = useRef<{ stops: readonly StopView[]; title: string | null } | null>(null);
+  useEffect(() => {
+    const was = reading.current;
+    const title = stops[index]?.title ?? null;
+    // Only a new list of stops re-selects; the reviewer moving changes the title on purpose.
+    if (was && was.stops !== stops && was.title !== null && title !== was.title) {
+      const moved = stops.findIndex((s) => s.title === was.title);
+      if (moved !== -1) {
+        reading.current = { stops, title: was.title };
+        setIndex(moved);
+        return;
+      }
+    }
+    reading.current = { stops, title };
+  }, [stops, index]);
   // The guide column outlives each stop, so it would keep the last stop's scroll position.
   // A stop seen for the first time opens at the top; a revisited stop opens where it was left.
   const guide = useRef<HTMLElement>(null);
@@ -82,6 +102,7 @@ export function TourScreen({ snapshot, tour }: Props) {
       if (stop && guide.current) scrollByStop.current.set(stop.id, guide.current.scrollTop);
       setIndex(Math.max(0, Math.min(stops.length - 1, next)));
       setAnchorIndex(0);
+      setOverviewFirst(false);
       setViewing(null);
     },
     [stop, stops.length],
@@ -125,7 +146,7 @@ export function TourScreen({ snapshot, tour }: Props) {
 
   const anchor = stop?.anchors[anchorIndex] ?? null;
   const shown: Viewing | null =
-    viewing ?? (anchor ? { path: anchor.path, side: anchor.side } : null);
+    viewing ?? (anchor && !overviewFirst ? { path: anchor.path, side: anchor.side } : null);
   const cited =
     shown && stop ? stop.anchors.filter((a) => a.path === shown.path && a.side === shown.side) : [];
 
@@ -192,14 +213,21 @@ export function TourScreen({ snapshot, tour }: Props) {
               author={snapshot.author}
               exchanges={threads[stop.id] ?? []}
               onAsk={(question) => void ask(stop.id, question)}
-              activeAnchor={viewing ? -1 : anchorIndex}
+              activeAnchor={viewing || overviewFirst ? -1 : anchorIndex}
               onAnchor={(i) => {
+                setOverviewFirst(false);
                 setAnchorIndex(i);
                 setViewing(null);
               }}
               isLast={index === stops.length - 1}
               onNext={() => go(index + 1)}
               finished={ready !== null}
+              waiting={
+                writing?.attempt === 1 &&
+                writing.steps.find((s) => s.status === 'active')?.id === 'writing'
+                  ? 'Writing the next stop…'
+                  : 'Checking the whole tour…'
+              }
               verdict={
                 stop.kind !== 'verdict_prompt' ? null : ready ? (
                   <VerdictForm pr={snapshot.pr} posted={posted} onPosted={setPosted} />
@@ -498,6 +526,7 @@ function Narration({
   isLast,
   onNext,
   finished,
+  waiting,
   verdict,
 }: {
   stop: StopView;
@@ -510,6 +539,8 @@ function Narration({
   onNext: () => void;
   /** False while the rest of the tour is still being written and checked. */
   finished: boolean;
+  /** What the next-stop button says while the next stop isn't ready yet. */
+  waiting: string;
   /** The verdict form, on the verdict stop. */
   verdict: ReactNode;
 }) {
@@ -644,7 +675,7 @@ function Narration({
           </button>
         ) : !finished && stop.kind !== 'verdict_prompt' ? (
           <button type="button" className="primary-button" disabled>
-            Writing the next stop…
+            {waiting}
           </button>
         ) : null}
       </footer>

@@ -6,7 +6,7 @@
 
 Every step of a review is now timed (`apps/server/src/timings.ts`), and `docent review --prepare` prints the breakdown. The model runner streams the guide's output token by token (`includePartialMessages`), so we can see when the model starts writing the tour, and when each stop is finished.
 
-Three merged PRs of this repo, run cold: a fresh scratch cache folder each time (fresh checkout, no cached tour), current prompt (v2), `claude-opus-5-5`.
+Three merged PRs of this repo, one run each (n=1 per PR, so read single numbers loosely), run cold: a fresh scratch cache folder each time (fresh checkout, no cached tour), current prompt (v2), `claude-opus-5-5`.
 
 | PR | Size |
 |---|---|
@@ -54,7 +54,7 @@ Backlog item 6 (the computed skip ledger) removes this rule, which should remove
 
 1. **A useful wait screen.** As soon as the PR is read (about 2s), the tour screen opens: the PR's title, description, files and diffstat, and honest progress in the guide's own words ("Planning the route", "Writing stop 3", "Reading src/cors.ts"). No bar and no percentage while the length is unknown.
 2. **Stops stream in.** The guide's JSON is read while it's written (`tour-stream.ts`). Each stop that closes goes through the same per-stop checks as the finished tour (citations land on real lines, core and edge stops cite something, kinds in order). Only then is it shown. The first stop that fails stops the stream; later stops wait for the finished tour. No prompt or schema change: the guide already writes stops in order.
-3. **Retries repair instead of rewrite.** The guide sends back only the stops it changes, plus the skip list, in the same schema. A stop with an existing title replaces it in place; a new title adds a stop in kind order. The merged tour is checked in full, as before.
+3. **Retries repair instead of rewrite.** The guide sends back only the stops it changes, plus the skip list, in the same schema. A stop with an existing title replaces it in place; a new title adds a stop in kind order. The merged tour is checked in full, as before. A repair can't move or remove a stop, so order problems (out of order, two verdicts) still get a whole new tour.
 
 One thing we learned building (3): a first version gave repairs their own schema. That changed the session's tool definition, so the resumed session lost its whole prompt cache (cache read 0, 17k tokens rewritten), and the repair cost more than the full retry it replaced ($0.149 against $0.080 on #38). Keeping one schema keeps the cache.
 
@@ -70,7 +70,7 @@ Same PRs, same method.
 | Retry output tokens, before → after | 2,577 → 412 | 5,220 → 1,793 | 5,267 → 2,023 |
 | Retry cache read / write | 13.5k / 3.3k → 13.4k / 2.9k | 20.8k / 5.7k → 21.1k / 6.6k | 34.5k / 5.8k → 34.6k / 5.7k |
 
-#43's first stop took longer on this run because the guide read for 17.8s instead of 6.7s; that's run-to-run variance in how much it explores.
+#43's first stop took longer on this run because the guide read for 17.8s instead of 6.7s. That variance is about as big as the whole-tour gains, so treat those as suggestive. The first-stop gain is much larger than the variance; the retry savings are measured on the one call that changed.
 
 **Cost.** The first attempt is byte-for-byte the same request as before, so its cost doesn't change. The after-runs' first attempts read more from the prompt cache only because the same PR had been run within the hour, so their totals ($0.13, $0.25, $0.23) understate a true cold run. The honest comparison is the retry, which is the only call that changed: it costs 40 to 58% less, about $0.05 to $0.07 per tour. Against each PR's before total, that's 13 to 18% cheaper per tour that retries. Streaming adds no calls.
 
@@ -83,16 +83,18 @@ The first prompt and schema are unchanged, so a tour that passes on its first at
 | hono-4813-cors-credentials | 1 | 1/1 | 0/5 | 1/1, opinions 1/5 |
 | hono-5205-etag-stream-digest | 2 (repaired) | 1/1 | 0/6 | 1/1, opinions 0/6 |
 | ky-122-timeout-abort | 1 | 1/1 | 0/3 | 1/1, opinions 0/3 |
-| ky-536-unknown-fetch-options | 1 | 0/1 | 1/7 | 1/1, opinions 0/7 |
+| ky-536-unknown-fetch-options | 1 | 0/1 | 1/7 | explained in 1 of 4 runs; opinions 0/7 to 1/8 |
 
 ky-536's defect needs outside knowledge, and v2 missed it in 3 of #21's 4 recorded runs; this run never reached a repair, so it's the unchanged first prompt varying. First-sentence clarity matched v2's range (neutral check 6/21 here, 11/48 for v2 in #21). Citation validity holds by construction: every tour shown passed the checker, and all three PR tours passed after one repair.
 
+The evidence for repairs specifically is thin: one eval fixture (hono-5205) and the three PR runs went through one. The first prompt being unchanged is what carries most of the quality claim.
+
 ## Against the targets
 
-- **Speed: first readable stop under 30s on a typical PR.** Met: 12 to 22s, from 51 to 82s. The whole tour got faster too (32 to 68s, from 51 to 82s).
+- **Speed: first readable stop under 30s on a typical PR.** Met in these runs: 12 to 22s, from 51 to 82s. The whole tour was faster too (32 to 68s, from 51 to 82s), within run-to-run variance.
 - **Cost: no more than +10%.** Met: cheaper. The repair saves $0.05 to $0.07 per retried tour, measured with real cache counts; nothing else adds calls.
 - **Quality: no drop.** Held, as above.
-- **UX.** Nothing is shown before it passes the same checks as a finished tour. Progress says only what's true. The tour screen keeps its layout from the first second: the route's "in progress" row is the size of a stop, so stops arriving don't move anything. The PR's description and files are readable from about 2s.
+- **UX.** Nothing is shown before it passes the same checks as a finished tour. Progress says only what's true, and keeps counting the stops being written even after one is turned away. The route's "in progress" row is the size of a stop, so stops arriving don't shift the route. The PR's description and files are readable from about 2s, and stay in the code column when stop 1 arrives, until the reviewer moves; the guide column does swap its progress card for stop 1.
 
 ## Deferred, with numbers
 

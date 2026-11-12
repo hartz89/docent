@@ -182,7 +182,8 @@ export const sdkRunner: AgentRunner = async (request) => {
           calls.set(message.message.id, message.message.usage as Usage);
         }
         for (const block of message.message.content) {
-          if (block.type === 'tool_use') {
+          // Handing back the output isn't reading the code, so it isn't reported as activity.
+          if (block.type === 'tool_use' && block.name !== STRUCTURED) {
             request.onActivity?.(describeTool(block.name, block.input, request.cwd));
           }
         }

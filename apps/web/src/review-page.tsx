@@ -56,9 +56,10 @@ export function ReviewPage() {
   const stillReading = tour?.state === 'working' && tour.steps[0]?.status === 'active';
   const refetch = snapshot.refetch;
   const missingPr = data !== undefined && data !== null && data.pr === null;
+  const started = tour !== null;
   useEffect(() => {
-    if (missingPr && tour && !stillReading) void refetch();
-  }, [missingPr, tour, stillReading, refetch]);
+    if (missingPr && started && !stillReading) void refetch();
+  }, [missingPr, started, stillReading, refetch]);
   // Who answers questions is settled by the time the tour is ready; fetch it then if we missed it.
   const unknownAuthor = data !== undefined && data !== null && data.author === null;
   const isReady = tour?.state === 'ready';

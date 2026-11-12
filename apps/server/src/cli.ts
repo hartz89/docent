@@ -63,6 +63,12 @@ if (forkBudgetUsd !== undefined && !(Number.isFinite(forkBudgetUsd) && forkBudge
   process.exit(1);
 }
 
+const replayPaceMs = Number(values['replay-pace'] ?? 0);
+if (!(Number.isFinite(replayPaceMs) && replayPaceMs >= 0)) {
+  console.error('--replay-pace takes a number of milliseconds, like 80');
+  process.exit(1);
+}
+
 if (values.prepare && (values['no-cache'] || values.record)) {
   // A cache hit would skip the job, leaving a recording with no replies.
   const other = values.record ? '--record' : '--no-cache';
@@ -84,7 +90,7 @@ let runner: AgentRunner;
 let locator: SessionLocator;
 if (values.fixture) {
   source = fixtureSource(values.fixture);
-  runner = fixtureRunner(values.fixture, { paceMs: Number(values['replay-pace'] ?? 0) });
+  runner = fixtureRunner(values.fixture, { paceMs: replayPaceMs });
   // Replies are replayed, so a replay trusts --session without looking for it on this machine.
   locator = fixedSession(
     values.session
@@ -146,6 +152,15 @@ async function serve(review: Review) {
   }
 }
 
+/**
+ * Text that came from the guide or the PR, made safe for a terminal: control characters, such as
+ * the escape sequences that move the cursor or rewrite earlier lines, become spaces.
+ */
+function printable(text: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point.
+  return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, ' ');
+}
+
 /** Prints the tour's outcome: its cost, or why it failed. */
 function report(review: Review) {
   const started = Date.now();
@@ -158,14 +173,18 @@ function report(review: Review) {
           ? 'Tour loaded from cache: no model calls.'
           : `Tour ready in ${seconds}s: ${tour.tour.stops.length} stops, ${tour.attempts} attempt(s), $${cost.toFixed(4)} on ${tour.model}.`,
       );
-      if (tour.problems.length) console.log(`Unresolved checks:\n- ${tour.problems.join('\n- ')}`);
+      if (tour.problems.length) {
+        console.log(`Unresolved checks:\n- ${tour.problems.map(printable).join('\n- ')}`);
+      }
       if (!tour.cached && tour.timing.length) {
         const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`.padStart(7);
         console.log('Where the time went (from opening the review):');
         for (const span of tour.timing) {
           const took = secs(span.endMs - span.startMs);
           console.log(
-            `  ${secs(span.startMs)} ${took}  ${span.name}${span.note ? ` · ${span.note}` : ''}`,
+            printable(
+              `  ${secs(span.startMs)} ${took}  ${span.name}${span.note ? ` · ${span.note}` : ''}`,
+            ),
           );
         }
       }
@@ -173,10 +192,10 @@ function report(review: Review) {
       if (author?.found) {
         console.log(`Questions go to the author's session ${author.session} (${author.via}).`);
       } else if (author) {
-        console.log(`Questions go to the guide: ${author.reason}.`);
+        console.log(`Questions go to the guide: ${printable(author.reason)}.`);
       }
     } else if (tour.state === 'failed') {
-      console.error(`Tour failed: ${tour.reason}`);
+      console.error(`Tour failed: ${printable(tour.reason)}`);
     }
   });
 }

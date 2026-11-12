@@ -476,6 +476,7 @@ Question: ${question}`,
       if (cacheFile && existsSync(cacheFile)) {
         const outcome = JSON.parse(await readFile(cacheFile, 'utf8')) as TourOutcome;
         await lookup;
+        ended('hit');
         this.#set({ state: 'ready', ...outcome, timing: outcome.timing ?? [], cached: true });
         return;
       }
@@ -486,7 +487,10 @@ Question: ${question}`,
         diff: this.#diff,
         runner: this.#options.runner,
         model: this.#options.model,
-        onProgress: (progress) => this.#set(fromProgress(progress, this.#tour)),
+        // Progress only moves a tour that's still being written, never a ready or failed one.
+        onProgress: (progress) => {
+          if (this.#tour.state === 'working') this.#set(fromProgress(progress, this.#tour));
+        },
         timings: time,
       });
       if (cacheFile) {
@@ -570,8 +574,12 @@ function fromProgress(progress: TourProgress, previous: TourState): TourState {
   // Stops already shown stay shown until the finished tour replaces them.
   const stops = was?.stops ?? [];
   switch (progress.step) {
-    case 'planning':
-      return working('planning', progress.detail ?? was?.detail ?? null, attempt, stops);
+    case 'planning': {
+      // A file read while the stops are being written doesn't send the steps backwards.
+      const step =
+        was?.steps.find((s) => s.status === 'active')?.id === 'writing' ? 'writing' : 'planning';
+      return working(step, progress.detail ?? was?.detail ?? null, attempt, stops);
+    }
     case 'writing':
       return working(
         'writing',

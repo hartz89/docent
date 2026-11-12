@@ -174,19 +174,20 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
   // The best tour so far: the latest one that matched the schema. A later attempt that fails
   // (bad JSON, a model error) never throws it away. Once there is one, retries repair it:
   // the guide sends back only the stops that change, so the rest stay exactly as written.
+  // Order problems need stops moved or removed, which a repair can't do: those get a whole tour.
   let best: (Checked & { wire: WireTour }) | undefined;
   let attempts = 0;
   const files = fileReader(workspace);
 
   while (attempts <= MAX_RETRIES) {
     attempts++;
-    const repairing = best !== undefined;
+    const repairing = best !== undefined && !best.reorder;
     onProgress({
       step: 'planning',
-      detail: repairing ? 'Fixing the problems found' : 'Reading the changed files',
+      detail: best ? 'Fixing the problems found' : 'Reading the changed files',
     });
-    // Only a whole tour streams. A repair is checked as a whole before anything changes.
-    const stream = repairing
+    // Only the first tour streams. Anything later is checked as a whole before it's shown.
+    const stream = best
       ? null
       : streamStops(diff, files, onProgress, () => time.span('First stop shown')());
     let reply: Awaited<ReturnType<AgentRunner>>;
@@ -205,25 +206,28 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
         ...(stream ? { onOutput: stream.push } : {}),
         ...(job.signal ? { signal: job.signal } : {}),
       });
+      await stream?.settled();
     } catch (error) {
+      // Nothing streamed may arrive after this: a late stop would hide the failure.
+      stream?.close();
       if (error instanceof AgentError) costs.push(error.cost);
       ended(`failed: ${error instanceof Error ? error.message : String(error)}`);
       if (best) break;
       throw new TourError(error instanceof Error ? error.message : String(error), costs);
     }
+    stream?.close();
     costs.push(reply.cost);
     resume = reply.sessionId;
-    await stream?.settled();
     ended(modelNote(reply));
 
     onProgress({ step: 'checking', attempt: attempts });
     ended = time.span(`Attempt ${attempts}: check`);
     const output = reply.structured ?? reply.text;
     const parsed = parseWire(output);
-    const wire = best && parsed ? applyRepair(best.wire, parsed) : parsed;
+    const wire = best && repairing && parsed ? applyRepair(best.wire, parsed) : parsed;
     if (!wire) {
       ended('did not match the schema');
-      prompt = best
+      prompt = repairing
         ? 'Your answer did not match the tour schema. Send the repair as JSON in that shape.'
         : 'Your answer did not match the tour schema. Return the complete tour as JSON.';
       continue;
@@ -232,7 +236,7 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
     ended(best.problems.length ? best.problems.join(' | ') : 'passed');
     if (best.problems.length === 0 || attempts > MAX_RETRIES) break;
     onProgress({ step: 'retrying', attempt: attempts, problems: best.problems.length });
-    prompt = repairPrompt(best.problems);
+    prompt = best.reorder ? retryPrompt(best.problems) : repairPrompt(best.problems);
   }
 
   if (!best) throw new TourError('The guide never returned a tour in the expected shape.', costs);
@@ -265,8 +269,9 @@ function modelNote(reply: Awaited<ReturnType<AgentRunner>>): string {
 /**
  * Follows the tour as the guide writes it. Each stop that closes goes through `checkStop`, the
  * same check the finished tour gets, plus the order rule so far, and only then is reported. The
- * first stop that fails ends the stream: later stops wait for the finished, fully checked tour,
- * so the route never shows a gap.
+ * first stop that fails freezes what's shown: later stops wait for the finished, fully checked
+ * tour, so the route never shows a gap. The count of stops begun keeps updating, so progress
+ * stays true. `close()` ends all reporting, once the call is over.
  */
 function streamStops(
   diff: Diff,
@@ -278,22 +283,26 @@ function streamStops(
   const shown: StopView[] = [];
   let index = 0;
   let rank = 0;
-  let open = true;
+  /** Whether new stops may still be shown. */
+  let accepting = true;
+  /** Whether anything may still be reported. */
+  let live = true;
   let writing = 0;
   let queue = Promise.resolve();
   const report = () => {
-    if (open) onProgress({ step: 'writing', stops: [...shown], writing });
+    if (live) onProgress({ step: 'writing', stops: [...shown], writing });
   };
 
   const take = async (raw: unknown) => {
     const position = index++;
-    if (!open) return;
+    if (!accepting) return;
     const stop = isWireStop(raw) ? raw : null;
     const checked = stop ? await checkStop(stop, position, files, diff) : null;
     const stopRank = stop ? STOP_KINDS.indexOf(stop.kind) : -1;
     const afterVerdict = shown.at(-1)?.kind === 'verdict_prompt';
+    if (!accepting) return;
     if (!checked || checked.problems.length > 0 || stopRank < rank || afterVerdict) {
-      open = false;
+      accepting = false;
       return;
     }
     rank = stopRank;
@@ -307,7 +316,7 @@ function streamStops(
       const found = scanner.push(json);
       if (found === null) {
         // The guide started its output over. What's shown stays; nothing more streams.
-        open = false;
+        accepting = false;
         return;
       }
       if (scanner.started !== writing) {
@@ -321,10 +330,15 @@ function streamStops(
     },
     /** Waits for the checks still running on stops that already streamed in. */
     settled: () => queue,
+    close: () => {
+      accepting = false;
+      live = false;
+    },
   };
 }
 
-type Checked = { view: TourView; problems: string[] };
+/** `reorder`: some problems are about order, which only a whole new tour can fix. */
+type Checked = { view: TourView; problems: string[]; reorder: boolean };
 
 type FileReader = (side: 'old' | 'new', path: string) => Promise<string | null>;
 
@@ -443,7 +457,8 @@ async function check(wire: WireTour, fileText: FileReader, diff: Diff): Promise<
 
   const tour: Tour = { review: reviewId('review'), head: diff.head, stops, skips };
   const label = (id: string) => `stop ${id.replace('stop-', '')}`;
-  for (const problem of checkStopOrder(tour)) {
+  const order = checkStopOrder(tour);
+  for (const problem of order) {
     problems.push(
       problem.kind === 'out_of_order'
         ? `${label(problem.stop)} is out of order. Kinds go: ${STOP_KINDS.join(', ')}.`
@@ -478,7 +493,7 @@ async function check(wire: WireTour, fileText: FileReader, diff: Diff): Promise<
     }
   }
 
-  return { view: { stops: views, skips: skipViews }, problems };
+  return { view: { stops: views, skips: skipViews }, problems, reorder: order.length > 0 };
 }
 
 const skipLabel = (skip: Skip) =>
@@ -625,10 +640,23 @@ function renderDiff(diff: Diff): string {
     .join('\n\n');
 }
 
+/** The checker's problems as a list. Each is one line, whatever titles or paths it quotes. */
+const problemList = (problems: readonly string[]) =>
+  problems.map((p) => `- ${p.replace(/\s+/g, ' ')}`).join('\n');
+
+/** For order problems, which only a whole tour can fix: stops have to move or go. */
+function retryPrompt(problems: readonly string[]): string {
+  return `The tour checker found these problems:
+
+${problemList(problems)}
+
+Fix them and return the complete corrected tour, every stop and skip, in the same JSON shape.`;
+}
+
 function repairPrompt(problems: readonly string[]): string {
   return `The tour checker found these problems:
 
-${problems.map((p) => `- ${p}`).join('\n')}
+${problemList(problems)}
 
 Fix them by sending back only what changes, in the same JSON shape:
 - "stops": only the stops you change or add, each one in full. A stop with the same title as an existing stop replaces it, so keep the title exactly as it was. A stop with a new title is added after the existing stops of its kind. Leave out every stop that stays the same.

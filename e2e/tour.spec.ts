@@ -199,15 +199,17 @@ test('while the guide writes, the reviewer reads the PR, then the first stop bef
       await expect(page.locator('.overview .description')).toContainText(
         'Access-Control-Allow-Origin',
       );
-      await expect(page.getByRole('heading', { name: 'Preparing your tour' })).toBeVisible();
       await expect(page.locator('.upcoming-stop')).toContainText(
-        /Planning the route|Writing stop 1/,
+        // Stop 1 may already be in by now; the row says what comes next either way.
+        /Planning the route|Writing stop \d+/,
       );
     });
 
     await test.step('the first stop opens while later stops are still being written', async () => {
       await expect(page.locator('.narration-title')).toHaveText(titles[0] ?? '');
       await expect(page.getByText(/Stop 1 of \d+ so far/)).toBeVisible();
+      // The description the reviewer was reading stays put; the stop waits beside it.
+      await expect(page.locator('.overview .description')).toBeVisible();
       await expect(page.locator('.upcoming-stop')).toBeVisible();
       await expect(
         page.getByText('Questions open once the whole tour is written and checked.'),
