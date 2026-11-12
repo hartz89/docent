@@ -2,6 +2,7 @@ import type {
   AnchorView,
   AnswerView,
   AuthorView,
+  CorrectionView,
   PostedReview,
   ReviewSnapshot,
   StopView,
@@ -20,13 +21,17 @@ import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
 import { FileTree } from './file-tree.tsx';
 import { Markdown } from './markdown.tsx';
-import type { Ready } from './review-page.tsx';
+import type { Ready, Working } from './review-page.tsx';
+import { report } from './run-log.ts';
+import { TourProgress } from './status-screen.tsx';
 import { ThemeToggle } from './theme.tsx';
 import { postedLabel, VerdictForm } from './verdict.tsx';
 
-type Props = { snapshot: ReviewSnapshot; tour: Ready };
+/** The finished tour, or the stops written and checked so far while the guide writes the rest. */
+type Props = { snapshot: ReviewSnapshot; tour: Ready | Working };
 type Diff = NonNullable<ReviewSnapshot['diff']>;
-type Viewing = { path: string; side: 'old' | 'new' };
+/** A file opened outside the stop's citations, at the lines in focus if any. */
+type Viewing = { path: string; side: 'old' | 'new'; focus?: AnchorView; label?: string };
 
 const KIND_LABELS: Record<StopView['kind'], string> = {
   intent: 'Intent',
@@ -37,7 +42,10 @@ const KIND_LABELS: Record<StopView['kind'], string> = {
 };
 
 export function TourScreen({ snapshot, tour }: Props) {
-  const { stops, skips } = tour.tour;
+  const ready = tour.state === 'ready' ? tour : null;
+  const stops = ready ? ready.tour.stops : (tour as Working).stops;
+  const skips = ready?.tour.skips ?? [];
+  const writing = ready ? null : (tour as Working);
   const [index, setIndex] = useState(0);
   const [anchorIndex, setAnchorIndex] = useState(0);
   // A file opened from the skip list, the overview or the file tree, in place of the stop's citation.
@@ -45,6 +53,9 @@ export function TourScreen({ snapshot, tour }: Props) {
   // The left pane shows the route or the whole repo's files.
   const [pane, setPane] = useState<'route' | 'files'>('route');
   const goToFile = useRef<HTMLInputElement>(null);
+  // A reviewer who opened the review while the tour was still being written is reading the PR's
+  // description. Stops arriving don't take the code column away from it; moving does.
+  const [overviewFirst, setOverviewFirst] = useState(tour.state !== 'ready');
   // Each stop's questions and answers, kept here so they survive moving between stops.
   const [threads, setThreads] = useState<Record<string, Exchange[]>>({});
   // The review posted to GitHub from here, if any. A reload gets it from the snapshot.
@@ -59,19 +70,56 @@ export function TourScreen({ snapshot, tour }: Props) {
       }));
     setThreads((all) => ({
       ...all,
-      [stopId]: [...(all[stopId] ?? []), { id, question, answer: null, error: null }],
+      [stopId]: [
+        ...(all[stopId] ?? []),
+        { id, question, answer: null, error: null, correction: null },
+      ],
     }));
+    let checkId: string | null = null;
     try {
       const res = await api.questions.$post({ json: { stopId, question } });
       const body = await res.json();
-      if ('answer' in body) settle({ answer: body.answer });
-      else settle({ error: body.error });
+      if ('answer' in body) {
+        settle({ answer: body.answer });
+        if (body.answer.source === 'author_session') checkId = body.answer.checkId;
+      } else settle({ error: body.error });
     } catch (error) {
       settle({ error: error instanceof Error ? error.message : String(error) });
+    }
+    // The guide's check of the author's answer comes after it, and only ever adds a correction.
+    // If it fails, it says nothing.
+    if (!checkId) return;
+    try {
+      const res = await api['answer-checks'][':id'].$get({ param: { id: checkId } });
+      if (res.status !== 200) return;
+      const { correction } = await res.json();
+      if (correction) settle({ correction });
+    } catch {
+      // Silence, as when the answer holds up.
     }
   }, []);
 
   const stop = stops[index];
+  // When the finished tour replaces the streamed stops, a repair may have added a stop before
+  // this one. Follow the stop the reviewer was reading, by its title, not its number.
+  const reading = useRef<{ stops: readonly StopView[]; title: string | null } | null>(null);
+  // A layout effect, so the wrong stop never shows for a frame.
+  useLayoutEffect(() => {
+    const was = reading.current;
+    const title = stops[index]?.title ?? null;
+    // Only a new list of stops re-selects; the reviewer moving changes the title on purpose.
+    if (was && was.stops !== stops && was.title !== null && title !== was.title) {
+      const moved = stops.findIndex((s) => s.title === was.title);
+      // A whole new tour may have dropped that stop: stay as close as the new route allows.
+      const next = moved !== -1 ? moved : Math.min(index, Math.max(0, stops.length - 1));
+      if (next !== index) {
+        reading.current = { stops, title: stops[next]?.title ?? null };
+        setIndex(next);
+        return;
+      }
+    }
+    reading.current = { stops, title };
+  }, [stops, index]);
   // The guide column outlives each stop, so it would keep the last stop's scroll position.
   // A stop seen for the first time opens at the top; a revisited stop opens where it was left.
   const guide = useRef<HTMLElement>(null);
@@ -81,6 +129,7 @@ export function TourScreen({ snapshot, tour }: Props) {
       if (stop && guide.current) scrollByStop.current.set(stop.id, guide.current.scrollTop);
       setIndex(Math.max(0, Math.min(stops.length - 1, next)));
       setAnchorIndex(0);
+      setOverviewFirst(false);
       setViewing(null);
     },
     [stop, stops.length],
@@ -97,6 +146,9 @@ export function TourScreen({ snapshot, tour }: Props) {
     [anchorIndex, anchorCount],
   );
   const stopId = stop?.id;
+  useEffect(() => {
+    if (stopId) report({ kind: 'ui.stop', stop: index + 1, stopId });
+  }, [stopId, index]);
   useLayoutEffect(() => {
     if (guide.current && stopId) guide.current.scrollTop = scrollByStop.current.get(stopId) ?? 0;
   }, [stopId]);
@@ -136,18 +188,24 @@ export function TourScreen({ snapshot, tour }: Props) {
     () => new Set(stops.flatMap((s) => s.anchors.map((a) => a.path))),
     [stops],
   );
-  if (!stop || !snapshot.pr) return null;
+  if (!snapshot.pr) return null;
 
-  const anchor = stop.anchors[anchorIndex] ?? null;
+  const anchor = stop?.anchors[anchorIndex] ?? null;
   const shown: Viewing | null =
-    viewing ?? (anchor ? { path: anchor.path, side: anchor.side } : null);
-  const cited = shown
-    ? stop.anchors.filter((a) => a.path === shown.path && a.side === shown.side)
-    : [];
+    viewing ?? (anchor && !overviewFirst ? { path: anchor.path, side: anchor.side } : null);
+  const cited =
+    shown && stop ? stop.anchors.filter((a) => a.path === shown.path && a.side === shown.side) : [];
 
   return (
     <div className="app">
-      <TopBar snapshot={snapshot} diff={diff} index={index} total={stops.length} posted={posted} />
+      <TopBar
+        snapshot={snapshot}
+        diff={diff}
+        index={index}
+        total={stops.length}
+        finished={ready !== null}
+        posted={posted}
+      />
       <div className="columns">
         <nav className="column left-column" aria-label="Route and files">
           <div className="pane-switch" role="tablist" aria-label="Left pane">
@@ -184,7 +242,8 @@ export function TourScreen({ snapshot, tour }: Props) {
               onSelect={go}
               skips={skips}
               onOpenSkip={(path) => setViewing({ path, side: sideFor(diff, path) })}
-              tour={tour}
+              tour={ready}
+              writing={writing}
             />
           </div>
           <div
@@ -209,9 +268,10 @@ export function TourScreen({ snapshot, tour }: Props) {
                 <span className="code-path">{shown.path}</span>
                 <span className="code-range">
                   {viewing
-                    ? diff.files.some((f) => f.path === shown.path)
-                      ? 'changed in this PR'
-                      : 'not changed by this PR · read-only'
+                    ? (viewing.label ??
+                      (diff.files.some((f) => f.path === shown.path)
+                        ? 'changed in this PR'
+                        : 'not changed by this PR · read-only'))
                     : anchor
                       ? `lines ${anchor.startLine}–${anchor.endLine} · cited by this stop`
                       : ''}
@@ -230,8 +290,8 @@ export function TourScreen({ snapshot, tour }: Props) {
               <CodeView
                 path={shown.path}
                 side={shown.side}
-                cited={viewing ? [] : cited}
-                focus={viewing ? null : anchor}
+                cited={viewing ? (viewing.focus ? [viewing.focus] : []) : cited}
+                focus={viewing ? (viewing.focus ?? null) : anchor}
                 changed={changes.get(`${shown.side}:${shown.path}`) ?? new Set()}
                 onStep={viewing ? undefined : stepAnchor}
               />
@@ -241,25 +301,53 @@ export function TourScreen({ snapshot, tour }: Props) {
           )}
         </section>
         <aside className="column" aria-label="The guide" ref={guide}>
-          <Narration
-            key={stop.id}
-            stop={stop}
-            author={snapshot.author}
-            exchanges={threads[stop.id] ?? []}
-            onAsk={(question) => void ask(stop.id, question)}
-            activeAnchor={viewing ? -1 : anchorIndex}
-            onAnchor={(i) => {
-              setAnchorIndex(i);
-              setViewing(null);
-            }}
-            isLast={index === stops.length - 1}
-            onNext={() => go(index + 1)}
-            verdict={
-              stop.kind === 'verdict_prompt' ? (
-                <VerdictForm pr={snapshot.pr} posted={posted} onPosted={setPosted} />
-              ) : null
-            }
-          />
+          {!stop ? (
+            <div className="narration">
+              <div className="narration-body fade-in">
+                <TourProgress tour={writing} />
+              </div>
+            </div>
+          ) : (
+            <Narration
+              key={stop.id}
+              stop={stop}
+              author={snapshot.author}
+              exchanges={threads[stop.id] ?? []}
+              onAsk={(question) => void ask(stop.id, question)}
+              onOpenCite={(cite) =>
+                setViewing({
+                  path: cite.path,
+                  side: cite.side,
+                  focus: cite,
+                  label: `lines ${cite.startLine}–${cite.endLine} · cited by the guide's note`,
+                })
+              }
+              activeAnchor={viewing || overviewFirst ? -1 : anchorIndex}
+              onAnchor={(i) => {
+                setOverviewFirst(false);
+                setAnchorIndex(i);
+                setViewing(null);
+              }}
+              isLast={index === stops.length - 1}
+              onNext={() => go(index + 1)}
+              finished={ready !== null}
+              waiting={
+                writing?.attempt === 1 &&
+                writing.steps.find((s) => s.status === 'active')?.id === 'writing'
+                  ? 'Writing the next stop…'
+                  : 'Checking the whole tour…'
+              }
+              verdict={
+                stop.kind !== 'verdict_prompt' ? null : ready ? (
+                  <VerdictForm pr={snapshot.pr} posted={posted} onPosted={setPosted} />
+                ) : (
+                  <p className="waiting-note">
+                    Your verdict opens once the whole tour is written and checked.
+                  </p>
+                )
+              }
+            />
+          )}
         </aside>
       </div>
     </div>
@@ -271,12 +359,15 @@ function TopBar({
   diff,
   index,
   total,
+  finished,
   posted,
 }: {
   snapshot: ReviewSnapshot;
   diff: Diff;
   index: number;
   total: number;
+  /** False while stops are still being written, so the total isn't known yet. */
+  finished: boolean;
   posted: PostedReview | null;
 }) {
   const pr = snapshot.pr;
@@ -311,18 +402,27 @@ function TopBar({
       </div>
       <div className="progress">
         <span>
-          Stop {index + 1} of {total}
+          {total === 0
+            ? 'Preparing the tour'
+            : finished
+              ? `Stop ${index + 1} of ${total}`
+              : `Stop ${index + 1} of ${total} so far`}
         </span>
-        <div
-          className="progress-track"
-          role="progressbar"
-          aria-valuemin={1}
-          aria-valuemax={total}
-          aria-valuenow={index + 1}
-          aria-label="Tour progress"
-        >
-          <div className="progress-fill" style={{ width: `${((index + 1) / total) * 100}%` }} />
-        </div>
+        {finished ? (
+          <div
+            className="progress-track"
+            role="progressbar"
+            aria-valuemin={1}
+            aria-valuemax={total}
+            aria-valuenow={index + 1}
+            aria-label="Tour progress"
+          >
+            <div className="progress-fill" style={{ width: `${((index + 1) / total) * 100}%` }} />
+          </div>
+        ) : (
+          // Same size, no fill: until the route is finished, a fraction would be a guess.
+          <div className="progress-track" aria-hidden="true" />
+        )}
       </div>
       {posted ? (
         <a className="verdict-button posted" href={posted.url} target="_blank" rel="noreferrer">
@@ -350,15 +450,18 @@ function Route({
   skips,
   onOpenSkip,
   tour,
+  writing,
 }: {
   stops: readonly StopView[];
   index: number;
   onSelect: (index: number) => void;
   skips: Ready['tour']['skips'];
   onOpenSkip: (path: string) => void;
-  tour: Ready;
+  /** The finished tour, or null while it's still being written. */
+  tour: Ready | null;
+  writing: Working | null;
 }) {
-  const spent = tour.costs.reduce((sum, c) => sum + c.costMicroUsd, 0);
+  const spent = tour?.costs.reduce((sum, c) => sum + c.costMicroUsd, 0) ?? 0;
   return (
     <div className="route">
       <h2 className="section-label">The route</h2>
@@ -391,11 +494,14 @@ function Route({
             </li>
           );
         })}
+        {writing && <UpcomingStop stops={stops} writing={writing} />}
       </ol>
 
       <section className="skips" aria-label="Skipped">
-        <h2 className="section-label">Skipped, with reasons ({skips.length})</h2>
-        {skips.length === 0 ? (
+        <h2 className="section-label">Skipped, with reasons{tour ? ` (${skips.length})` : ''}</h2>
+        {!tour ? (
+          <p className="empty-note">Listed once the whole tour is checked.</p>
+        ) : skips.length === 0 ? (
           <p className="empty-note">Nothing skipped: every changed line is on the route.</p>
         ) : (
           <ul className="skip-list">
@@ -414,7 +520,7 @@ function Route({
         )}
       </section>
 
-      {tour.problems.length > 0 && (
+      {tour && tour.problems.length > 0 && (
         <details className="checks">
           <summary>
             {tour.problems.length} unresolved check{tour.problems.length === 1 ? '' : 's'}
@@ -428,11 +534,36 @@ function Route({
       )}
 
       <p className="cost-line">
-        {tour.cached
-          ? `Loaded from cache · no model calls (first written for ${formatUsd(spent)})`
-          : `Tour written for ${formatUsd(spent)} · ${tour.attempts} attempt${tour.attempts === 1 ? '' : 's'} · ${tour.model}`}
+        {!tour
+          ? 'The guide is still writing. Its cost shows here when it finishes.'
+          : tour.cached
+            ? `Loaded from cache · no model calls (first written for ${formatUsd(spent)})`
+            : `Tour written for ${formatUsd(spent)} · ${tour.attempts} attempt${tour.attempts === 1 ? '' : 's'} · ${tour.model}`}
       </p>
     </div>
+  );
+}
+
+/** The route's next row while the guide writes: says what's happening, never how long it'll take. */
+function UpcomingStop({ stops, writing }: { stops: readonly StopView[]; writing: Working }) {
+  const step = writing.steps.find((s) => s.status === 'active')?.id;
+  const verdictIn = stops.at(-1)?.kind === 'verdict_prompt';
+  const label =
+    writing.attempt > 1
+      ? 'Fixing what the checker found'
+      : step === 'checking' || verdictIn
+        ? 'Checking the whole tour'
+        : step === 'writing'
+          ? `Writing stop ${Math.max(writing.writing, stops.length + 1)}`
+          : 'Planning the route';
+  return (
+    <li className="upcoming-stop" aria-live="polite">
+      <span className="upcoming-dot" aria-hidden="true" />
+      <span>
+        <span className="stop-kind">In progress</span>
+        <span className="upcoming-title">{label}…</span>
+      </span>
+    </li>
   );
 }
 
@@ -481,6 +612,8 @@ type Exchange = {
   question: string;
   answer: AnswerView | null;
   error: string | null;
+  /** The guide's note when the code contradicts the author's answer. Usually never set. */
+  correction: CorrectionView | null;
 };
 
 /** Who answered, and what it cost: the author's session, or the guide and why. */
@@ -499,20 +632,28 @@ function Narration({
   author,
   exchanges,
   onAsk,
+  onOpenCite,
   activeAnchor,
   onAnchor,
   isLast,
   onNext,
+  finished,
+  waiting,
   verdict,
 }: {
   stop: StopView;
   author: AuthorView;
   exchanges: readonly Exchange[];
   onAsk: (question: string) => void;
+  onOpenCite: (cite: AnchorView) => void;
   activeAnchor: number;
   onAnchor: (index: number) => void;
   isLast: boolean;
   onNext: () => void;
+  /** False while the rest of the tour is still being written and checked. */
+  finished: boolean;
+  /** What the next-stop button says while the next stop isn't ready yet. */
+  waiting: string;
   /** The verdict form, on the verdict stop. */
   verdict: ReactNode;
 }) {
@@ -572,77 +713,127 @@ function Narration({
 
         {verdict}
 
-        <div className="question">
-          {exchanges.map((exchange, i) => (
-            <div className="exchange fade-in" key={exchange.id}>
-              <p
-                className="exchange-question"
-                ref={i === exchanges.length - 1 ? newest : undefined}
-              >
-                {exchange.question}
-              </p>
-              {exchange.answer ? (
-                <>
-                  <div className="exchange-answer">
-                    <Markdown text={exchange.answer.text} />
+        {!finished ? (
+          <p className="waiting-note">Questions open once the whole tour is written and checked.</p>
+        ) : (
+          <div className="question">
+            {exchanges.map((exchange, i) => (
+              <div className="exchange fade-in" key={exchange.id}>
+                <p
+                  className="exchange-question"
+                  ref={i === exchanges.length - 1 ? newest : undefined}
+                >
+                  {exchange.question}
+                </p>
+                {exchange.answer ? (
+                  <>
+                    <div className="exchange-answer">
+                      <Markdown text={exchange.answer.text} />
+                    </div>
+                    <div className="exchange-source">{answerSource(exchange.answer)}</div>
+                    {exchange.answer.source === 'author_session' && (
+                      // Present before any note arrives, so a screen reader announces it.
+                      <div aria-live="polite">
+                        {exchange.correction && (
+                          <Correction correction={exchange.correction} onOpenCite={onOpenCite} />
+                        )}
+                      </div>
+                    )}
+                  </>
+                ) : exchange.error ? (
+                  <div className="exchange-source" role="alert">
+                    Couldn't answer: {exchange.error}
                   </div>
-                  <div className="exchange-source">{answerSource(exchange.answer)}</div>
-                </>
-              ) : exchange.error ? (
-                <div className="exchange-source" role="alert">
-                  Couldn't answer: {exchange.error}
-                </div>
-              ) : (
-                <div className="exchange-source" aria-live="polite">
-                  {author?.found
-                    ? "The author's session is thinking it over…"
-                    : 'The guide is reading the code…'}
-                </div>
-              )}
-            </div>
-          ))}
-          <label
-            htmlFor={`question-${stop.id}`}
-            className={exchanges.length > 0 ? 'follow-up' : undefined}
-          >
-            {exchanges.length > 0 ? 'Ask a follow-up' : 'Your question'}
-          </label>
-          <textarea
-            id={`question-${stop.id}`}
-            value={draft}
-            placeholder="Why is it built this way? What calls this?"
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-                event.preventDefault();
-                submit();
-              }
-            }}
-          />
-          <div className="question-actions">
-            <span>
-              <kbd>⌘</kbd> <kbd>Enter</kbd> to ask
-            </span>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={submit}
-              disabled={!draft.trim() || pending}
+                ) : (
+                  <div className="exchange-source" aria-live="polite">
+                    {author?.found
+                      ? "The author's session is thinking it over…"
+                      : 'The guide is reading the code…'}
+                  </div>
+                )}
+              </div>
+            ))}
+            <label
+              htmlFor={`question-${stop.id}`}
+              className={exchanges.length > 0 ? 'follow-up' : undefined}
             >
-              {pending ? 'Asking…' : author?.found ? 'Ask the author' : 'Ask the guide'}
-            </button>
+              {exchanges.length > 0 ? 'Ask a follow-up' : 'Your question'}
+            </label>
+            <textarea
+              id={`question-${stop.id}`}
+              value={draft}
+              placeholder="Why is it built this way? What calls this?"
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  submit();
+                }
+              }}
+            />
+            <div className="question-actions">
+              <span>
+                <kbd>⌘</kbd> <kbd>Enter</kbd> to ask
+              </span>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={submit}
+                disabled={!draft.trim() || pending}
+              >
+                {pending ? 'Asking…' : author?.found ? 'Ask the author' : 'Ask the guide'}
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       <footer className="narration-footer">
         <span className="batch-note">Pending batch · no changes yet</span>
-        {!isLast && (
+        {!isLast ? (
           <button type="button" className="primary-button" onClick={onNext}>
             Next stop <span aria-hidden="true">→</span>
           </button>
-        )}
+        ) : !finished && stop.kind !== 'verdict_prompt' ? (
+          <button type="button" className="primary-button" disabled>
+            {waiting}
+          </button>
+        ) : null}
       </footer>
+    </div>
+  );
+}
+
+/**
+ * The guide's note under an author answer the code contradicts. It says what the code does,
+ * with the lines; it doesn't grade the answer.
+ */
+function Correction({
+  correction,
+  onOpenCite,
+}: {
+  correction: CorrectionView;
+  onOpenCite: (cite: AnchorView) => void;
+}) {
+  const spent = correction.costs.reduce((sum, c) => sum + c.costMicroUsd, 0);
+  return (
+    <div className="callout correction fade-in" role="note">
+      <div className="callout-label">From the code</div>
+      <p>{inline(correction.text)}</p>
+      <div className="chips">
+        {correction.cites.map((cite) => (
+          <button
+            type="button"
+            key={`${cite.path}:${cite.startLine}-${cite.endLine}`}
+            className="chip"
+            onClick={() => onOpenCite(cite)}
+            title={`${cite.path} at head`}
+          >
+            {chipLabel(cite)}
+          </button>
+        ))}
+      </div>
+      <div className="correction-source">Noted by the guide, at head · {formatUsd(spent)}</div>
     </div>
   );
 }

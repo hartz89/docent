@@ -2,9 +2,10 @@
 // saves one from a real run; `--fixture` replays it with no GitHub or model calls. A review
 // submitted in fixture mode is printed, never posted.
 import { existsSync } from 'node:fs';
-import { mkdir, readFile as readFileText, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import type { AgentReply, AgentRunner } from './agent.ts';
+import { mkdir, readdir, readFile as readFileText, stat, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, sep } from 'node:path';
+import type { Job, MicroUsd } from '@docent/core';
+import type { AgentReply, AgentRequest, AgentRunner } from './agent.ts';
 import {
   fileFromText,
   isSafeRepoPath,
@@ -13,8 +14,14 @@ import {
   type RepoTree,
   type ReviewPost,
 } from './github.ts';
+import type { HeadFile, HeadFiles } from './head-files.ts';
 
-type RecordedReplies = Partial<Record<'tour' | 'question', AgentReply[]>>;
+type RecordedJob = 'tour' | 'question' | 'answer_check';
+type RecordedReplies = Partial<Record<RecordedJob, AgentReply[]>>;
+
+/** Questions and answer checks are recorded on their own; every other job is the tour's. */
+const recordedJob = (job: Job): RecordedJob =>
+  job === 'question' || job === 'answer_check' ? job : 'tour';
 
 const fileAt = (dir: string, side: 'old' | 'new', path: string) =>
   join(dir, 'files', side === 'new' ? 'head' : 'base', path);
@@ -55,22 +62,76 @@ export function fixtureSource(dir: string, record: ReviewRecorder = printReview)
         record(review);
         return { url: `${pr.url}#pullrequestreview-0` };
       },
+      headFiles: () => recordedHeadFiles(join(dir, 'files', 'head')),
     };
   };
 }
 
-/** Replays the recorded replies for each job in order, repeating the last one. */
-export function fixtureRunner(dir: string): AgentRunner {
+/**
+ * The fork that primes the author's session (the one kept on disk) shows nothing in the review,
+ * so it is neither recorded nor replayed: a replay primes for free.
+ */
+const isPrimer = (request: AgentRequest) => request.keepIn !== undefined;
+
+const replayedPrimer = (request: AgentRequest): AgentReply => ({
+  sessionId: '00000000-0000-4000-8000-000000000000',
+  text: 'Ready.',
+  structured: undefined,
+  denials: [],
+  cost: {
+    job: request.job,
+    model: request.model,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    costMicroUsd: 0 as MicroUsd,
+    latencyMs: 0,
+  },
+});
+/** The recorded head files, from disk: a fixture is trusted test data, not a PR's code. */
+async function recordedHeadFiles(root: string): Promise<HeadFiles> {
+  const entries: HeadFile[] = [];
+  const found = existsSync(root)
+    ? await readdir(root, { recursive: true, withFileTypes: true })
+    : [];
+  for (const entry of found) {
+    if (!entry.isFile()) continue;
+    const path = relative(root, join(entry.parentPath, entry.name)).split(sep).join('/');
+    entries.push({ path, bytes: (await stat(join(root, path))).size });
+  }
+  return {
+    entries,
+    truncated: false,
+    read: async function* (paths) {
+      for (const path of paths) {
+        yield { path, text: await readFileText(join(root, path), 'utf8').catch(() => null) };
+      }
+    },
+  };
+}
+
+/**
+ * Replays the recorded replies for each job in order, repeating the last one. With `paceMs`, a
+ * structured reply is written out 40 characters at a time, that many milliseconds apart, the way
+ * a live guide streams it, so the screen can be seen filling in.
+ */
+export function fixtureRunner(dir: string, options: { paceMs?: number } = {}): AgentRunner {
   let replies: RecordedReplies | undefined;
-  const used = { tour: 0, question: 0 };
+  const used: Record<RecordedJob, number> = { tour: 0, question: 0, answer_check: 0 };
   return async (request) => {
+    if (isPrimer(request)) return replayedPrimer(request);
     replies ??= JSON.parse(
       await readFileText(join(dir, 'replies.json'), 'utf8'),
     ) as RecordedReplies;
-    const job = request.job === 'question' ? 'question' : 'tour';
+    const job = recordedJob(request.job);
     const list = replies[job] ?? [];
     const reply = list[Math.min(used[job]++, list.length - 1)];
     if (!reply) throw new Error(`The fixture has no recorded ${job} reply.`);
+    if (options.paceMs && reply.structured !== undefined && request.onOutput) {
+      const json = JSON.stringify(reply.structured);
+      for (let at = 40; at < json.length + 40; at += 40) {
+        await new Promise((resolve) => setTimeout(resolve, options.paceMs));
+        request.onOutput(json.slice(0, Math.min(at, json.length)));
+      }
+    }
     return reply;
   };
 }
@@ -112,7 +173,8 @@ export function recording(
     },
     runner: async (request) => {
       const reply = await runner(request);
-      const job = request.job === 'question' ? 'question' : 'tour';
+      if (isPrimer(request)) return reply;
+      const job = recordedJob(request.job);
       replies[job] = [...(replies[job] ?? []), reply];
       await save(join(dir, 'replies.json'), `${JSON.stringify(replies, null, 2)}\n`);
       return reply;
