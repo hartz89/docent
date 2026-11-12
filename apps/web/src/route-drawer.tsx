@@ -86,7 +86,8 @@ export function RouteDrawer({
             <path d="M4 4l8 8M12 4l-8 8" />
           </svg>
         </button>
-        <nav aria-label="The route">{children}</nav>
+        {/* Unnamed: the dialog already carries the name, and saying it twice is noise. */}
+        <nav>{children}</nav>
       </div>
     </dialog>
   );

@@ -82,6 +82,16 @@ export function TourScreen({ snapshot, tour }: Props) {
   const routeOpen = drawer && drawerOpen;
   const openRoute = useCallback(() => setDrawerOpen(true), []);
   const closeRoute = useCallback(() => setDrawerOpen(false), []);
+  // Widening past 1200px with the drawer open (a rotated tablet, a zoom) takes the drawer and its
+  // opener away. Forget it was open, so narrowing again doesn't reopen it, and move focus to the
+  // current stop in the route's column rather than leaving it on the page body.
+  useEffect(() => {
+    if (drawer || !drawerOpen) return;
+    setDrawerOpen(false);
+    document
+      .querySelector<HTMLElement>('nav[aria-label="The route"] [aria-current="step"]')
+      ?.focus();
+  }, [drawer, drawerOpen]);
 
   const stop = stops[index];
   // The guide outlives each stop, so it would keep the last stop's scroll position. A stop seen

@@ -459,10 +459,10 @@ code,
   text-align: left;
 }
 
-/* Gives way before the path does. */
+/* Gives way before the path does, but keeps enough to show the start of the cited range. */
 .code-range {
   flex: 0 1000 auto;
-  min-width: 0;
+  min-width: 12ch;
   color: var(--muted);
   font-size: 12.5px;
   white-space: nowrap;

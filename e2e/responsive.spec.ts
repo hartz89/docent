@@ -146,3 +146,51 @@ for (const { width, height, codeMin, drawer } of widths) {
     }
   });
 }
+
+test('the layout switches exactly at its breakpoints, and a resize never strands the drawer', async ({
+  page,
+}) => {
+  const docent = await launch('cli.js', ['review', '--fixture', fixture]);
+  try {
+    await page.setViewportSize({ width: 1200, height: 800 });
+    await page.goto(docent.url);
+    await expect(page.locator('.narration-title')).toBeVisible();
+    const routeColumn = page.getByRole('navigation', { name: 'The route' });
+    const routeButton = page.getByRole('button', { name: 'Open the route', exact: true });
+    const stopBar = page.getByRole('navigation', { name: 'Stops' });
+    const route = page.getByRole('dialog', { name: 'The route' });
+
+    // The breakpoints live in both route-drawer.tsx and styles.css; these pin them together.
+    await test.step('1200 has the route column; 1199 has the drawer', async () => {
+      await expect(routeColumn).toBeVisible();
+      await expect(routeButton).toHaveCount(0);
+      await page.setViewportSize({ width: 1199, height: 800 });
+      await expect(routeButton).toBeVisible();
+      await expect(routeColumn).toBeHidden();
+    });
+
+    await test.step('800 has no bottom bar; 799 does, and the top bar button goes', async () => {
+      await page.setViewportSize({ width: 800, height: 800 });
+      await expect(stopBar).toHaveCount(0);
+      await expect(routeButton).toBeVisible();
+      await page.setViewportSize({ width: 799, height: 800 });
+      await expect(stopBar).toBeVisible();
+      await expect(routeButton).toBeHidden();
+    });
+
+    await test.step('widening with the drawer open closes it for good', async () => {
+      await page.setViewportSize({ width: 1100, height: 800 });
+      await routeButton.click();
+      await expect(route).toBeVisible();
+      await page.setViewportSize({ width: 1440, height: 800 });
+      await expect(route).toHaveCount(0);
+      // Focus lands on the current stop in the route's column, not the page body.
+      await expect(routeColumn.locator('[aria-current="step"]')).toBeFocused();
+      await page.setViewportSize({ width: 1100, height: 800 });
+      await expect(routeButton).toBeVisible();
+      await expect(route).toBeHidden();
+    });
+  } finally {
+    await docent.stop();
+  }
+});
