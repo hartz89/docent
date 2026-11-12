@@ -9,8 +9,12 @@ import { TourScreen } from './tour-screen.tsx';
 
 export type Snapshot = ReviewSnapshot;
 type Ready = Extract<TourState, { state: 'ready' }>;
+type Working = Extract<TourState, { state: 'working' }>;
 
-/** The review screen: progress while the tour is written, then the tour itself. */
+/**
+ * The review screen. Once the PR is read, it's the tour screen from then on: the description and
+ * files while the guide reads, each stop as it's written and checked, then the finished tour.
+ */
 export function ReviewPage() {
   const snapshot = useQuery({
     queryKey: ['review'],
@@ -52,9 +56,10 @@ export function ReviewPage() {
   const stillReading = tour?.state === 'working' && tour.steps[0]?.status === 'active';
   const refetch = snapshot.refetch;
   const missingPr = data !== undefined && data !== null && data.pr === null;
+  const started = tour !== null;
   useEffect(() => {
-    if (missingPr && tour && !stillReading) void refetch();
-  }, [missingPr, tour, stillReading, refetch]);
+    if (missingPr && started && !stillReading) void refetch();
+  }, [missingPr, started, stillReading, refetch]);
   // Who answers questions is settled by the time the tour is ready; fetch it then if we missed it.
   const unknownAuthor = data !== undefined && data !== null && data.author === null;
   const isReady = tour?.state === 'ready';
@@ -73,8 +78,8 @@ export function ReviewPage() {
   if (data === null || data === undefined) return <HealthPage />;
 
   const current = tour ?? data.tour;
-  return current.state === 'ready' && data.pr && data.diff ? (
-    <TourScreen snapshot={{ ...data, tour: current }} tour={current as Ready} />
+  return current.state !== 'failed' && data.pr && data.diff ? (
+    <TourScreen snapshot={{ ...data, tour: current }} tour={current} />
   ) : (
     <div className="app">
       <TopBarShell snapshot={data} />
@@ -101,4 +106,4 @@ function TopBarShell({ snapshot }: { snapshot: Snapshot }) {
   );
 }
 
-export type { Ready, StopView };
+export type { Ready, StopView, Working };

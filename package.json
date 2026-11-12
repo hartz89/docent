@@ -15,8 +15,10 @@
     "fix": "biome check --write",
     "check:context": "node scripts/check-context-loading.ts",
     "bench:harness": "node scripts/harness-bench.ts",
+    "trust-ledger": "node scripts/trust-ledger.ts",
     "build": "tsc -b && pnpm --filter @docent/web build",
-    "prepare": "lefthook install"
+    "prepare": "lefthook install",
+    "eval:tours": "node packages/evals/src/run-tours.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.5",

@@ -1,0 +1,1981 @@
+{
+ "entries": [
+  {
+   "path": ".devcontainer/Dockerfile",
+   "kind": "file"
+  },
+  {
+   "path": ".devcontainer/devcontainer.json",
+   "kind": "file"
+  },
+  {
+   "path": ".devcontainer/docker-compose.yml",
+   "kind": "file"
+  },
+  {
+   "path": ".editorconfig",
+   "kind": "file"
+  },
+  {
+   "path": ".github/FUNDING.yml",
+   "kind": "file"
+  },
+  {
+   "path": ".github/ISSUE_TEMPLATE/1-bug-report.yml",
+   "kind": "file"
+  },
+  {
+   "path": ".github/ISSUE_TEMPLATE/2-feature-request.yml",
+   "kind": "file"
+  },
+  {
+   "path": ".github/ISSUE_TEMPLATE/config.yml",
+   "kind": "file"
+  },
+  {
+   "path": ".github/actions/perf-measures/action.yml",
+   "kind": "file"
+  },
+  {
+   "path": ".github/pull_request_template.md",
+   "kind": "file"
+  },
+  {
+   "path": ".github/workflows/autofix.yml",
+   "kind": "file"
+  },
+  {
+   "path": ".github/workflows/ci.yml",
+   "kind": "file"
+  },
+  {
+   "path": ".github/workflows/cr.yml",
+   "kind": "file"
+  },
+  {
+   "path": ".github/workflows/no-response.yml",
+   "kind": "file"
+  },
+  {
+   "path": ".github/workflows/release.yml",
+   "kind": "file"
+  },
+  {
+   "path": ".gitignore",
+   "kind": "file"
+  },
+  {
+   "path": ".gitpod.yml",
+   "kind": "file"
+  },
+  {
+   "path": ".prettierrc",
+   "kind": "file"
+  },
+  {
+   "path": ".tool-versions",
+   "kind": "file"
+  },
+  {
+   "path": ".vitest.config/setup-vitest.ts",
+   "kind": "file"
+  },
+  {
+   "path": ".vscode/extensions.json",
+   "kind": "file"
+  },
+  {
+   "path": ".vscode/settings.json",
+   "kind": "file"
+  },
+  {
+   "path": "LICENSE",
+   "kind": "file"
+  },
+  {
+   "path": "README.md",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/deno/.gitignore",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/deno/.vscode/settings.json",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/deno/fast.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/deno/faster.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/deno/hono.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/deno/magalo.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/deno/oak.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/deno/opine.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/handle-event/index.js",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/handle-event/package.json",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/handle-event/yarn.lock",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/http-server/.gitignore",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/http-server/README.md",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/http-server/benchmark.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/package.json",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/benchmark.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/hono.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/nano.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/page-react.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/page.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/preact.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/react-jsx/benchmark.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/react-jsx/hono.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/react-jsx/nano.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/react-jsx/page-hono.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/react-jsx/page-nano.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/react-jsx/page-preact.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/react-jsx/page-react.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/react-jsx/preact.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/react-jsx/react.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/react-jsx/tsconfig.json",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/src/react.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/tsconfig.json",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/jsx/yarn.lock",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/query-param/bun.lockb",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/query-param/package-lock.json",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/query-param/package.json",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/query-param/src/bench.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/query-param/src/fast-querystring.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/query-param/src/hono.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/query-param/src/qs.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers-deno/.vscode/settings.json",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers-deno/README.md",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers-deno/deno.json",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers-deno/deno.lock",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers-deno/src/bench.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers-deno/src/find-my-way.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers-deno/src/hono.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers-deno/src/koa-router.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers-deno/src/koa-tree-router.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers-deno/src/medley-router.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers-deno/src/tool.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers-deno/src/trek-router.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/README.md",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/bun.lock",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/package.json",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/src/bench-includes-init.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/src/bench.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/src/express.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/src/find-my-way.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/src/hono.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/src/koa-router.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/src/koa-tree-router.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/src/medley-router.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/src/memoirist.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/src/radix3.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/src/rou3.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/src/tool.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/src/trek-router.mts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/routers/tsconfig.json",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/utils/.gitignore",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/utils/package.json",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/utils/src/get-path.ts",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/utils/src/loop.js",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/webapp/.gitignore",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/webapp/hono.js",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/webapp/itty-router.js",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/webapp/package.json",
+   "kind": "file"
+  },
+  {
+   "path": "benchmarks/webapp/sunder.js",
+   "kind": "file"
+  },
+  {
+   "path": "build/build.ts",
+   "kind": "file"
+  },
+  {
+   "path": "build/remove-private-fields.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "build/remove-private-fields.ts",
+   "kind": "file"
+  },
+  {
+   "path": "build/validate-exports.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "build/validate-exports.ts",
+   "kind": "file"
+  },
+  {
+   "path": "bun.lock",
+   "kind": "file"
+  },
+  {
+   "path": "bunfig.toml",
+   "kind": "file"
+  },
+  {
+   "path": "codecov.yml",
+   "kind": "file"
+  },
+  {
+   "path": "docs/CODE_OF_CONDUCT.md",
+   "kind": "file"
+  },
+  {
+   "path": "docs/CONTRIBUTING.md",
+   "kind": "file"
+  },
+  {
+   "path": "docs/MIGRATION.md",
+   "kind": "file"
+  },
+  {
+   "path": "docs/images/hono-logo-monochrome.svg",
+   "kind": "file"
+  },
+  {
+   "path": "docs/images/hono-logo.png",
+   "kind": "file"
+  },
+  {
+   "path": "docs/images/hono-logo.pxm",
+   "kind": "file"
+  },
+  {
+   "path": "docs/images/hono-logo.svg",
+   "kind": "file"
+  },
+  {
+   "path": "docs/images/hono-title.png",
+   "kind": "file"
+  },
+  {
+   "path": "docs/images/hono-title.pxm",
+   "kind": "file"
+  },
+  {
+   "path": "eslint.config.mjs",
+   "kind": "file"
+  },
+  {
+   "path": "jsr.json",
+   "kind": "file"
+  },
+  {
+   "path": "package.cjs.json",
+   "kind": "file"
+  },
+  {
+   "path": "package.json",
+   "kind": "file"
+  },
+  {
+   "path": "perf-measures/.octocov.consolidated.perf-measures.main.yml",
+   "kind": "file"
+  },
+  {
+   "path": "perf-measures/.octocov.consolidated.perf-measures.yml",
+   "kind": "file"
+  },
+  {
+   "path": "perf-measures/bundle-check/.gitignore",
+   "kind": "file"
+  },
+  {
+   "path": "perf-measures/bundle-check/generated/.gitkeep",
+   "kind": "file"
+  },
+  {
+   "path": "perf-measures/bundle-check/scripts/check-bundle-size.ts",
+   "kind": "file"
+  },
+  {
+   "path": "perf-measures/type-check/.gitignore",
+   "kind": "file"
+  },
+  {
+   "path": "perf-measures/type-check/client.ts",
+   "kind": "file"
+  },
+  {
+   "path": "perf-measures/type-check/generated/.gitkeep",
+   "kind": "file"
+  },
+  {
+   "path": "perf-measures/type-check/scripts/generate-app.ts",
+   "kind": "file"
+  },
+  {
+   "path": "perf-measures/type-check/scripts/process-results.ts",
+   "kind": "file"
+  },
+  {
+   "path": "perf-measures/type-check/scripts/tsconfig.json",
+   "kind": "file"
+  },
+  {
+   "path": "perf-measures/type-check/tsconfig.build.json",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/bun/.static/plain.txt",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/bun/color.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/bun/favicon.ico",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/bun/index.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/bun/static-absolute-root/plain.txt",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/bun/static/download",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/bun/static/hello.world/index.html",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/bun/static/helloworld/index.html",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/bun/static/plain.txt",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/bun/tsconfig.json",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno-jsx/deno.precompile.json",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno-jsx/deno.react-jsx.json",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno-jsx/jsx.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno/.static/plain.txt",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno/.vscode/settings.json",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno/deno.json",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno/deno.lock",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno/favicon.ico",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno/hono.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno/middleware.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno/ssg.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno/static-absolute-root/plain.txt",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno/static/download",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno/static/hello.world/index.html",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno/static/helloworld/index.html",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno/static/plain.txt",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/deno/stream.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/fastly/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/fastly/tsconfig.json",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/fastly/vitest.config.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/lambda-edge/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/lambda-edge/tsconfig.json",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/lambda-edge/vitest.config.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/lambda/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/lambda/mock.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/lambda/stream-mock.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/lambda/stream.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/lambda/tsconfig.json",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/lambda/vitest.config.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/node/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/node/tsconfig.json",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/node/vitest.config.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/workerd/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/workerd/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/workerd/tsconfig.json",
+   "kind": "file"
+  },
+  {
+   "path": "runtime-tests/workerd/vitest.config.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/aws-lambda/conninfo.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/aws-lambda/conninfo.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/aws-lambda/handler.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/aws-lambda/handler.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/aws-lambda/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/aws-lambda/types.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/bun/conninfo.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/bun/conninfo.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/bun/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/bun/serve-static.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/bun/server.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/bun/server.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/bun/ssg.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/bun/websocket.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/bun/websocket.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-pages/conninfo.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-pages/conninfo.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-pages/handler.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-pages/handler.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-pages/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-workers/conninfo.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-workers/conninfo.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-workers/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-workers/serve-static-module.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-workers/serve-static.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-workers/serve-static.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-workers/utils.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-workers/utils.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-workers/websocket.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/cloudflare-workers/websocket.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/deno/conninfo.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/deno/conninfo.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/deno/deno.d.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/deno/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/deno/serve-static.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/deno/ssg.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/deno/websocket.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/deno/websocket.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/lambda-edge/conninfo.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/lambda-edge/conninfo.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/lambda-edge/handler.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/lambda-edge/handler.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/lambda-edge/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/netlify/conninfo.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/netlify/conninfo.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/netlify/handler.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/netlify/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/netlify/mod.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/service-worker/handler.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/service-worker/handler.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/service-worker/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/service-worker/types.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/vercel/conninfo.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/vercel/conninfo.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/vercel/handler.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/vercel/handler.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/adapter/vercel/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/client/client.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/client/client.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/client/fetch-result-please.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/client/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/client/types.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/client/types.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/client/utils.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/client/utils.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/compose.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/compose.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/context.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/context.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/accepts/accepts.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/accepts/accepts.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/accepts/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/adapter/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/adapter/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/conninfo/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/conninfo/types.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/cookie/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/cookie/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/css/common.case.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/css/common.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/css/index.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/css/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/dev/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/dev/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/factory/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/factory/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/html/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/html/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/proxy/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/proxy/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/route/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/route/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/ssg/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/ssg/middleware.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/ssg/plugins.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/ssg/plugins.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/ssg/ssg.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/ssg/ssg.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/ssg/utils.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/ssg/utils.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/streaming/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/streaming/sse.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/streaming/sse.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/streaming/stream.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/streaming/stream.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/streaming/text.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/streaming/text.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/streaming/utils.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/testing/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/testing/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/websocket/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/helper/websocket/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/hono-base.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/hono.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/hono.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/http-exception.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/http-exception.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/base.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/base.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/children.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/children.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/components.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/components.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/constants.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/context.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/client.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/client.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/components.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/components.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/context.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/context.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/css.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/css.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/hooks/index.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/hooks/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/index.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/intrinsic-element/components.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/intrinsic-element/components.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/jsx-dev-runtime.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/jsx-runtime.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/render.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/server.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/server.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/dom/utils.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/hooks/dom.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/hooks/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/hooks/string.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/index.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/intrinsic-element/common.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/intrinsic-element/components.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/intrinsic-element/components.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/intrinsic-elements.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/jsx-dev-runtime.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/jsx-runtime.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/jsx-runtime.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/streaming.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/streaming.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/types.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/utils.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/jsx/utils.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/basic-auth/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/basic-auth/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/bearer-auth/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/bearer-auth/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/body-limit/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/body-limit/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/cache/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/cache/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/combine/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/combine/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/compress/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/compress/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/context-storage/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/context-storage/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/cors/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/cors/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/csrf/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/csrf/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/etag/digest.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/etag/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/etag/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/ip-restriction/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/ip-restriction/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/jsx-renderer/index.test.tsx",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/jsx-renderer/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/jwk/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/jwk/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/jwk/jwk.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/jwk/keys.test.json",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/jwt/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/jwt/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/jwt/jwt.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/language/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/language/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/language/language.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/logger/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/logger/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/method-override/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/method-override/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/powered-by/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/powered-by/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/pretty-json/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/pretty-json/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/request-id/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/request-id/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/request-id/request-id.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/secure-headers/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/secure-headers/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/secure-headers/permissions-policy.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/secure-headers/secure-headers.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/serve-static/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/serve-static/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/serve-static/path.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/serve-static/path.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/timeout/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/timeout/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/timing/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/timing/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/timing/timing.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/trailing-slash/index.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/middleware/trailing-slash/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/preset/quick.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/preset/quick.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/preset/tiny.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/preset/tiny.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/request.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/request.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/request/constants.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/common.case.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/linear-router/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/linear-router/router.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/linear-router/router.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/pattern-router/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/pattern-router/router.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/pattern-router/router.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/reg-exp-router/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/reg-exp-router/matcher.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/reg-exp-router/node.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/reg-exp-router/prepared-router.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/reg-exp-router/prepared-router.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/reg-exp-router/router.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/reg-exp-router/router.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/reg-exp-router/trie.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/smart-router/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/smart-router/router.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/smart-router/router.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/trie-router/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/trie-router/node.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/trie-router/node.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/trie-router/router.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/router/trie-router/router.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/types.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/types.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/accept.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/accept.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/basic-auth.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/basic-auth.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/body.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/body.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/buffer.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/buffer.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/color.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/color.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/compress.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/concurrent.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/concurrent.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/constants.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/cookie.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/cookie.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/crypto.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/crypto.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/encode.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/encode.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/filepath.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/filepath.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/handler.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/headers.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/html.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/html.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/http-status.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/ipaddr.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/ipaddr.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/jwt/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/jwt/jwa.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/jwt/jwa.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/jwt/jws.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/jwt/jwt.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/jwt/jwt.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/jwt/types.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/jwt/utf8.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/mime.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/mime.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/stream.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/stream.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/types.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/types.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/url.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/utils/url.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/validator/index.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/validator/utils.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/validator/utils.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/validator/validator.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/validator/validator.ts",
+   "kind": "file"
+  },
+  {
+   "path": "tsconfig.base.json",
+   "kind": "file"
+  },
+  {
+   "path": "tsconfig.build.json",
+   "kind": "file"
+  },
+  {
+   "path": "tsconfig.json",
+   "kind": "file"
+  },
+  {
+   "path": "tsconfig.spec.json",
+   "kind": "file"
+  },
+  {
+   "path": "vitest.config.ts",
+   "kind": "file"
+  }
+ ],
+ "truncated": false
+}
