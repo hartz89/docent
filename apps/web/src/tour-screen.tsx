@@ -283,7 +283,8 @@ export function TourScreen({ snapshot, tour }: Props) {
                     className="secondary-button back-to-stop"
                     onClick={() => setViewing(null)}
                   >
-                    <span aria-hidden="true">←</span> Back to stop {index + 1}
+                    <span aria-hidden="true">←</span>{' '}
+                    {stop && !overviewFirst ? `Back to stop ${index + 1}` : 'Back to the overview'}
                   </button>
                 )}
               </div>
