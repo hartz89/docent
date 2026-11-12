@@ -239,7 +239,7 @@ export function summarize(run: Run): string {
       out.push(`  ${at(e)}  ${describe(e)[0]}`);
       // A stack's first line usually repeats the message just shown.
       const lines = str(e.stack).split('\n');
-      if (lines[0]?.includes(str(e.message))) lines.shift();
+      if (str(e.message) && lines[0]?.includes(str(e.message))) lines.shift();
       const stack = lines.slice(0, 12).join('\n');
       if (stack) out.push(...block('│ ', stack));
     }
@@ -325,6 +325,8 @@ function describe(e: RunEvent): string[] {
       return [
         `theme ${clean(str(e.theme))} (${e.choice === 'system' ? 'following the system' : 'chosen'})`,
       ];
+    case 'log.full':
+      return ['the run log reached its size limit, so nothing after this was recorded'];
     case 'span':
       return [`${clean(str(e.name))} took ${duration(num(e.ms))}${extras(e, ['name', 'ms'])}`];
     default:

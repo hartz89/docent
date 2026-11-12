@@ -195,6 +195,15 @@ describe('redaction', () => {
     expect(text).not.toContain(token);
   });
 
+  test('leaves hyphenated words alone', async () => {
+    const log = RunLog.open({ dir: await tempDir(), label: 'x', env: {} });
+    const title =
+      'Add risk-tier-labels-for-pull-requests to task-list-with-keyboard-navigation.tsx';
+    log.event('pr', { title });
+
+    expect((await events(log))[0]?.title).toBe(title);
+  });
+
   test('keeps session ids, which say who answered', async () => {
     const id = '7e2cfb5b-77c5-46af-9de2-27ca9a1c1f85';
     const log = RunLog.open({
@@ -234,6 +243,15 @@ describe('redaction', () => {
     expect(written).toHaveLength(1);
     expect(written[0]?.kind).toBe('question');
   });
+});
+
+test('a run file stops at its size limit, and says so', async () => {
+  const log = RunLog.open({ dir: await tempDir(), label: 'x', env: {}, maxBytes: 1000 });
+  for (let i = 0; i < 20; i++) log.error('server', new Error(`repeat ${i}`));
+
+  const written = await events(log);
+  expect(written.at(-1)?.kind).toBe('log.full');
+  expect((await stat(log.path ?? '')).size).toBeLessThan(1200);
 });
 
 describe('retention', () => {
@@ -347,6 +365,17 @@ describe('POST /api/client-log', () => {
     });
 
     expect(res.status).toBe(413);
+  });
+
+  test('screen events cannot use up the room for errors', async () => {
+    const { log, client } = await served({ limits: { perMinute: 2, total: 100 } });
+    const post = (json: object) => client.api['client-log'].$post({ json: json as never });
+
+    for (let i = 0; i < 3; i++) await post({ kind: 'ui.stop', stop: 1, stopId: 's1' });
+    const error = await post({ kind: 'client.error', source: 'window', message: 'boom' });
+
+    expect(error.status).toBe(204);
+    expect((await events(log)).at(-1)).toMatchObject({ kind: 'client.error', message: 'boom' });
   });
 
   test('is rate-limited', async () => {

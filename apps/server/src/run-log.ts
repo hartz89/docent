@@ -46,14 +46,15 @@ const SECRET_KEY = /^(token|authorization|password|secret|cookie|api[-_]?key)$/i
  */
 const SECRET_ENV = /TOKEN|SECRET|KEY|PASSWORD|PASSWD|AUTH|CREDENTIAL|COOKIE/i;
 /**
- * Token shapes worth catching wherever they turn up, even when we were never told them. Matched
- * anywhere, even glued to other text: `_ghp_…` and `xghp_…` are still tokens.
+ * Token shapes worth catching wherever they turn up, even when we were never told them. GitHub's
+ * are matched anywhere, even glued to other text (`_ghp_…`). `sk-` keys need a non-letter before
+ * them, or hyphenated words like "task-list-with-…" would be scrubbed.
  */
 const SECRET_PATTERNS: [RegExp, string][] = [
   [/gh[pousr]_[A-Za-z0-9]{20,}/g, REDACTED],
   [/github_pat_[A-Za-z0-9_]{20,}/g, REDACTED],
-  [/sk-ant-[A-Za-z0-9_-]{10,}/g, REDACTED],
-  [/sk-[A-Za-z0-9_-]{20,}/g, REDACTED],
+  [/(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{10,}/g, REDACTED],
+  [/(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/g, REDACTED],
   [/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, `Bearer ${REDACTED}`],
   [/([#?&]token=)[^\s&#"'<>]+/gi, `$1${REDACTED}`],
 ];
@@ -67,6 +68,8 @@ export type RunLogOptions = {
   /** Values to scrub on top of the built-in patterns. Secret-looking env vars are added too. */
   secrets?: string[];
   env?: NodeJS.ProcessEnv;
+  /** Where one run file stops growing. Default MAX_FILE_BYTES. */
+  maxBytes?: number;
 };
 
 /**
@@ -78,6 +81,7 @@ export class RunLog {
   #now: () => Date;
   #secrets: string[];
   #bytes = 0;
+  #maxBytes = MAX_FILE_BYTES;
 
   private constructor(path: string | null, fd: number | null, now: () => Date, secrets: string[]) {
     this.path = path;
@@ -107,7 +111,9 @@ export class RunLog {
       const path = join(options.dir, `${stamp}-${label}.jsonl`);
       // `wx` refuses to follow or reuse an existing file, so the log can't be redirected.
       const fd = openSync(path, 'wx', 0o600);
-      return new RunLog(path, fd, now, secrets);
+      const log = new RunLog(path, fd, now, secrets);
+      if (options.maxBytes !== undefined) log.#maxBytes = options.maxBytes;
+      return log;
     } catch (error) {
       console.error(`Docent couldn't start its run log, so this run isn't logged: ${error}`);
       return RunLog.off();
@@ -123,7 +129,7 @@ export class RunLog {
     if (this.#fd === null) return;
     const line = { ts: this.#now().toISOString(), kind, ...(this.#clean(fields, 0) as Fields) };
     let text = `${escapeInvisible(JSON.stringify(line))}\n`;
-    const full = this.#bytes + Buffer.byteLength(text) > MAX_FILE_BYTES;
+    const full = this.#bytes + Buffer.byteLength(text) > this.#maxBytes;
     if (full) {
       text = `${JSON.stringify({ ts: line.ts, kind: 'log.full', bytes: this.#bytes })}\n`;
     }
