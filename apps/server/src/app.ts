@@ -6,6 +6,7 @@ import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
 import { streamSSE } from 'hono/streaming';
 import { validator } from 'hono/validator';
+import type { Place } from './author-session.ts';
 import { Busy } from './author-session.ts';
 import { type ClientEvent, clientEvent, RateLimit } from './client-log.ts';
 import { isSafeRepoPath } from './github.ts';
@@ -51,8 +52,21 @@ export function createApp({
     ui: new RateLimit(clientLogLimits.perMinute, clientLogLimits.total),
   };
 
+  // Each question's place in line, taken as its request arrives: the token check and reading the
+  // body are async and can finish out of order, and questions reach the author in arrival order.
+  const places = new WeakMap<Request, Place>();
+
   const app = new Hono()
     .use(ownOriginOnly(origin))
+    .use('/api/questions', async (c, next) => {
+      const place = review?.placeInLine();
+      if (place) places.set(c.req.raw, place);
+      try {
+        await next();
+      } finally {
+        place?.leave();
+      }
+    })
     .use('/api/*', bearerAuth({ token }))
     .get('/api/health', (c) => c.json({ ok: true, version }))
     // The web app's own errors and a few screen events, for the run log. The client picks from
@@ -228,7 +242,9 @@ export function createApp({
         // Review.ask logs the question and its outcome.
         try {
           // The request's signal aborts when the reviewer goes away, so a dropped question stops.
-          const answer = await review.ask(stopId, question, c.req.raw.signal);
+          const place = places.get(c.req.raw);
+          if (!place) throw new Error('The question has no place in line.');
+          const answer = await review.ask(stopId, question, place, c.req.raw.signal);
           return c.json({ answer }, 200);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);

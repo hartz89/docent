@@ -16,8 +16,16 @@ export type CorrectionView = {
   costs: CostRecord[];
 };
 
-/** The check's outcome: a correction, or null for silence. Costs are recorded either way. */
-export type CheckOutcome = { correction: CorrectionView | null; costs: CostRecord[] };
+/**
+ * The check's outcome: a correction, or null for silence. Costs are recorded either way.
+ * `result` is for the run log: silence because the answer held up (or the check's reply didn't
+ * hold up), or because the check couldn't run at all.
+ */
+export type CheckOutcome = {
+  correction: CorrectionView | null;
+  costs: CostRecord[];
+  result: 'corrected' | 'silent' | 'failed';
+};
 
 /** The cheapest model that passed the eval (docs/research/2026-11-11-answer-check.md). */
 export const DEFAULT_CHECK_MODEL = 'claude-haiku-5-5';
@@ -98,15 +106,18 @@ export async function checkAnswer(job: CheckJob): Promise<CheckOutcome> {
       maxBudgetUsd: CHECK_BUDGET_USD,
     });
   } catch (error) {
-    return { correction: null, costs: error instanceof AgentError ? [error.cost] : [] };
+    const costs = error instanceof AgentError ? [error.cost] : [];
+    return { correction: null, costs, result: 'failed' };
   }
   const costs = [reply.cost];
+  const silent = { correction: null, costs, result: 'silent' } as const;
   const wire = parseWire(reply.structured);
-  if (!wire?.contradicted) return { correction: null, costs };
+  if (!wire?.contradicted) return silent;
   const text = wire.correction.replace(/\s+/g, ' ').trim();
-  if (!text || text.length > MAX_TEXT_CHARS) return { correction: null, costs };
-  const cites = await verifyCitations(wire.citations, job.workspace);
-  return { correction: cites ? { text, cites, costs } : null, costs };
+  if (!text || text.length > MAX_TEXT_CHARS) return silent;
+  // A read that fails ends in silence too, so the check never rejects.
+  const cites = await verifyCitations(wire.citations, job.workspace).catch(() => null);
+  return cites ? { correction: { text, cites, costs }, costs, result: 'corrected' } : silent;
 }
 
 /**

@@ -11,7 +11,7 @@ Tiers set how deep the agent review goes. They don't send a PR to the maintainer
 | 2a | Shared contracts (core model, adapter interface, snapshot format, tour schema) that don't touch a security gate; dependencies without install or build scripts, outside `apps/server`; version bumps and lockfile-only changes; the agent harness (`AGENTS.md`, `CLAUDE.md`, `.claude/`, `docs/process/`, skills, hooks), except what 2b names | Checks + a fresh-context agent review with no blockers open. Harness changes also run the harness evals. The merge is logged in `backlog/decisions.md` for the maintainer's veto. |
 | 2b | Security-sensitive. See the checklist and path floor below. | Checks + a security-focused fresh-context review, posted on the PR before merge |
 
-**Who picks the tier.** The reviewer agent decides, using the 2b checklist. The path list is a floor: it can only raise a PR's tier, never lower it. If paths span several tiers, the highest one wins. Until a script assigns tiers, the builder states the tier and why, and the reviewer confirms or raises it.
+**Who picks the tier.** The reviewer agent decides, using the 2b checklist. The path list is a floor: it can only raise a PR's tier, never lower it. If paths span several tiers, the highest one wins. The builder states the tier and why. The reviewer runs `node scripts/tier.ts --pr <n>` for the path floor, then confirms the tier or raises it.
 
 **The 2b checklist.** A PR is 2b if it changes any of these:
 - the agent runner (`scripts/as-agent.ts`), app keys, or credentials;
