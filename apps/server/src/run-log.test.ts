@@ -88,6 +88,12 @@ describe('the run log', () => {
     expect(written.find((e) => e.kind === 'tour.ready')).toMatchObject({
       cached: false,
       attempts: 1,
+      retries: 0,
+      ledger: {
+        onRoute: expect.any(Number),
+        provenSkip: expect.any(Number),
+        notOnRoute: expect.any(Number),
+      },
       costMicroUsd: expect.any(Number),
     });
     expect(written.find((e) => e.kind === 'question')).toMatchObject({

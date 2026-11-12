@@ -1,0 +1,65 @@
+{
+  "tour": [
+    {
+      "sessionId": "00000000-0000-4000-8000-000000000001",
+      "text": "{\"stops\": [{\"kind\": \"intent\", \"title\": \"Greetings can be excited\", \"body\": \"A caller can now ask for an excited greeting, which ends in an exclamation mark.\", \"flags\": [], \"citations\": []}, {\"kind\": \"core_change\", \"title\": \"The greeting ends in ! or .\", \"body\": \"Greetings now end in a full stop, or an exclamation mark when `excited` is set. Before, they had no ending at all.\", \"flags\": [], \"citations\": [{\"path\": \"src/greet.ts\", \"side\": \"new\", \"startLine\": 1, \"endLine\": 2}, {\"path\": \"src/greet.ts\", \"side\": \"old\", \"startLine\": 1, \"endLine\": 2}]}, {\"kind\": \"verdict_prompt\", \"title\": \"Your verdict\", \"body\": \"Greetings change their ending for every caller. Is that what you want?\", \"flags\": [], \"citations\": []}], \"notes\": [{\"path\": \"docs/notes.md\", \"note\": \"Release notes for the new flag\"}]}",
+      "structured": {
+        "stops": [
+          {
+            "kind": "intent",
+            "title": "Greetings can be excited",
+            "body": "A caller can now ask for an excited greeting, which ends in an exclamation mark.",
+            "flags": [],
+            "citations": []
+          },
+          {
+            "kind": "core_change",
+            "title": "The greeting ends in ! or .",
+            "body": "Greetings now end in a full stop, or an exclamation mark when `excited` is set. Before, they had no ending at all.",
+            "flags": [],
+            "citations": [
+              {
+                "path": "src/greet.ts",
+                "side": "new",
+                "startLine": 1,
+                "endLine": 2
+              },
+              {
+                "path": "src/greet.ts",
+                "side": "old",
+                "startLine": 1,
+                "endLine": 2
+              }
+            ]
+          },
+          {
+            "kind": "verdict_prompt",
+            "title": "Your verdict",
+            "body": "Greetings change their ending for every caller. Is that what you want?",
+            "flags": [],
+            "citations": []
+          }
+        ],
+        "notes": [
+          {
+            "path": "docs/notes.md",
+            "note": "Release notes for the new flag"
+          }
+        ]
+      },
+      "cost": {
+        "job": "tour",
+        "model": "claude-opus-5-5",
+        "tokens": {
+          "input": 4,
+          "output": 900,
+          "cacheRead": 5000,
+          "cacheWrite": 3000
+        },
+        "costMicroUsd": 61000,
+        "latencyMs": 9000
+      },
+      "denials": []
+    }
+  ]
+}

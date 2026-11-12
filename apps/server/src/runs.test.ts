@@ -40,7 +40,7 @@ test('`docent runs show latest` reads a run top to bottom', async () => {
                - Stop 3 cites apps/server/src/serve.ts lines 80-95, outside the file (it has 71 lines).
                - apps/server/src/cli.ts#4be1a2c0 is neither in a stop nor skipped.
        +1m12s  tour attempt 2: passed, $0.2480, 23.5s
-       +1m12s  tour ready: 8 stops, 2 skips, 2 attempt(s), $0.8600, 1m 10s
+       +1m12s  tour ready: 8 stops, lines: 412 on the route, 38 proven skips, 61 not on the route, 2 attempt(s), $0.8600, 1m 10s
        +1m12s  tour.warmup took 1.2s cacheReadTokens=42000
        +1m12s  window width 1440+ px
        +1m12s  theme dark (following the system)

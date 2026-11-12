@@ -286,10 +286,16 @@ function describe(e: RunEvent): string[] {
     }
     case 'tour.ready': {
       const problems = Array.isArray(e.problems) ? e.problems : [];
+      // Runs logged before the skip ledger have no ledger counts.
+      const counts = e.ledger as Record<string, unknown> | undefined;
+      const ledger =
+        typeof counts === 'object' && counts !== null
+          ? `, lines: ${num(counts.onRoute)} on the route, ${num(counts.provenSkip)} proven skips, ${num(counts.notOnRoute)} not on the route`
+          : '';
       return [
         e.cached
-          ? `tour ready from cache: ${num(e.stops)} stops, ${num(e.skips)} skips, no model calls`
-          : `tour ready: ${num(e.stops)} stops, ${num(e.skips)} skips, ${num(e.attempts)} attempt(s), ${cost(e.costMicroUsd)}, ${duration(num(e.ms))}`,
+          ? `tour ready from cache: ${num(e.stops)} stops${ledger}, no model calls`
+          : `tour ready: ${num(e.stops)} stops${ledger}, ${num(e.attempts)} attempt(s), ${cost(e.costMicroUsd)}, ${duration(num(e.ms))}`,
         ...problems.map((p) => `unresolved: ${clean(String(p))}`),
       ];
     }

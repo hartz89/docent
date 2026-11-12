@@ -23,6 +23,9 @@ describe('tour prompt versions', () => {
     expect(sha(TOUR_PROMPTS[2](workspace.pr, diff))).toBe(
       '420dcd0b8449c4f76bf860aaf2c2bc5fb40ab74da91e2a91f20d71c99a96a8c6',
     );
+    expect(sha(TOUR_PROMPTS[3](workspace.pr, diff))).toBe(
+      'f62bda8b9f6694ee41d3a11347f95dcb66f268c897a3aa372e008239cf9eff1a',
+    );
   });
 
   test('new tours use the current prompt, and an eval run can pick an older one', async () => {
@@ -39,8 +42,8 @@ describe('tour prompt versions', () => {
     const second = prompts.length;
     await generateTour({ ...job, promptVersion: 2 });
 
-    expect(TOUR_PROMPT_VERSION).toBe(3);
-    expect(prompts[0]).toBe(TOUR_PROMPTS[3](workspace.pr, diff));
+    expect(TOUR_PROMPT_VERSION).toBe(4);
+    expect(prompts[0]).toBe(TOUR_PROMPTS[4](workspace.pr, diff));
     expect(prompts[second]).toBe(TOUR_PROMPTS[2](workspace.pr, diff));
   });
 });

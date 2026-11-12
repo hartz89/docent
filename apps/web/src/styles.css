@@ -355,46 +355,230 @@ code,
   font-size: 11px;
 }
 
-.skips {
-  margin-top: 28px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border);
+/* ---------- The skip ledger ----------
+   Proof and opinion never look alike: a proof is a mono chip a script wrote ("proven rename"),
+   a guide's note is italic serif prose marked "guide:". */
+
+.ledger {
+  margin: 0 0 22px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-raised);
 }
 
-.skip-list {
+.ledger-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.ledger-head b {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger-ok {
+  color: var(--added-mark);
+  font-size: 11.5px;
+}
+
+.ledger-bar {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  margin: 8px 0 10px;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.ledger-bar i {
+  flex-basis: 0;
+  min-width: 6px;
+}
+
+.ledger-bar .on,
+.ledger-key i.on {
+  background: var(--brass-fill);
+}
+
+.ledger-bar .proven,
+.ledger-key i.proven {
+  background: var(--muted);
+  opacity: 0.6;
+}
+
+.ledger-bar .off,
+.ledger-key i.off {
+  background: repeating-linear-gradient(45deg, var(--muted) 0 1.5px, transparent 1.5px 4px);
+}
+
+.ledger-key {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ledger-key div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ledger-key dt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ledger-key dt i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.ledger-key dd {
+  margin: 0;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger-pending {
+  margin-top: 22px;
+}
+
+.ledger-group {
+  margin-top: 26px;
+}
+
+.ledger-group .section-label {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0 8px;
+}
+
+.group-count {
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger-files {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.skip-button {
-  display: block;
+.ledger-file {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px 8px;
   width: 100%;
+  padding: 6px 8px;
   border: 0;
+  border-radius: 7px;
   background: transparent;
   text-align: left;
-  padding: 7px 8px;
-  border-radius: 6px;
+  font-size: 12.5px;
   cursor: pointer;
+  transition: background 140ms var(--ease);
 }
 
-.skip-button:hover {
+.ledger-file:hover {
   background: var(--panel-raised);
 }
 
-.skip-path {
-  display: block;
+.ledger-path {
   font-family: var(--mono);
   font-size: 11.5px;
+  line-height: 1.35;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ledger-dir {
+  display: block;
+  font-size: 10.5px;
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ledger-lines {
+  display: inline-flex;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger-lines .added {
+  color: var(--added-mark);
+}
+
+.ledger-lines .removed {
+  color: var(--removed-mark);
+}
+
+.proofs,
+.renames {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.proof {
+  font: 500 10.5px var(--mono);
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--ground);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.proof-word {
+  color: var(--faint);
+}
+
+.rename,
+.rename-more {
+  font: 10.5px var(--mono);
+  color: var(--muted);
   overflow-wrap: anywhere;
 }
 
-.skip-reason {
-  display: block;
-  font-size: 12.5px;
+.rename + .rename::before,
+.rename + .rename-more::before {
+  content: "· ";
+  color: var(--faint);
+}
+
+.guide-note {
+  grid-column: 1 / -1;
+  font: italic 12.5px var(--serif);
   color: var(--muted);
-  margin-top: 2px;
+}
+
+.guide-word {
+  font: 500 10.5px var(--sans);
+  font-style: normal;
+  letter-spacing: 0.02em;
+  color: var(--faint);
 }
 
 .empty-note {
@@ -630,6 +814,10 @@ code,
 
 .route-dot.off {
   border: 1px solid var(--muted);
+}
+
+.route-dot.proven {
+  border: 1px dashed var(--muted);
 }
 
 .tree-key {

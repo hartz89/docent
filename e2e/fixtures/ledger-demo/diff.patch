@@ -1,0 +1,48 @@
+diff --git a/docs/notes.md b/docs/notes.md
+index 17e0f0d..375eb17 100644
+--- a/docs/notes.md
++++ b/docs/notes.md
+@@ -1 +1,3 @@
+ # Notes
++
++Greetings can be excited now.
+diff --git a/src/caller.ts b/src/caller.ts
+index 8c1024a..da4b1c7 100644
+--- a/src/caller.ts
++++ b/src/caller.ts
+@@ -1,4 +1,4 @@
+-import { getName } from './names.ts';
++import { readName } from './names.ts';
+ 
+-const name = getName('a');
++const name = readName('a');
+ if (name === '') throw new Error();
+diff --git a/src/format.ts b/src/format.ts
+index c0cec5a..08147c0 100644
+--- a/src/format.ts
++++ b/src/format.ts
+@@ -1,3 +1,3 @@
+ export function pad(text: string, width: number): string {
+-    return text.padEnd(width);
++  return text.padEnd(width);
+ }
+diff --git a/src/greet.ts b/src/greet.ts
+index ae9dfa6..09d7a46 100644
+--- a/src/greet.ts
++++ b/src/greet.ts
+@@ -1,3 +1,3 @@
+-export function greet(name: string): string {
+-  return `Hello, ${name}`;
++export function greet(name: string, excited = false): string {
++  return `Hello, ${name}${excited ? '!' : '.'}`;
+ }
+diff --git a/src/names.ts b/src/names.ts
+index 3d86a4f..ce02766 100644
+--- a/src/names.ts
++++ b/src/names.ts
+@@ -1,4 +1,4 @@
+ // Names.
+-export function getName(id: string) {
++export function readName(id: string) {
+   return id.toUpperCase();
+ }

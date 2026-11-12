@@ -98,6 +98,12 @@ describe('the tour eval', () => {
     expect(t.quality.behaviorFirst).toBe(0.6);
     expect(t.unfoundedOpinions).toBe(1);
     expect(t.quality.plainFirstSentence).toBe(0);
+    // The recorded tour cites every changed line, so the ledger puts them all on the route.
+    expect(result.attempts).toBe(1);
+    expect(result.ledger.provenSkip + result.ledger.notOnRoute).toBe(0);
+    expect(result.important).toEqual({ lines: expect.any(Number), offRoute: 0, flagged: true });
+    expect(result.important.lines).toBeGreaterThan(0);
+    expect(t.retries).toEqual({ total: 0, tours: 0, ran: 1 });
 
     const markdown = renderMarkdown({
       date: '2026-11-08',
@@ -108,6 +114,8 @@ describe('the tour eval', () => {
       prompts: [2],
     });
     expect(markdown).toContain('| Defects explained, cited (judge) | 1/1 |');
+    expect(markdown).toContain('| Important lines not on the route (target 0) | 0/');
+    expect(markdown).toContain('| Retries per tour (tours that retried) | 0.00 (0/1) |');
     expect(markdown).toContain('| Stops with an unfounded opinion (judge, target 0) | 1 (20%) |');
     expect(markdown).toContain('| First sentence states the behavior change (judge) | 60% |');
   });
