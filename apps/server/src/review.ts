@@ -1,6 +1,7 @@
 // One review: opens the PR, generates (or loads) its tour, and answers questions about it, from
 // the author's own session when it can. The server routes read from here; the model, GitHub and
 // the author's session sit behind injected boundaries.
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -27,6 +28,7 @@ import { type BuiltIndex, buildIndex, type IndexLimits, type IndexStatus } from 
 import {
   generateTour,
   TOUR_PROMPT_VERSION,
+  TOUR_PROMPTS,
   TourError,
   type TourOutcome,
   type TourProgress,
@@ -531,7 +533,11 @@ Question: ${question}`,
             this.#options.cacheDir,
             'tours',
             workspace.pr.repo.replace('/', '__'),
-            tourCacheName(workspace.pr, this.#options.model),
+            tourCacheName(
+              workspace.pr,
+              this.#options.model,
+              TOUR_PROMPTS[TOUR_PROMPT_VERSION](workspace.pr, this.#diff),
+            ),
           )
         : null;
       // The tour's own time starts here, after the PR is loaded.
@@ -668,9 +674,17 @@ function fromProgress(progress: TourProgress, previous: TourState): TourState {
 
 /**
  * The cached tour's file name. A tour depends on the exact diff (base and head), the model and
- * the prompt, so all four are in the key; changing any of them writes a fresh tour.
+ * the prompt, so all of them are in the key; changing any of them writes a fresh tour. The prompt
+ * goes in as a fingerprint of the exact text sent, not just its version number: editing an
+ * unshipped prompt, or the PR's title or description, must not serve a tour written from the old
+ * text.
  */
-export function tourCacheName(pr: { base: string; head: string }, model: string): string {
+export function tourCacheName(
+  pr: { base: string; head: string },
+  model: string,
+  prompt: string,
+): string {
   const safeModel = model.replace(/[^\w.-]/g, '_');
-  return `${pr.base.slice(0, 12)}-${pr.head}-${safeModel}-p${TOUR_PROMPT_VERSION}.json`;
+  const fingerprint = createHash('sha256').update(prompt).digest('hex').slice(0, 12);
+  return `${pr.base.slice(0, 12)}-${pr.head}-${safeModel}-p${TOUR_PROMPT_VERSION}-${fingerprint}.json`;
 }
