@@ -69,7 +69,7 @@ export function CodeView({ path, side, cited, focus, changed, onStep }: Props) {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
       const target = event.target as HTMLElement | null;
-      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], dialog')) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
       const box = scroller.current;
       if (!box) return;
@@ -161,7 +161,7 @@ export function CodeView({ path, side, cited, focus, changed, onStep }: Props) {
             Cited by this stop
           </span>
         )}
-        <span>
+        <span className="legend-keys">
           <kbd>←</kbd> <kbd>→</kbd> stops · <kbd>↑</kbd> <kbd>↓</kbd> read on
         </span>
       </div>
