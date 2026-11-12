@@ -2,6 +2,7 @@ import type {
   AnchorView,
   AnswerView,
   AuthorView,
+  CorrectionView,
   PostedReview,
   ReviewSnapshot,
   StopView,
@@ -20,12 +21,14 @@ import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
 import { Markdown } from './markdown.tsx';
 import type { Ready } from './review-page.tsx';
+import { report } from './run-log.ts';
 import { ThemeToggle } from './theme.tsx';
 import { postedLabel, VerdictForm } from './verdict.tsx';
 
 type Props = { snapshot: ReviewSnapshot; tour: Ready };
 type Diff = NonNullable<ReviewSnapshot['diff']>;
-type Viewing = { path: string; side: 'old' | 'new' };
+/** A file opened outside the stop's citations, at the lines in focus if any. */
+type Viewing = { path: string; side: 'old' | 'new'; focus?: AnchorView; label?: string };
 
 const KIND_LABELS: Record<StopView['kind'], string> = {
   intent: 'Intent',
@@ -55,15 +58,32 @@ export function TourScreen({ snapshot, tour }: Props) {
       }));
     setThreads((all) => ({
       ...all,
-      [stopId]: [...(all[stopId] ?? []), { id, question, answer: null, error: null }],
+      [stopId]: [
+        ...(all[stopId] ?? []),
+        { id, question, answer: null, error: null, correction: null },
+      ],
     }));
+    let checkId: string | null = null;
     try {
       const res = await api.questions.$post({ json: { stopId, question } });
       const body = await res.json();
-      if ('answer' in body) settle({ answer: body.answer });
-      else settle({ error: body.error });
+      if ('answer' in body) {
+        settle({ answer: body.answer });
+        if (body.answer.source === 'author_session') checkId = body.answer.checkId;
+      } else settle({ error: body.error });
     } catch (error) {
       settle({ error: error instanceof Error ? error.message : String(error) });
+    }
+    // The guide's check of the author's answer comes after it, and only ever adds a correction.
+    // If it fails, it says nothing.
+    if (!checkId) return;
+    try {
+      const res = await api['answer-checks'][':id'].$get({ param: { id: checkId } });
+      if (res.status !== 200) return;
+      const { correction } = await res.json();
+      if (correction) settle({ correction });
+    } catch {
+      // Silence, as when the answer holds up.
     }
   }, []);
 
@@ -93,6 +113,9 @@ export function TourScreen({ snapshot, tour }: Props) {
     [anchorIndex, anchorCount],
   );
   const stopId = stop?.id;
+  useEffect(() => {
+    if (stopId) report({ kind: 'ui.stop', stop: index + 1, stopId });
+  }, [stopId, index]);
   useLayoutEffect(() => {
     if (guide.current && stopId) guide.current.scrollTop = scrollByStop.current.get(stopId) ?? 0;
   }, [stopId]);
@@ -146,7 +169,7 @@ export function TourScreen({ snapshot, tour }: Props) {
                 <span className="code-path">{shown.path}</span>
                 <span className="code-range">
                   {viewing
-                    ? 'opened from the route'
+                    ? (viewing.label ?? 'opened from the route')
                     : anchor
                       ? `lines ${anchor.startLine}–${anchor.endLine} · cited by this stop`
                       : ''}
@@ -156,8 +179,8 @@ export function TourScreen({ snapshot, tour }: Props) {
               <CodeView
                 path={shown.path}
                 side={shown.side}
-                cited={viewing ? [] : cited}
-                focus={viewing ? null : anchor}
+                cited={viewing ? (viewing.focus ? [viewing.focus] : []) : cited}
+                focus={viewing ? (viewing.focus ?? null) : anchor}
                 changed={changes.get(`${shown.side}:${shown.path}`) ?? new Set()}
                 onStep={viewing ? undefined : stepAnchor}
               />
@@ -173,6 +196,14 @@ export function TourScreen({ snapshot, tour }: Props) {
             author={snapshot.author}
             exchanges={threads[stop.id] ?? []}
             onAsk={(question) => void ask(stop.id, question)}
+            onOpenCite={(cite) =>
+              setViewing({
+                path: cite.path,
+                side: cite.side,
+                focus: cite,
+                label: `lines ${cite.startLine}–${cite.endLine} · cited by the guide's note`,
+              })
+            }
             activeAnchor={viewing ? -1 : anchorIndex}
             onAnchor={(i) => {
               setAnchorIndex(i);
@@ -407,6 +438,8 @@ type Exchange = {
   question: string;
   answer: AnswerView | null;
   error: string | null;
+  /** The guide's note when the code contradicts the author's answer. Usually never set. */
+  correction: CorrectionView | null;
 };
 
 /** Who answered, and what it cost: the author's session, or the guide and why. */
@@ -425,6 +458,7 @@ function Narration({
   author,
   exchanges,
   onAsk,
+  onOpenCite,
   activeAnchor,
   onAnchor,
   isLast,
@@ -435,6 +469,7 @@ function Narration({
   author: AuthorView;
   exchanges: readonly Exchange[];
   onAsk: (question: string) => void;
+  onOpenCite: (cite: AnchorView) => void;
   activeAnchor: number;
   onAnchor: (index: number) => void;
   isLast: boolean;
@@ -513,6 +548,14 @@ function Narration({
                     <Markdown text={exchange.answer.text} />
                   </div>
                   <div className="exchange-source">{answerSource(exchange.answer)}</div>
+                  {exchange.answer.source === 'author_session' && (
+                    // Present before any note arrives, so a screen reader announces it.
+                    <div aria-live="polite">
+                      {exchange.correction && (
+                        <Correction correction={exchange.correction} onOpenCite={onOpenCite} />
+                      )}
+                    </div>
+                  )}
                 </>
               ) : exchange.error ? (
                 <div className="exchange-source" role="alert">
@@ -569,6 +612,40 @@ function Narration({
           </button>
         )}
       </footer>
+    </div>
+  );
+}
+
+/**
+ * The guide's note under an author answer the code contradicts. It says what the code does,
+ * with the lines; it doesn't grade the answer.
+ */
+function Correction({
+  correction,
+  onOpenCite,
+}: {
+  correction: CorrectionView;
+  onOpenCite: (cite: AnchorView) => void;
+}) {
+  const spent = correction.costs.reduce((sum, c) => sum + c.costMicroUsd, 0);
+  return (
+    <div className="callout correction fade-in" role="note">
+      <div className="callout-label">From the code</div>
+      <p>{inline(correction.text)}</p>
+      <div className="chips">
+        {correction.cites.map((cite) => (
+          <button
+            type="button"
+            key={`${cite.path}:${cite.startLine}-${cite.endLine}`}
+            className="chip"
+            onClick={() => onOpenCite(cite)}
+            title={`${cite.path} at head`}
+          >
+            {chipLabel(cite)}
+          </button>
+        ))}
+      </div>
+      <div className="correction-source">Noted by the guide, at head · {formatUsd(spent)}</div>
     </div>
   );
 }

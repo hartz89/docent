@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { type CommitSha, commitSha } from '@docent/core';
+import { gitHeadFiles, type HeadFiles } from './head-files.ts';
 
 const run = promisify(execFile);
 
@@ -47,6 +48,8 @@ export type Workspace = {
   currentHead: () => Promise<CommitSha>;
   /** Posts one review on this PR as the reviewer, and returns its link on GitHub. */
   postReview: (review: ReviewPost) => Promise<{ url: string }>;
+  /** The files at head, for the symbol index: read from git's objects, never the working tree. */
+  headFiles: () => Promise<HeadFiles>;
 };
 
 /** GitHub turned the review down, or couldn't be reached. The message is fit to show. */
@@ -69,6 +72,21 @@ export function defaultCacheDir(): string {
   if (process.env.DOCENT_CACHE_DIR) return process.env.DOCENT_CACHE_DIR;
   if (process.platform === 'darwin') return join(homedir(), 'Library', 'Caches', 'docent');
   return join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'docent');
+}
+
+/**
+ * Where Docent keeps what it wants to hold on to, like run logs: the OS data folder. The same
+ * rules as the author-session hook's records (PR #55); whichever lands second shares this one.
+ */
+export function defaultDataDir(): string {
+  if (process.env.DOCENT_DATA_DIR) return process.env.DOCENT_DATA_DIR;
+  if (process.platform === 'darwin') {
+    return join(homedir(), 'Library', 'Application Support', 'docent');
+  }
+  if (process.platform === 'win32') {
+    return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'docent');
+  }
+  return join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'docent');
 }
 
 export function githubSource(url: string, cacheDir: string): PrSource {
@@ -166,6 +184,7 @@ export function githubSource(url: string, cacheDir: string): PrSource {
         // The link is shown to the reviewer, so it must be GitHub's.
         return { url: typeof url === 'string' && url.startsWith(`${pr.url}#`) ? url : pr.url };
       },
+      headFiles: () => gitHeadFiles(dir, pr.head),
     };
   };
 }
@@ -204,38 +223,56 @@ async function ensureCheckout(dir: string, repo: string, pr: PrInfo): Promise<vo
  *   checkout.
  */
 export function git(dir: string, args: readonly string[], options: { maxBuffer?: number } = {}) {
-  return run(
-    'git',
-    [
-      '-C',
-      dir,
-      '-c',
-      'core.symlinks=false',
-      '-c',
-      'core.hooksPath=/dev/null',
-      '-c',
-      'submodule.recurse=false',
-      '-c',
-      'protocol.file.allow=never',
-      '-c',
-      'advice.detachedHead=false',
-      '-c',
-      'credential.helper=',
-      '-c',
-      'credential.helper=!gh auth git-credential',
-      ...args,
-    ],
-    {
-      maxBuffer: options.maxBuffer ?? 1 << 26,
-      env: {
-        ...process.env,
-        GIT_CONFIG_GLOBAL: '/dev/null',
-        GIT_CONFIG_NOSYSTEM: '1',
-        GIT_LFS_SKIP_SMUDGE: '1',
-        GIT_TERMINAL_PROMPT: '0',
-      },
-    },
-  );
+  return run('git', hardenedGitArgs(dir, args), {
+    maxBuffer: options.maxBuffer ?? 1 << 26,
+    env: hardenedGitEnv(),
+  });
+}
+
+/** `git()`'s arguments, for callers that need to stream its output. */
+export function hardenedGitArgs(dir: string, args: readonly string[]): string[] {
+  return [
+    '-C',
+    dir,
+    '-c',
+    'core.symlinks=false',
+    '-c',
+    'core.hooksPath=/dev/null',
+    '-c',
+    'submodule.recurse=false',
+    '-c',
+    'protocol.file.allow=never',
+    '-c',
+    'advice.detachedHead=false',
+    '-c',
+    'credential.helper=',
+    '-c',
+    'credential.helper=!gh auth git-credential',
+    ...args,
+  ];
+}
+
+/** `git()`'s environment. `offline` forbids fetching missing objects, so nothing is downloaded. */
+export function hardenedGitEnv({ offline = false } = {}): NodeJS.ProcessEnv {
+  // These would override `-C` and point git at another repository or object store.
+  const {
+    GIT_DIR: _dir,
+    GIT_WORK_TREE: _workTree,
+    GIT_INDEX_FILE: _index,
+    GIT_OBJECT_DIRECTORY: _objects,
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: _alternates,
+    GIT_COMMON_DIR: _common,
+    GIT_NAMESPACE: _namespace,
+    ...inherited
+  } = process.env;
+  return {
+    ...inherited,
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_LFS_SKIP_SMUDGE: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    ...(offline ? { GIT_NO_LAZY_FETCH: '1', GIT_NO_REPLACE_OBJECTS: '1' } : {}),
+  };
 }
 
 async function gh(args: string[]): Promise<string> {

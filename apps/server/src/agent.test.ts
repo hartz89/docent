@@ -15,7 +15,8 @@ import {
 describe('the guide session is read-only', () => {
   test('pins the exact options that keep the session read-only', () => {
     // If this fails, the change loosens the sandbox. Re-run `DOCENT_LIVE=1 pnpm exec vitest run
-    // --project server agent.live` and get a tier 2 review before updating it.
+    // --project server agent.live` before updating it. Loosening these options weakens a gate, so
+    // the PR escalates to the maintainer (docs/process/pull-requests.md).
     expect(readOnlyOptions({ cwd: '/checkout', model: 'claude-test' })).toEqual({
       cwd: '/checkout',
       model: 'claude-test',
