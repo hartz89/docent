@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { cp, mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,8 +18,15 @@ afterEach(() => rm(cacheDir, { recursive: true, force: true }));
 
 const docent = (...args: string[]) =>
   promisify(execFile)(process.execPath, [cli, ...args], {
-    env: { ...process.env, DOCENT_CACHE_DIR: cacheDir, CI: '1' },
+    env: {
+      ...process.env,
+      DOCENT_CACHE_DIR: cacheDir,
+      DOCENT_DATA_DIR: join(cacheDir, 'data'),
+      DOCENT_RUN_LOG: '',
+      CI: '1',
+    },
   });
+const runFiles = () => readdir(join(cacheDir, 'data', 'runs')).catch(() => []);
 
 test('--prepare caches the tour and exits, so the next open makes no model calls', async () => {
   cacheDir = await mkdtemp(join(tmpdir(), 'docent-cli-'));
@@ -51,4 +58,16 @@ test.each(['--no-cache', '--record'])('--prepare refuses %s', async (flag) => {
   await expect(docent('review', '--fixture', fixture, '--prepare', ...args)).rejects.toThrow(
     `cannot be used with ${flag}`,
   );
+});
+
+test('each launch writes a run file, unless --no-run-log says not to', async () => {
+  cacheDir = await mkdtemp(join(tmpdir(), 'docent-cli-'));
+
+  await docent('review', '--fixture', fixture, '--prepare', '--no-run-log');
+  expect(await runFiles()).toEqual([]);
+
+  await docent('review', '--fixture', fixture, '--prepare');
+  expect(await runFiles()).toEqual([expect.stringMatching(/Z-fixture-hono-4813\.jsonl$/)]);
+  const { stdout } = await docent('runs', 'show', 'latest');
+  expect(stdout).toContain('run ended: prepared');
 });

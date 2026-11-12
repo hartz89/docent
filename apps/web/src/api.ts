@@ -1,5 +1,6 @@
 import type { AppType, TourState } from '@docent/server';
 import { hc } from 'hono/client';
+import { reportingFetch, startReporting } from './run-log.ts';
 
 /**
  * How the browser gets the API token: the server prints a startup URL like
@@ -21,8 +22,12 @@ function takeToken(): string {
 
 type Client = ReturnType<typeof hc<AppType>>;
 
+const token = takeToken();
+startReporting(token);
+
 export const api: Client['api'] = hc<AppType>(window.location.origin, {
-  headers: { Authorization: `Bearer ${takeToken()}` },
+  headers: { Authorization: `Bearer ${token}` },
+  fetch: reportingFetch,
 }).api;
 
 /**

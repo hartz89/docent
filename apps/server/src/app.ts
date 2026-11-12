@@ -1,12 +1,16 @@
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { bearerAuth } from 'hono/bearer-auth';
+import { bodyLimit } from 'hono/body-limit';
 import { createMiddleware } from 'hono/factory';
+import { HTTPException } from 'hono/http-exception';
 import { streamSSE } from 'hono/streaming';
 import { validator } from 'hono/validator';
 import { Busy } from './author-session.ts';
+import { type ClientEvent, clientEvent, RateLimit } from './client-log.ts';
 import { isSafeRepoPath } from './github.ts';
 import { type Review, SubmitRefused, type TourState, verdict } from './review.ts';
+import { describeError, RunLog } from './run-log.ts';
 
 /** The code view shows text files up to this size. */
 const MAX_FILE_CHARS = 2_000_000;
@@ -26,17 +30,49 @@ export type AppOptions = {
   webRoot?: string;
   /** The review this launch serves. Without one, the review routes answer 404. */
   review?: Review;
+  /** This run's log. Server errors and the web app's reports land here. Default: nowhere. */
+  log?: RunLog;
+  /** Client reports allowed per minute, and per launch. */
+  clientLogLimits?: { perMinute: number; total: number };
 };
 
-export function createApp({ token, origin, version, webRoot, review }: AppOptions) {
+export function createApp({
+  token,
+  origin,
+  version,
+  webRoot,
+  review,
+  log = RunLog.off(),
+  clientLogLimits = { perMinute: 60, total: 2000 },
+}: AppOptions) {
   const noReview = { error: 'No review is open. Start Docent with: docent review <pr-url>' };
   const stillLoading = { error: 'The pull request is still loading.' };
   const indexFailed = { error: "Docent couldn't index the repository." };
+  const clientLimit = new RateLimit(clientLogLimits.perMinute, clientLogLimits.total);
 
   const app = new Hono()
     .use(ownOriginOnly(origin))
     .use('/api/*', bearerAuth({ token }))
     .get('/api/health', (c) => c.json({ ok: true, version }))
+    // The web app's own errors and a few screen events, for the run log. The client picks from
+    // a fixed set of fields; anything else is dropped. Small, and rate-limited.
+    .post(
+      '/api/client-log',
+      bodyLimit({
+        maxSize: 16 * 1024,
+        onError: (c) => c.json({ error: 'A client report is limited to 16 KB' }, 413),
+      }),
+      validator('json', (body: unknown, c) => {
+        const event = clientEvent(body);
+        return typeof event === 'string' ? c.json({ error: event }, 400) : event;
+      }),
+      (c) => {
+        if (!clientLimit.take(Date.now())) return c.json({ error: 'Too many client reports' }, 429);
+        const { kind, ...fields }: ClientEvent = c.req.valid('json');
+        log.event(kind, fields);
+        return c.body(null, 204);
+      },
+    )
     .get('/api/review', (c) => (review ? c.json(review.snapshot(), 200) : c.json(noReview, 404)))
     // Tour progress as server-sent events: the current state first, then every change.
     .get('/api/review/events', (c) => {
@@ -168,6 +204,7 @@ export function createApp({ token, origin, version, webRoot, review }: AppOption
       async (c) => {
         if (!review) return c.json(noReview, 404);
         const { stopId, question } = c.req.valid('json');
+        // Review.ask logs the question and its outcome.
         try {
           // The request's signal aborts when the reviewer goes away, so a dropped question stops.
           const answer = await review.ask(stopId, question, c.req.raw.signal);
@@ -198,6 +235,20 @@ export function createApp({ token, origin, version, webRoot, review }: AppOption
         }
       },
     );
+
+  // Anything a route didn't handle: logged with its stack, answered with no detail.
+  app.onError((error, c) => {
+    // Middleware answers like the token check's 401 arrive here too, and aren't errors.
+    if (error instanceof HTTPException) return error.getResponse();
+    log.event('error', {
+      where: 'server',
+      method: c.req.method,
+      path: new URL(c.req.url).pathname,
+      ...describeError(error),
+    });
+    console.error(error);
+    return c.json({ error: 'Something went wrong in Docent. The run log has the details.' }, 500);
+  });
 
   if (webRoot) {
     app.use('/*', serveStatic({ root: webRoot }));

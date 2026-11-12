@@ -1,0 +1,19 @@
+{"ts":"2026-11-12T14:03:00.000Z","kind":"run.start","version":"0.0.0","mode":"review","pr":"https://github.com/hartz89/docent/pull/52","model":"claude-opus-5-5","flags":{"fork-budget":"0.5"},"node":"v24.14.1","platform":"darwin"}
+{"ts":"2026-11-12T14:03:02.100Z","kind":"pr","repo":"hartz89/docent","number":52,"url":"https://github.com/hartz89/docent/pull/52","title":"Launcher: open a tour from a link (docent serve)","author":"app/docent-builder","head":"1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b","base":"0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e","files":9,"ms":2100}
+{"ts":"2026-11-12T14:03:02.100Z","kind":"tour.cache","hit":false}
+{"ts":"2026-11-12T14:03:02.400Z","kind":"author","found":true,"session":"7e2cfb5b-77c5-46af-9de2-27ca9a1c1f85","via":"the Claude-Session link in the PR","contextTokens":180000,"forkEstimateUsd":0.31,"forkBudgetUsd":0.5}
+{"ts":"2026-11-12T14:03:48.000Z","kind":"tour.attempt","attempt":1,"ms":45900,"outcome":"rejected","costMicroUsd":612000,"problems":["Stop 3 cites apps/server/src/serve.ts lines 80-95, outside the file (it has 71 lines).","apps/server/src/cli.ts#4be1a2c0 is neither in a stop nor skipped."]}
+{"ts":"2026-11-12T14:04:11.500Z","kind":"tour.attempt","attempt":2,"ms":23500,"outcome":"passed","costMicroUsd":248000,"problems":[]}
+{"ts":"2026-11-12T14:04:11.600Z","kind":"tour.ready","cached":false,"stops":8,"skips":2,"attempts":2,"problems":[],"model":"claude-opus-5-5","costMicroUsd":860000,"ms":69500}
+{"ts":"2026-11-12T14:04:11.600Z","kind":"span","name":"tour.warmup","ms":1200,"cacheReadTokens":42000}
+{"ts":"2026-11-12T14:04:12.000Z","kind":"ui.viewport","width":"1440+"}
+{"ts":"2026-11-12T14:04:12.000Z","kind":"ui.theme","theme":"dark","choice":"system"}
+{"ts":"2026-11-12T14:04:12.100Z","kind":"ui.stop","stop":1,"stopId":"s1"}
+{"ts":"2026-11-12T14:04:35.000Z","kind":"ui.stop","stop":2,"stopId":"s2"}
+{"ts":"2026-11-12T14:05:10.000Z","kind":"ui.stop","stop":3,"stopId":"s3"}
+{"ts":"2026-11-12T14:05:41.000Z","kind":"question","stopId":"s3","stop":3,"stopTitle":"The server serves any PR from a link","question":"Why does serve() accept any PR URL, not just ones on this repo?","source":"author_session","session":"7e2cfb5b-77c5-46af-9de2-27ca9a1c1f85","forkBudgetUsd":0.5,"forkEstimateUsd":0.31,"costMicroUsd":287000,"costIncomplete":false,"ms":18400,"askedAt":"1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b","answer":"Because the launcher is meant for any repo you can read with gh.\nThe URL is parsed by `parsePrUrl` in apps/server/src/github.ts:60, which only accepts github.com pull URLs."}
+{"ts":"2026-11-12T14:07:00.000Z","kind":"question","stopId":"s3","stop":3,"stopTitle":"The server serves any PR from a link","question":"What happens if two tabs open the same link?","source":"guide","whyNotAuthor":"The author's session took longer than 180 seconds","forkBudgetUsd":0.5,"forkEstimateUsd":0.31,"costMicroUsd":341000,"costIncomplete":false,"ms":196000,"askedAt":"1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b","answer":"Each tab gets the same review: apps/server/src/serve.ts:40 keeps one Review per PR."}
+{"ts":"2026-11-12T14:07:10.000Z","kind":"client.error","source":"api","message":"The author's session couldn't answer","method":"POST","path":"/api/questions","status":502}
+{"ts":"2026-11-12T14:07:11.000Z","kind":"error","where":"server","method":"GET","path":"/api/file","message":"EMFILE: too many open files","stack":"Error: EMFILE: too many open files\n    at readFile (node:fs:1)\n    at Review.readFile (apps/server/src/review.ts:240:20)"}
+{"ts":"2026-11-12T14:08:00.000Z","kind":"review.submit","event":"REQUEST_CHANGES","summaryChars":212,"comments":0,"outcome":"posted","url":"https://github.com/hartz89/docent/pull/52#pullrequestreview-123"}
+{"ts":"2026-11-12T14:15:04.000Z","kind":"run.end","reason":"stopped (SIGINT)","exitCode":0,"ms":724000}
