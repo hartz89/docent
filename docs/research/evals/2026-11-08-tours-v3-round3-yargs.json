@@ -1,0 +1,236 @@
+{
+  "date": "2026-11-08",
+  "model": "claude-opus-5-5",
+  "judgeModel": "claude-sonnet-5",
+  "judgeRubric": 1,
+  "totals": [
+    {
+      "prompt": 3,
+      "fixtures": 1,
+      "failed": 0,
+      "findings": {
+        "expected": 1,
+        "cited": 1,
+        "surfaced": 0
+      },
+      "externalFindings": {
+        "expected": 0,
+        "cited": 0,
+        "surfaced": 0
+      },
+      "danger": {
+        "falseAlarms": 0,
+        "missed": 0
+      },
+      "overLongTours": 1,
+      "stops": 10,
+      "quality": {
+        "plainFirstSentence": 0.6,
+        "withinLength": 0.6,
+        "behaviorFirst": 0.8,
+        "namesCheck": 0.8
+      },
+      "tourUsd": 0.61202,
+      "judgeUsd": 0.0607
+    }
+  ],
+  "runs": [
+    {
+      "fixture": "yargs-766-command-validation",
+      "prompt": 3,
+      "tourUsd": 0.61202,
+      "judgeUsd": 0.0607,
+      "findings": [
+        {
+          "file": "lib/command.js",
+          "lines": {
+            "start": 176,
+            "end": 184
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "surfaced": false
+        }
+      ],
+      "status": "ok",
+      "stopCount": 11,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 2,
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Options now carry into commands by default",
+          "mechanical": {
+            "firstSentence": "Options and most parsing settings set at the top level now carry into subcommands unless you mark them local.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 62,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "namesCheck": false,
+            "why": "First sentence states the carry-into-subcommands change plainly, but the body gives framing/motivation rather than a specific thing to check."
+          }
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "What changes for users",
+          "mechanical": {
+            "firstSentence": "Five things change for users.",
+            "codeInFirstSentence": false,
+            "sentences": 7,
+            "words": 78,
+            "withinLength": false
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "namesCheck": false,
+            "why": "First sentence ('Five things change for users') is a vague teaser, not a stated change, and the body is just an inventory with no flagged risk."
+          }
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Reset now keeps everything except local keys",
+          "mechanical": {
+            "firstSentence": "When yargs builds a subcommand, it now keeps every option, group and description except keys marked local (and their aliases).",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 70,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "namesCheck": true,
+            "why": "First sentence states the new keep-all-except-local reset behavior, and it flags that options.local is never cleared and persists across nesting."
+          }
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "Global setter now also marks keys local",
+          "mechanical": {
+            "firstSentence": "Calling global with `false` now marks a key local, so it is dropped when a command runs.",
+            "codeInFirstSentence": true,
+            "sentences": 6,
+            "words": 85,
+            "withinLength": false
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "namesCheck": true,
+            "why": "First sentence states that global(false) now marks a key local, and it directs the reviewer to verify global(true)/no-arg behavior is unchanged."
+          }
+        },
+        {
+          "stop": 5,
+          "kind": "core_change",
+          "title": "Command validation now runs after the handler",
+          "mechanical": {
+            "firstSentence": "For subcommands, validation now runs after the handler has run, not before.",
+            "codeInFirstSentence": false,
+            "sentences": 7,
+            "words": 77,
+            "withinLength": false
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "namesCheck": true,
+            "why": "First sentence states validation now runs after the handler, and explicit danger/mismatch flags point to specific risks to check."
+          }
+        },
+        {
+          "stop": 6,
+          "kind": "core_change",
+          "title": "Checks, implies and conflicts carry into commands",
+          "mechanical": {
+            "firstSentence": "Custom checks now run inside subcommands unless you pass `false` as the second argument.",
+            "codeInFirstSentence": true,
+            "sentences": 6,
+            "words": 69,
+            "withinLength": false
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "namesCheck": true,
+            "why": "First sentence states checks now run inside subcommands by default, and it flags the implies/conflicts auto-global override as worth checking."
+          }
+        },
+        {
+          "stop": 7,
+          "kind": "edge",
+          "title": "Strict mode carries into commands; false still enables it",
+          "mechanical": {
+            "firstSentence": "Calling strict now turns it on for all subcommands.",
+            "codeInFirstSentence": false,
+            "sentences": 5,
+            "words": 51,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "namesCheck": true,
+            "why": "First sentence states strict now carries into subcommands, and it flags the confusing strict(false) semantics and the never-reset flag."
+          }
+        },
+        {
+          "stop": 8,
+          "kind": "edge",
+          "title": "A false demandOption now makes the option required",
+          "mechanical": {
+            "firstSentence": "An option defined with `demandOption: false` is now treated as required.",
+            "codeInFirstSentence": true,
+            "sentences": 5,
+            "words": 78,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "namesCheck": true,
+            "why": "First sentence states demandOption:false now makes an option required, and an explicit danger flag calls this out as the opposite of its name."
+          }
+        },
+        {
+          "stop": 9,
+          "kind": "edge",
+          "title": "demandCommand defaults to one command",
+          "mechanical": {
+            "firstSentence": "Calling demandCommand with no arguments now requires at least one command.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 44,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "namesCheck": true,
+            "why": "First sentence states demandCommand with no args now requires at least one command, and it tells the reviewer to check nested re-declaration."
+          }
+        },
+        {
+          "stop": 10,
+          "kind": "edge",
+          "title": "Tests for the new defaults and opt-outs",
+          "mechanical": {
+            "firstSentence": "The new tests check that config, implies, conflicts, checks, demandOption, strict, array, choices, alias, coerce, defaults, describe, help, version and groups carry into commands, and that each has a `global: false` opt-out.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 68,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "namesCheck": true,
+            "why": "First sentence describes what the new tests check rather than a behavior change, but it does name specific untested gaps worth checking."
+          }
+        }
+      ]
+    }
+  ],
+  "skipped": []
+}
