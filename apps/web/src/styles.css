@@ -113,13 +113,19 @@ code,
 
 .app {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
+  /* Never wider than the window, however wide the code inside it. */
+  grid-template-columns: minmax(0, 1fr);
   height: 100%;
 }
 
+/* No column is ever narrower than its content. The code keeps room for its gutter and about 60
+   characters, and scrolls sideways past that; the side columns give way first. Under 1200px the
+   route becomes a drawer (DRAWER_QUERY in route-drawer.tsx), and under 800px the layout stacks.
+   See "Narrow windows" at the end of this file. */
 .columns {
   display: grid;
-  grid-template-columns: minmax(250px, 300px) minmax(0, 1fr) minmax(340px, 440px);
+  grid-template-columns: minmax(250px, 300px) minmax(530px, 1fr) minmax(340px, 440px);
   min-height: 0;
 }
 
@@ -179,6 +185,8 @@ code,
 .pr-meta {
   display: flex;
   gap: 10px;
+  white-space: nowrap;
+  overflow: hidden;
   color: var(--muted);
   font-size: 12.5px;
   margin-top: 2px;
@@ -237,6 +245,8 @@ code,
 }
 
 .verdict-button {
+  flex: none;
+  white-space: nowrap;
   padding: 8px 14px;
   border-radius: 6px;
   border: 1px solid var(--border-strong);
@@ -434,20 +444,34 @@ code,
   background: var(--ground);
 }
 
+/* One line, always. A long path loses its start, not its file name: right-to-left overflow puts
+   the ellipsis on the left, and the <bdi> inside keeps the path itself reading left to right. */
 .code-path {
+  flex: 0 1 auto;
+  min-width: 6ch;
   font-family: var(--mono);
   font-size: 12.5px;
   color: var(--text);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
 }
 
+/* Gives way before the path does. */
 .code-range {
+  flex: 0 1000 auto;
+  min-width: 0;
   color: var(--muted);
   font-size: 12.5px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .code-side {
+  flex: none;
   margin-left: auto;
   font-size: 11px;
   letter-spacing: 0.06em;
@@ -539,7 +563,8 @@ code,
 
 .legend {
   display: flex;
-  gap: 20px;
+  flex-wrap: wrap;
+  gap: 4px 20px;
   padding: 10px 20px;
   border-top: 1px solid var(--border);
   color: var(--muted);
@@ -547,10 +572,12 @@ code,
   background: var(--ground);
 }
 
-.legend span {
+/* Items wrap whole, never word by word. */
+.legend > span {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  white-space: nowrap;
 }
 
 .swatch {
@@ -904,8 +931,10 @@ code,
 .primary-button {
   display: inline-flex;
   align-items: center;
+  flex: none;
   gap: 8px;
   padding: 8px 16px;
+  white-space: nowrap;
   border-radius: 6px;
   border: 0;
   background: var(--brass-fill);
@@ -1340,5 +1369,292 @@ kbd {
   .verdict-choice input,
   .verdict-button.posted {
     transition: none;
+  }
+}
+
+/* ---------- Narrow windows ---------- */
+
+/* Shown only where the layout calls for them. */
+.route-toggle,
+.verdict-button-icon {
+  display: none;
+}
+
+.progress {
+  flex: none;
+}
+
+/* The route as a drawer (route-drawer.tsx), under 1200px. A modal <dialog>, so it sits above
+   everything, and its backdrop dims the page. */
+.route-drawer {
+  inset: 0 auto 0 0;
+  width: min(340px, 88vw);
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-right: 1px solid var(--border-strong);
+  background: var(--panel);
+  color: var(--text);
+  animation: drawer-in 240ms var(--ease);
+}
+
+.route-drawer::backdrop {
+  background: color-mix(in srgb, var(--ground) 72%, transparent);
+  animation: fade-in-plain 240ms var(--ease);
+}
+
+.route-drawer-body {
+  position: relative;
+  height: 100%;
+  overflow: auto;
+}
+
+.route-drawer-close {
+  position: absolute;
+  top: 14px;
+  right: 12px;
+}
+
+@keyframes drawer-in {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: none;
+  }
+}
+
+@keyframes fade-in-plain {
+  from {
+    opacity: 0;
+  }
+}
+
+/* The top bar's progress, as the button that opens the drawer. */
+.progress-button {
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.progress-button:hover {
+  color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-drawer,
+  .route-drawer::backdrop {
+    animation: none;
+  }
+}
+
+/* Under 1200px: the route is a drawer; code and guide share the width, and the guide keeps a
+   comfortable reading measure. At 800px that still leaves the code 480px. */
+@media (max-width: 1199px) {
+  .columns {
+    grid-template-columns: minmax(0, 1fr) clamp(320px, 38%, 440px);
+  }
+
+  .route-toggle {
+    display: grid;
+    margin-right: -12px;
+  }
+
+  .topbar {
+    gap: 20px;
+  }
+
+  .meta-head {
+    display: none;
+  }
+}
+
+/* Under 1000px: the verdict button keeps its icon and drops its label, which stays for screen
+   readers. */
+@media (max-width: 999px) {
+  .topbar {
+    gap: 16px;
+    padding: 12px 16px;
+  }
+
+  .brand {
+    padding-right: 16px;
+  }
+
+  .progress {
+    width: 140px;
+  }
+
+  .meta-files {
+    display: none;
+  }
+
+  .verdict-button {
+    display: grid;
+    place-items: center;
+    padding: 8px 10px;
+  }
+
+  .verdict-button-icon {
+    display: block;
+  }
+
+  .verdict-button-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+
+/* Under 800px, a phone: one column that scrolls as a whole. The guide comes first, its cited
+   code below it in a window of its own, and a bottom bar moves between stops and opens the
+   route. */
+@media (max-width: 799px) {
+  .app {
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  .topbar {
+    gap: 12px;
+    min-height: 56px;
+    padding: 8px 16px;
+  }
+
+  .brand {
+    font-size: 17px;
+    padding-right: 12px;
+  }
+
+  .pr-title {
+    font-size: 14px;
+  }
+
+  .meta-repo,
+  .route-toggle,
+  .topbar .progress {
+    display: none;
+  }
+
+  .columns {
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+  }
+
+  .columns > .column {
+    flex: none;
+    min-width: 0;
+    overflow: visible;
+  }
+
+  .column + .column {
+    border-left: 0;
+  }
+
+  .columns > aside.column {
+    order: -1;
+  }
+
+  .columns > .column.code-column {
+    overflow: hidden;
+    height: 75svh;
+    min-height: 320px;
+    border-top: 1px solid var(--border);
+  }
+
+  .narration {
+    min-height: 0;
+  }
+
+  .narration-body {
+    padding: 22px 16px 24px;
+  }
+
+  .narration-title {
+    font-size: 19px;
+  }
+
+  .narration-text {
+    font-size: 17px;
+  }
+
+  /* The bottom bar takes over Next stop. */
+  .narration-footer {
+    display: none;
+  }
+
+  .code-header {
+    padding: 12px 16px;
+  }
+
+  .legend {
+    padding: 8px 16px;
+  }
+
+  /* No keyboard, usually. */
+  .legend > .legend-keys {
+    display: none;
+  }
+
+  .overview {
+    padding: 22px 16px 32px;
+  }
+
+  .stop-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+  }
+
+  .stop-bar-route {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-strong);
+    background: transparent;
+    color: var(--text);
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .stop-bar-steps {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .stop-bar-steps .icon-button {
+    width: 40px;
+    height: 40px;
+    color: var(--text);
+    font-size: 17px;
+  }
+
+  .stop-bar-steps .icon-button:disabled {
+    color: var(--faint);
+    background: transparent;
+    cursor: default;
+  }
+
+  .stop-bar-count {
+    min-width: 92px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
   }
 }
