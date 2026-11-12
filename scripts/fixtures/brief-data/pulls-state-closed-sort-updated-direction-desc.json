@@ -1,0 +1,642 @@
+[
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/50",
+    "number": 50,
+    "title": "Research: reviving an author session on another machine",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** answer backlog item 15's open risk by experiment. Can an author's Claude Code session be revived on another machine, at another path, so a reviewer can still ask it questions?\n\n**Headline:** it works, with no path rewrite. A transcript forks from any file, in any checkout, using Docent's exact read-only options. Subagent transcripts need three fields changed first. Slimming a snapshot to user and assistant records removes most personal data by itself, and cut an Opus fork of PR #43's session from $1.16 to $0.73. Priming a snapshot once let later questions read the prompt cache ($0.018 per question down to about $0.002 on Haiku), which bears on item 23.\n\n**Behavior change:** none. One new research doc: `docs/research/2026-11-11-session-snapshots.md`.\n\n**Tier:** 1. Docs only, but it sets direction for the snapshot format and scrubbing, so it gets a fresh-context review.\n\n**Evidence:** 16 forks against two of this project's own transcripts, copied to a scratch folder (originals checksummed, unchanged). \"Another machine\" was a fresh clone at PR #43's head under a different path. Total model spend about $2.01. `pnpm verify` passes.\n\n**Look here first:** the \"What we checked\" table, and \"Recommendation for item 15\".\n\n**Known gaps:** same user, login and Claude Code version throughout; a separate `~/.claude` couldn't be logged in. One PR, four questions, one or two runs per variant. The primer result is Haiku only. The scrubbing inventory uses home-made gitleaks-style patterns, and the doc gives kinds and counts only.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-11T04:03:35Z",
+    "updated_at": "2026-11-11T04:13:04Z",
+    "merged_at": "2026-11-11T04:13:03Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/40",
+    "number": 40,
+    "title": "Submit your review from Docent's verdict stop",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "## Intent\n\nLet the reviewer finish in Docent. At the verdict stop they can approve, request changes or comment, and the review lands on GitHub, so they don't have to switch back to GitHub at the end of a tour. This is step 2 of backlog item 5, pulled forward for the verdict only. Line comments come later.\n\n## Behavior change\n\n- **Verdict stop:** the reviewer picks Comment, Approve or Request changes (GitHub's order) and writes a summary. The summary is optional for Approve and required for the other two, as on GitHub. A preview spells out what will be posted and where: \"**Approve** honojs/hono#4813 at 674372f as you, with this summary:\". Posting takes a click on a button named for the action (\"Approve on GitHub\"). Enter in the summary only adds a new line.\n- **After posting:** the form becomes a confirmation with a link to the review on GitHub. The top bar's \"Verdict at the end\" becomes \"✓ Approved\" (or the matching label), linking to the review. A reload keeps it locked, because the snapshot carries `posted`.\n- **Server:** `POST /api/review/submit` takes `{ event, body }` and nothing else. It checks the PR's current head with `gh api`, then posts with `gh api --method POST repos/{repo}/pulls/{n}/reviews --input -`, sending `{commit_id, event, body}` as JSON on stdin. If the head has moved, it answers 409 (\"The PR has new commits since this tour. Reopen it in Docent to review them.\"). gh failures become plain messages: gh not installed, not signed in, approving or requesting changes on your own PR, no access, or else GitHub's own `errors`.\n- **Fixture mode:** `fixtureSource` gets a recorder in place of GitHub. It prints `Recorded a review, not sent to GitHub: {...}` and returns a placeholder link.\n- The \"End of the tour\" button that was disabled at the last stop is gone. The form's own button is the action there.\n\n## Tier: 2b\n\nThis is the first route that makes Docent act outward as the user, through their GitHub credentials. It touches `apps/server` security surface.\n\n## Security\n\n- **Only this PR, only on a click.** `Workspace.postReview` closes over the repo and PR number that the server read when it opened the review. The route's validator keeps only `event` (one of three values) and the trimmed `body`. Any `repo`, `number` or `commit_id` the client sends is dropped, and a test proves it. The route sits under `/api/*`, so the bearer token and the Host/Origin checks apply. Tests cover 401 and 403 on this route too.\n- **Never approves unseen code.** `commit_id` is always the head the tour was written for. If GitHub's head differs, the request is refused before anything is posted. There's a short gap between the head check and the POST. Pinning `commit_id` covers it: GitHub attaches the review to that commit, so a push in between leaves the review on the commit the tour actually covered.\n- **PR text can't shape what's posted.** The body is the reviewer's own text. It goes to gh as JSON on stdin, never as an argument and never through a shell (`execFile` with an argument array). The event comes from a fixed list. The endpoint path is built from the repo (already validated as `[\\w.-]+/[\\w.-]+`) and an integer PR number. The review link shown afterwards is used only if it starts with the PR's own URL plus `#`; otherwise the UI falls back to the PR URL.\n- **Once.** `Review.submit` refuses a second post (409), and also refuses one that arrives while a post is still in flight. A test runs two submits in parallel.\n- **Fixture mode never reaches GitHub.** The e2e checks the recorded line on the server's stdout.\n- **Fresh-context security review:** it found no blockers and two should-fixes, both now fixed.\n  - Both review calls pass `--hostname github.com`, so `GH_HOST` can't send the write to another host.\n  - Once gh exits 0, the review counts as posted even if its output won't parse. That closes the one path to a double post.\n  - Also from the review: gh calls time out after 60s, and `parsePrUrl` rejects `.` and `..` as an owner or repo name.\n  - Left as-is: the second-wide head race (covered by `commit_id`), and the lock living in memory.\n\n## Evidence\n\n- `pnpm verify`: 210 tests pass. New tests:\n  - `review.test.ts > POST /api/review/submit`: right event, body and commit; Approve with no summary; client-sent repo, PR and commit ignored; missing summary refused for Request changes and Comment; unknown event refused; head mismatch refused; one post under a race; GitHub refusal passed on and retryable; token and origin enforced.\n  - `github.test.ts`: maps gh failure shapes to messages.\n- `pnpm test:e2e`: 2 pass. `tour.spec.ts` now walks to the last stop, approves with a summary, presses Enter in the summary (nothing posts), sees the confirmation and link, and checks that the form is locked and that fixture mode recorded exactly one call.\n- Screenshots: checked the verdict stop empty, with Request changes chosen (summary needed, button disabled), with Approve and a summary (preview), and after posting.\n\n## Look here first\n\n- `apps/server/src/review.ts`: `verdict()` and `Review.submit`\n- `apps/server/src/github.ts`: `postReview`, `currentHead`, `explainGhFailure`\n\n## Known gaps\n\n- \"as you\" doesn't name the gh login. Fetching it would cost one more `gh api user` call.\n- The gh error mapping matches GitHub's message text. I verified the 401, 404 and not-signed-in shapes against real gh. The own-PR 422 wording comes from GitHub's documented errors and wasn't triggered live, so as not to post a review.\n- A posted review lives in memory only. Restarting Docent unlocks the form, though GitHub still has the review.\n- No light theme yet, as with the rest of the app.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T04:34:17Z",
+    "updated_at": "2026-11-11T03:38:51Z",
+    "merged_at": "2026-11-11T03:38:49Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/43",
+    "number": 43,
+    "title": "Web: a light theme that follows the system, with a top-bar toggle",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** give Docent a light theme. It follows the system setting by default, and a small toggle in the top bar overrides it.\n\n**Behavior change**\n- With a light system setting, the app is now light: warm paper, ink text, a deeper brass. The palette is lifted from the tour-screen mockup and mapped onto the existing tokens in `styles.css`. Dark is unchanged (a pixel diff of the tour screen before and after differs only where the toggle now sits).\n- A toggle at the right of the top bar (tour screen and loading screen). Its icon shows the current choice: half-moon for \"system\", sun, moon. Clicks go system → the opposite of what the system shows → the other one → system, so every click from \"system\" visibly changes something. An explicit choice is saved in `localStorage` (wrapped in try/catch) and syncs across tabs. Going back to \"system\" removes it, and the page then tracks the OS setting live.\n- No flash of the wrong theme: an inline script in `index.html` sets `data-theme` on `<html>` before first paint. The server sends no CSP, so inline script is allowed; nothing in `apps/server` changed.\n- Code highlighting follows the theme. Shiki now tokenizes once with both themes (`codeToTokensWithThemes`); each token carries both colors as CSS variables, and CSS picks one. Switching themes re-highlights nothing.\n- Colour roles are unchanged: citations stay brass. The mockup's slate-blue citations are a pending decision and are not adopted.\n\n**Two new brass tokens.** `--brass-text` (brass used as text, focus rings, the focused textarea border) and `--brass-fill` (brass behind `--brass-ink`: the primary button and the current stop's number), plus `--fill-hover`, so a filled button lightens on hover in dark (as today) and darkens in light. Both equal `--brass` in dark, so dark doesn't move. In light, plain brass `#b9842c` is only 2.96:1 on the panel, which fails as text and as a focus ring. Also new: `--added-swatch` / `--removed-swatch` for the legend swatches. The other hard-coded rgba colours (callout borders, danger tints, the pulse) now use `color-mix()` on the existing tokens, which gives exactly the same values in dark.\n\n**Contrast in light (WCAG, on ground `#fcfbf8` / panel `#f5f3ee` / raised `#fff`)**\n\n| Text | Ground | Panel | Note |\n| --- | --- | --- | --- |\n| `--text` `#1d2126` | 15.6 | 14.6 | AA/AAA |\n| `--muted` `#5e6570` | 5.7 | 5.3 | AA; 4.95 on the current stop's brass tint |\n| `--faint` `#767c86` | 4.1 | 3.8 | Hint tier, below AA for small text. Dark's faint is 2.99 today, so light is the more readable of the two |\n| `--brass-text` `#835710` | 6.1 | 5.7 | AA; 4.9 on `--brass-soft` (done stop numbers) |\n| white on `--brass-fill` `#94661a` | 5.0 | | AA (white on plain brass would be 3.3); 5.7 on hover, which darkens in light |\n| `--added-mark` `#287a41` | 5.1 | 4.8 | Darkened from the mockup's `#2f8a4a` (3.9 on panel) |\n| `--removed-mark` `#b8443a` | 5.2 | 4.8 | AA |\n| `--danger` `#a93d34` | 6.0 | 5.6 | AA; 5.0 on the danger callout's own tint |\n\n**Syntax theme, by measurement.** I tokenized `code-view.tsx` with nine light Shiki themes and counted the code characters under 4.5:1 on the light ground. vitesse-light, the pair of today's dark theme: 85% under 4.5, 36% under 3. github-light-default: 22% under 4.5, 0% under 3; the only colour under AA is its comment grey, at 4.39. So light uses github-light-default.\n\n**Tier: 1.** Feature work inside `apps/web`, plus one e2e spec. No code-owned paths.\n\n**Evidence**\n- `pnpm verify`: green (292 tests). `pnpm test:e2e`: 5 passed.\n- New `e2e/theme.spec.ts`. Light system setting → light page. Toggle → dark. Dark survives a reload. Two more clicks → following the system again, which then tracks a live switch to dark.\n- Screenshots: the tour screen at stop 3 (cited code), 1440×900, both schemes, before and after. The repo doesn't commit images, so here they are in words. Before, light and dark were identical (dark). After, dark matches before pixel for pixel, apart from the top-bar strip where the toggle now sits. After, light: paper ground and panels, ink text. The added lines get a soft green wash and the cited range a brass tint and brass rule. Code is in github-light colours. The \"Next stop\" button is deep brass with white text. The danger callout is a pale red card.\n\n**Look here first:** `apps/web/src/theme.tsx` (the store, cycle order and toggle) and the token block at the top of `apps/web/src/styles.css`.\n\n**Known gaps**\n- `--faint` is under AA in light (and further under in dark). It's the deliberate hint tier from the mockup; raising it is a design call for both themes together.\n- The rule \"a saved choice, else the system\" lives in two places: the inline script in `index.html`, and `theme.tsx`. Both are commented to stay in step.\n- The status screen's loading bar and the health page get the theme too, but I only screenshot-checked the tour screen.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T06:03:35Z",
+    "updated_at": "2026-11-10T06:09:15Z",
+    "merged_at": "2026-11-10T06:09:13Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": null
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/42",
+    "number": 42,
+    "title": "Core: proven-skip detectors and the computed skip ledger",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** the pure-logic half of backlog item 6, \"Skip liberally, and prove it\". Scripts, not the model, decide which changed lines can't change behavior, and a ledger places every changed line in exactly one of three places. Follows the 2026-11-09 decision \"The skip ledger is computed, not written\".\n\n**Behavior change:** none for users yet. Core gains new exports; nothing calls them. **Wiring is a later tier 2b PR**: the server's checker, the tour schema (dropping required skips) and the prompt. The existing coverage check (C5) stays in place, unchanged; SPEC.md says how the ledger replaces it once wired.\n\nNew in `packages/core`:\n- **Detectors** (`detect.ts`, `rename.ts`), each fed plain data (diff, file text at base and head, base `.gitattributes`), never the disk. Each returns branded `Proof`s (only detectors can make one) for a file, hunk or line, with a label and evidence.\n  - **Whitespace only (P3):** indentation and trailing changes in an allow-list of languages. Spacing between tokens only in JS/TS/Java/C#/Go/JSON, only on lines without strings, regexes, comments or `#`, and never where it joins tokens (`a + +b` vs `a ++b`, `1 .e3` vs `1.e3`). Never Python, YAML, Makefiles, unlisted languages, files where a string could span lines (including any backtick line that also holds a quote, slash, backslash, brace or `$`), or Go directives.\n  - **Blank lines (P4)** and **named or type-only imports in a new JS/TS file (P5)**, read statement by statement from the top of the file.\n  - **Re-exports (P6):** whole barrel files only. A changed barrel must load the same modules in the same order, keep every existing name bound to the same source, and add no names next to an `export *` (shadowing).\n  - **Lockfiles (P7):** by name, with the changed manifest as evidence; the ledger counts it only if that manifest is on the route. Not proven if created, deleted or moved, or if changed lines point outside known registries (git URLs, tarballs, `file:`).\n  - **Generated and vendored (P8):** base `.gitattributes` (nested files, last match wins, unsets honored; any line it can't parse makes the attribute prove nothing) plus a short known list, which only vouches for files that already existed at base. The PR's own `.gitattributes` never counts.\n  - **Renames (P9), by allowlist:** JS and TS without JSX only. One consistent, one-to-one mapping across the PR, plus import paths explained by the diff's own file moves; literals, operators, spacing, strings and `//` comments must match exactly, and lines with any other `/` (possible regex) are never read. Each renamed word must sit in a safe position on both sides: a top-level definition (column 0), a plain item of an `import {…}`/`export {…}` statement read whole, or a reference right after an operator, `(`, `[`, a call's `,` or a keyword like `return`. Every file that uses a renamed name must rename its top-level definition, or import it by a relative path from a diff file that exports it by name and has no `export *`. New names absent at base and old names absent at head, in the diff's files and, through `renameLookups` and the caller's `git grep -lw`, the whole repo.\n- **Ledger (`ledger.ts`, L1–L5):** `computeLedger(diff, tour, proofs)` lists every changed line once, in diff order, as `on_route` (a stop explains it, same rules as C1–C3; the route wins), `proven_skip` (all valid proofs kept), or `not_on_route`. Disjoint and total by construction: one discriminated `Placement` per line.\n- `coverage.ts`: extracted `explainedBy` and `lineKey`, so coverage and the ledger share one definition of \"explained\". No behavior change.\n\n**Tier: 1.** Feature work inside one package, with tests. The new exports add types and functions but change no existing contract type (`Tour`, `Skip`, `Diff`, `CoverageReport` are untouched), so it isn't 2a.\n\n**Evidence:** `pnpm verify` passes (289 tests). New tests: `detect.test.ts`, `rename.test.ts`, `ledger.test.ts`, plus `@ts-expect-error` checks for P1 and L1. Property tests: the ledger invariant over generated diffs, with proofs from the real detectors (and stale proofs that must count for nothing), checked against an independent oracle, plus a check that the generated scenarios reach all three places; and \"any single-character tamper of a proven rename un-proves it\". Adversarial cases: a rename that also changes a literal or an operator, `Math.min` to `Math.max`, property and shorthand renames, swaps and merges, `true` to `false`, re-indenting Python/YAML/Makefile, a template literal's indentation, a `.gitattributes` change in the PR itself, a re-export line that also declares something, rebinding and shadowing in barrels, side-effect imports in a new file, a lockfile pointing at a new tarball, and every input from the two adversarial review rounds (hidden templates, regex bodies, package and aliased imports, globals licensed from another file or a nested scope, keys, keyword arguments, JSX attributes, methods and class fields, barrel reordering).\n\n**Look here first:** `rename.ts` (`role`, `licensed` and `solve`), then `mayHaveMultilineStrings` in `proof.ts`, which the whitespace, blank-line and rename proofs lean on.\n\n**Known gaps** (also in SPEC.md):\n- Renames are lexical. Names read by reflection, string building or code outside the repo can still change meaning; the evidence carries the mapping so the UI can show it. The allowlist trades coverage for safety: member and method renames, statement-start calls (`foo();`), JSX, Python, Go and other languages are never proven, and stay visible as \"not on the route\".\n- Generated and vendored proofs say where a file lives, not that it matches its sources (for example a committed `dist/` that a GitHub Action runs).\n- A lockfile proof checks sources, not that the lockfile matches the manifest.\n- Pure file moves, mode changes and binary files have no changed lines, so they're not in the ledger.\n- CRLF files never get text-based proofs (the parsed diff keeps `\\r`).\n- For the wiring PR: the server fetches base and head text and base `.gitattributes`, answers `renameLookups` with `git grep -lw` at each commit, runs `proveSkips`, and replaces the C5 check with the ledger. The tour schema drops required skips (2a), and the UI shows proof labels and the rename mapping.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T05:24:13Z",
+    "updated_at": "2026-11-10T05:52:51Z",
+    "merged_at": "2026-11-10T05:52:49Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": null
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/19",
+    "number": 19,
+    "title": "Question path: answer from a read-only fork of the author's session",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** answer a reviewer's question from the PR author's own agent session, so the answer knows why the change was built this way. This is backlog item 3, and the product's core bet.\n\n**Behavior change:**\n- **Questions go to the author when Docent can find the author's session and tie it to this PR.** A read-only fork of that session answers. The button says \"Ask the author\", and the answer is labeled \"Answered by the author's session, in a read-only copy · $x\".\n- **How the session is found:**\n  - `docent review <url> --session <id>`. This is the reviewer's own choice, so it isn't checked against the PR.\n  - Otherwise, a `Claude-Session: https://claude.ai/code/session_…` link in the PR. The body's link is tried first, then the commits', newest first. Commits are paginated past 100.\n  - A link names a claude.ai session, not a file. But the local transcript records it in a `bridge_status` entry when remote control starts, and Docent matches that exact entry. Transcripts that only quote the link don't match.\n  - Forks copy the entry, so the earliest-started transcript wins.\n- **A link alone never picks a session.** Links are public. The matched transcript must pass all of these:\n  - its matched record carries the transcript's own session id, so the session checked is the session forked;\n  - one of its records shows the session on the PR's head branch (`gitBranch`), in a checkout whose `origin` is the PR's repo. The branch and the checkout come from the same record;\n  - the head branch lives in the PR's repo, not a fork, so only someone with push access could have made it.\n\n  Otherwise the guide answers: \"the linked session doesn't match this PR\".\n- **Otherwise the guide answers, and says why**: no link, the session isn't on this machine, it doesn't match, it's over budget, the fork failed, or the fork timed out.\n- **Spend is bounded before forking.**\n  - The first call's cost is estimated as the session's last context size, cache-written at 2x input. Claude Code writes 1-hour cache entries on a subscription by default, and the measured $1.63 on PR #17 matches 2x.\n  - A fork estimated over `--fork-budget` (default $2) goes to the guide, and the reason shows the estimate.\n  - The same budget is the fork's own `maxBudgetUsd`.\n  - If a fork hits its cap or times out, the guide answers for the rest of the review, including questions already waiting in line.\n- **Time and queue are bounded.**\n  - Each answer times out 3 minutes after it leaves the queue, and then the guide answers.\n  - A reviewer who leaves aborts the fork, with no fallback run.\n  - `sdkRunner` refuses a signal that's already aborted.\n  - Questions to one session are answered one at a time, with up to 3 waiting. After that, the server answers 429.\n- The CLI prints who will answer questions once the tour is ready.\n\n**Read-only, enforced:** a fork gets exactly `readOnlyOptions` (Read/Grep/Glob, `dontAsk`, `settingSources: []`, `strictMcpConfig`, no MCP servers), plus `resume: <author>`, `forkSession: true` and `persistSession: false`. It never resumes in place. `agent.test.ts` pins those options. The live test proves the author's transcript stays byte-identical and that no fork transcript is left behind.\n\nThe author prompt fences the PR material (title, stop text, cited code) in a `<pull_request>` block, and the question in a `<question>` block. It says the question is only that block's text, and that both are data. PR text can't open or close either block.\n\n**Cost:**\n- Each answer carries `costs: CostRecord[]`, priced from the turn's `usage`, never `total_cost_usd`, which includes the parent session.\n- A fork that throws mid-stream is still recorded, from the usage its assistant frames reported.\n- If it reported none, the answer is marked `costIncomplete`, and the UI says so.\n\n**Tier 2b:** `apps/server/src` is code-owned, and this touches a read-only session gate (`readOnlyOptions`) and which session gets forked. It also adds fields to the server's `Workspace` and `ReviewSnapshot`, and changes the answer shape. `@docent/core` is unchanged: the server's `AnswerView` follows Q2 (author or guide), and the lock is a server concern. `tour.ts` is untouched.\n\n**Evidence:**\n- `pnpm verify`: 224 passed, 2 skipped (the live tests). `pnpm test:e2e`: 4 passed, including `e2e/question.spec.ts` for both answer labels.\n- **Integration tests** through `app.request()` with a fake runner. They cover:\n  - the fork request, its budget cap, and the fenced prompt;\n  - the locator getting the PR's repo and branch;\n  - a non-matching session going to the guide;\n  - a failed fork with both costs, and a crash with no cost (`costIncomplete`);\n  - the over-budget estimate, and a cap hit that latches, including for questions already waiting;\n  - a timeout whose deadline starts when the question leaves the queue;\n  - a client abort with no fallback;\n  - the queue's order, and the 429.\n- **`author-session.test.ts`** covers:\n  - a matching link forks;\n  - a maintainer link pasted into another PR gets the guide;\n  - a session on `fix-ci` in another project, which visited this repo only on `main`, doesn't match;\n  - a copied record with another session's id doesn't match;\n  - a PR from a fork gets the guide;\n  - quoted links are ignored;\n  - the original beats a fork;\n  - link order, and explicit ids.\n- **`agent.test.ts`:** a signal that's already aborted never starts `sdkRunner`.\n- **Against the real transcripts on this machine:** PR #17's link with `web/lazy-shiki` finds the coordinator session, and an unknown branch gets \"doesn't match\".\n- **Live (`DOCENT_LIVE=1`), both pass.** A Haiku author session holds a reason only in conversation. The fork quotes it, the original is unchanged, and no fork file is left.\n- **Real run on [PR #17](https://github.com/hartz89/docent/pull/17)** (before the review fixes). The fork answered with what was actually decided, which exists only in the session. Write-up: `docs/research/2026-11-08-question-path-live.md`.\n\n**Look here first:**\n- `apps/server/src/author-session.ts`, `localSessions` and `matchesPr`: which session gets forked.\n- `apps/server/src/review.ts`, `ask`: the queue, the deadline and the latch.\n\n**Known gaps:**\n- **Fork answers must never leave the machine without the reviewer seeing them.** A fork can repeat secrets from the author's session. Today answers only reach the reviewer's own screen. Any later feature (batches, GitHub comments) must keep a human in between.\n- **Reused branch names.** A link is trusted from anyone who can push to the repo, agents included. A session that checked out someone else's branch (`gh pr checkout`, `git switch`) records that branch too. So a pusher who reuses that branch name and that session's public link can get it forked. The answer stays on the reviewer's screen. For example, the coordinator session here matches `question-path`, because it reviewed this branch.\n- **Deleted worktrees.** A session whose checkout for that branch has since been deleted won't match, so it falls back to the guide. That's safe, but common after a merge.\n- **Cost on long sessions.** The PR #17 fork cost $1.63 per question, and the next question didn't reuse its cache (backlog item 12). At the default $2 budget, a session the size of the coordinator here (about 300k tokens on Opus, estimated around $2.40) now goes to the guide. Pass `--fork-budget 3` to ask it. The estimate uses the last turn's context, so it can be off after a compaction.\n- **No idle check.** A fork taken mid-turn may see half-finished work.\n- **Limited discovery.** It only finds sessions started with remote control on, on this machine, and the parent session rather than a subagent that did the work.\n- Author answers aren't cross-checked yet (Q3's answer check). The lock is per process.\n- The decisions are logged in `backlog/decisions.md` under \"Done, reversible\".\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T05:10:26Z",
+    "updated_at": "2026-11-10T05:00:13Z",
+    "merged_at": "2026-11-10T04:57:55Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/17",
+    "number": 17,
+    "title": "Web: load Shiki lazily; budget the entry chunk",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** stop Rolldown's chunk-size warning, and make bundle size a check that means something.\n\n**Behavior change:**\n- **Shiki loads on the first highlight, not with the app.** The entry chunk drops from 560 kB (179 kB gzip) to 355 kB (113 kB gzip). The first file waits for Shiki to load, showing \"Opening <path>…\", as it already did while a language's grammar loaded.\n- **A 450 kB entry-chunk budget now fails the build** (`apps/web/vite.config.ts`), with a message saying what to do.\n- **The generic chunk warning moves to 1000 kB.** After this change, it only ever fired for two lazy grammar chunks (C++ and Emacs Lisp, about 790 kB each), which load only when a PR has a file in that language.\n\n**Tier 1:** `apps/web` only, not code-owned. Merges after a fresh-context review and green CI.\n\n**Evidence:**\n- `pnpm verify`: 193 passed, 1 skipped.\n- `pnpm test:e2e`: 2 passed. The tour test renders highlighted code.\n- Clean build with no warning.\n- The budget is proven to fire: at 300 kB the build fails with \"index-….js is 347 kB, over the 300 kB entry budget\".\n\n**Look here first:** how `highlight()` caches Shiki. Only a failed load clears the cache, so one file that fails to tokenize doesn't throw away the compiled grammars. That was a review finding, now fixed.\n\n**Known gaps:** the remaining entry chunk is mostly React DOM and TanStack, and it's fine for a local app. Wider performance budgets are backlog item 8.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T04:55:43Z",
+    "updated_at": "2026-11-10T05:00:06Z",
+    "merged_at": "2026-11-08T04:58:40Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/38",
+    "number": 38,
+    "title": "Web: up and down arrows read through a stop's citations",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** maintainer dogfood request. ↑ and ↓ should read through the code: scroll through the current citation while lines are off-screen, then, once all of it is revealed with a little padding, jump to the stop's next citation.\n\n**Behavior change:**\n- **↓:** while the end of the citation in focus is below the view (plus 48px of room), it scrolls on by up to 60% of the view, stopping at the end. Once the end is in view, the next press moves to the stop's next citation, which can be in another file, and the code view centers it as usual.\n- **↑:** mirrors that, using the citation's start, and moves to the previous citation.\n- **Past the first or last citation,** or with a file opened from the route, the arrows scroll the file.\n- **Ignored while typing** (inputs, the question box) and with modifier keys. Smooth scrolling, or instant with reduced motion.\n- **The legend** now reads \"← → stops · ↑ ↓ read on\".\n\n**Tests:** a new e2e step on the fixture's edge stop, which has two short citations and one 57-line citation:\n- ↓ reaches the second citation, then the third;\n- ↓ reads on through the long one without leaving it;\n- ↑ comes back to the second.\n\nIt passes 4/4 on repeat. One fix along the way: the first version pressed keys before the file had loaded. `pnpm verify` and e2e pass.\n\n**Tier 1:** `apps/web` and one e2e step.\n\n**Known gaps:**\n- The arrows now always drive the code view, even if the guide panel has focus. Space and Page Up/Down still scroll the guide.\n- The step size (60% of the view) and the padding (48px) are first guesses for dogfooding.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T04:21:51Z",
+    "updated_at": "2026-11-10T04:26:20Z",
+    "merged_at": "2026-11-10T04:26:18Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/37",
+    "number": 37,
+    "title": "Decide: the skip ledger is computed, not written by the docent",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** a maintainer decision. The skip ledger's value is a completeness guarantee: nothing in the diff can quietly vanish from the tour. That guarantee comes from the checker counting lines, not from the docent writing a ledger. Requiring the docent to cite or skip every line forced noise: cited import blocks, a stop on a barrel, retries. It also produced made-up skip reasons, which are the easiest thing for an injected comment to fake.\n\n**Behavior change:** none yet. This changes the plan and the brief:\n- **Backlog item 6** is rewritten around three places a changed line can be:\n  - **on the route:** cited freely by the stops; an uncited line no longer fails the tour;\n  - **a proven skip:** a script labels it (rename, whitespace, lockfile, generated, re-exports; imports in new files need no citation);\n  - **not on the route:** listed automatically, with an optional note shown as the guide's word.\n\n  The tour schema drops required skips (tier 2a when built). The eval metric becomes \"important code not on the route\".\n- **The brief** (\"Show what it skipped\") is updated, both the living doc on claude.ai and this repo's snapshot, along with the eval table and the risks line.\n- **`backlog/decisions.md`** records the decision.\n\n**Tier 0:** `backlog/` and `docs/brief.md`.\n\n**Known gaps:** none.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T04:18:29Z",
+    "updated_at": "2026-11-10T04:20:01Z",
+    "merged_at": "2026-11-10T04:20:00Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/36",
+    "number": 36,
+    "title": "Backlog: proven skips for barrels, and no citations needed for imports in new files",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** maintainer dogfood feedback on [#21](https://github.com/hartz89/docent/pull/21). Its tour spent a stop on `apps/server/src/evals.ts`, which is only re-exports. The fact worth knowing was the new `@docent/server/evals` entry point, not the 21 lines.\n\n**Behavior change:** none. Adds \"re-export-only changes\" to the proven skips in backlog item 6. A script checks from the syntax that every changed line is an `export … from`, and the map stop names the new entry point in a sentence.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** none.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T04:03:43Z",
+    "updated_at": "2026-11-10T04:08:11Z",
+    "merged_at": "2026-11-10T04:08:09Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/35",
+    "number": 35,
+    "title": "Web: name the tab after the PR, and add a favicon",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** the maintainer asked for the tab to name the PR, as \"PR title | Docent\" or the usual equivalent, and for a favicon.\n\n**Behavior change:**\n- **The tab title** is \"PR title · Docent\" once the PR is read. That's the common \"page · site\" convention, the one GitHub uses. Before that, and on the health page, it's \"Docent\". With several reviews open, the tabs can be told apart.\n- **The favicon** (`apps/web/public/favicon.svg`) is the tour: three brass stops on a route, on the app's dark ground. It's drawn rather than a letter, because favicons can't load our web fonts. I checked it at 16, 32 and 64 px on light, grey and dark tab bars.\n\n**Tests:** e2e checks:\n- the tab names the PR on the tour;\n- the tab says \"Docent\" with no review open;\n- `/favicon.svg` is served as `image/svg+xml`.\n\n`pnpm verify` and e2e pass.\n\n**Tier 1:** `apps/web` and two e2e assertions.\n\n**Known gaps:** none.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T04:02:52Z",
+    "updated_at": "2026-11-10T04:04:01Z",
+    "merged_at": "2026-11-10T04:03:59Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": null
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/34",
+    "number": 34,
+    "title": "Backlog: open a tour from a link",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** the maintainer wants the briefs' PR links to open Docent directly, without jumping to a terminal.\n\n**Behavior change:** none. Adds backlog item 9, \"Open a tour from a link\":\n- a `docent serve` launcher on a fixed localhost port;\n- links open a confirm page on the launcher's own origin, naming the PR and its cost;\n- a review starts only from a click on that page, so a hostile site can't start one;\n- only allowed repos are accepted;\n- briefs link to tours that `--prepare` has pre-built.\n\nIt's marked tier 2b with its own security review, because it changes the server's security model. Later items shift down by one, and the cross-references are updated.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** two things are unverified: whether a claude.ai artifact can open a localhost link, and how the launcher starts on macOS. Both are listed in the item as checks to do first.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T03:59:05Z",
+    "updated_at": "2026-11-10T04:00:26Z",
+    "merged_at": "2026-11-10T04:00:25Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/33",
+    "number": 33,
+    "title": "Web: questions read like a chat, and survive leaving the stop",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** maintainer dogfood feedback. Asking a second question meant scrolling up to the box above the answers, then back down to read. It should work like an agent session, with the input after the latest answer. This also fixes the gap noted in [#25](https://github.com/hartz89/docent/pull/25): a stop's questions disappeared when you left it.\n\n**Behavior change:**\n- The thread reads top to bottom: question, answer, question, answer, then the box. After the first answer, the box's label becomes \"Ask a follow-up\".\n- A new question scrolls smoothly to the top of the guide, so its answer arrives right below it, and the box follows underneath.\n- Each stop's thread is kept in the tour screen, keyed by stop. Leaving a stop and coming back shows the whole conversation, and an answer that arrives while you're on another stop lands in the right thread.\n- The request no longer uses `useMutation` in the stop's component. That component remounts on every stop change, which is why threads were lost.\n\n**Tests:** a new e2e step:\n- asks a question and checks the box sits below the answer;\n- asks a follow-up with ⌘/Ctrl+Enter;\n- leaves the stop and comes back, and expects both questions still there.\n\n`pnpm verify` and e2e pass. I also checked a screenshot.\n\n**Tier 1:** `apps/web` and one e2e step.\n\n**Known gaps:**\n- Follow-ups don't carry the earlier questions to the model. Each question is still answered on its own.\n- [#19](https://github.com/hartz89/docent/pull/19) changes the answer labels in the same component, so it will need a small main merge.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T03:39:43Z",
+    "updated_at": "2026-11-10T03:43:00Z",
+    "merged_at": "2026-11-10T03:42:59Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/32",
+    "number": 32,
+    "title": "Backlog: show the PR's existing review comments in the tour",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** the maintainer wants Docent to surface the PR's existing review comments, ideally in the relevant tour stop. Unresolved critical feedback on code the tour wouldn't otherwise visit should get a home in the tour. They asked for it as a lower-priority item.\n\n**Behavior change:** none. Adds backlog item 18, after release readiness:\n- comments appear with their stop, attributed and unedited;\n- unresolved critical threads on skipped or uncited lines get a home in the tour;\n- outdated threads show as outdated;\n- comment text is treated as untrusted data.\n\nDocent stays the guide and adds no opinion of its own. Items 18–20 shift down by one.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** none.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T03:05:16Z",
+    "updated_at": "2026-11-10T03:09:30Z",
+    "merged_at": "2026-11-10T03:09:29Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/31",
+    "number": 31,
+    "title": "Revert line wrapping (#29, #30)",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** the maintainer would rather revert than fix forward. [#29](https://github.com/hartz89/docent/pull/29) merged on green CI before its review, which requested changes for a real bug. [#30](https://github.com/hartz89/docent/pull/30) then fixed that bug forward. This undoes both, and the long-line problem moves to a Biome plugin that keeps our own source within 100 characters.\n\n**Behavior change:** the code view no longer wraps long lines, and the \"Wrap long lines\" toggle is gone. This is exactly the state after [#28](https://github.com/hartz89/docent/pull/28): `git diff 1f80e34` on this branch is empty.\n\n**Tier 1:** `apps/web` and the e2e step #29 added.\n\n**Known gaps:** sideways scrolling returns for long lines, mostly Markdown, which Biome doesn't lint. The plugin and the prompt rewrap follow after [#21](https://github.com/hartz89/docent/pull/21).\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T02:58:55Z",
+    "updated_at": "2026-11-10T02:59:57Z",
+    "merged_at": "2026-11-10T02:59:55Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/30",
+    "number": 30,
+    "title": "Web: keep wrapped lines' tabs in place",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** fix the bug the reviewer found in [#29](https://github.com/hartz89/docent/pull/29). #29 auto-merged on green CI 19 seconds before its review, which requested changes, landed.\n\n**Behavior change:** with wrapping on (the default), lines indented with tabs no longer shift 2ch left.\n- **Cause:** tab stops are measured from the padded edge, so a hang of indent + 2ch put the first row 2ch before a tab stop.\n- **Fix:** the hang is now rounded up to a whole tab stop. Tabs in the indentation also count as moving to the next stop, so a mix like \"2 spaces + tab\" is measured correctly.\n\n**Tests:** measured in headless Chromium with the real CSS, with wrapping on and off. The cases were two tabs, eight spaces, one tab, four spaces, \"2 spaces + tab\", a tab mid-line, and three spaces. Every marker lands at the same x with wrapping on and off (before the fix, the tab cases were 15px off). `pnpm verify` and e2e pass.\n\n**Tier 1:** `apps/web`.\n\n**Known gaps:**\n- There's no permanent regression test for tabs. The e2e fixture has no tab-indented lines, and `apps/web` has no unit test project yet; adding one is a config change, which is code-owned.\n- The process gap that let #29 merge before its review is reported to the maintainer separately.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T02:40:53Z",
+    "updated_at": "2026-11-10T02:42:49Z",
+    "merged_at": "2026-11-10T02:42:48Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/29",
+    "number": 29,
+    "title": "Web: wrap long lines in the code view, with a toggle",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** the maintainer was scrolling sideways a lot while reviewing PRs in Docent. Most long lines are Markdown prose and prompt strings, which no formatter wraps, and Docent will review repos whose line lengths it can't control. So the fix belongs in the code view.\n\n**Behavior change:**\n- Long lines wrap by default, as on GitHub. Continuation rows hang 2ch past the line's own indentation, so a wrapped line still reads as one line, like an editor's soft wrap.\n- A \"Wrap long lines\" toggle in the legend turns it off. The choice is remembered in this browser, and every storage access is guarded.\n- Toggling re-centers the cited range, since every line moves.\n- The legend is no longer hidden from screen readers as a whole: only the decorative items are, so the toggle is reachable.\n\n**Tests:** a new e2e step checks there's no sideways scroll by default, that it appears when the toggle is off, and that the choice survives a reload. I also checked screenshots before and after the indentation fix. `pnpm verify` and e2e pass.\n\n**Tier 1:** `apps/web` and one e2e step.\n\n**Known gaps:** a line with very deep indentation in a narrow column wraps into a thin strip. That's rare, and the toggle covers it.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T02:38:13Z",
+    "updated_at": "2026-11-10T02:39:33Z",
+    "merged_at": "2026-11-10T02:39:14Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/28",
+    "number": 28,
+    "title": "Backlog: a trust ledger, so autonomy is earned by evidence",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** the maintainer asked how the agent harness earns more autonomy. Today it earns it through structure alone, with no measured track record. They agreed to add a trust ledger right after tiering.\n\n**Behavior change:** none. Adds backlog item 4, which tracks per tier:\n- escapes (merged PRs that later needed a revert or fix);\n- the review catch rate;\n- the maintainer's override rate.\n\nA standing rule, with thresholds proposed as a tier 2 change, widens or narrows autonomy based on that record. The morning brief reports it. Later items shift down by one, and the cross-references are updated.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** [#18](https://github.com/hartz89/docent/pull/18), [#19](https://github.com/hartz89/docent/pull/19) and [#21](https://github.com/hartz89/docent/pull/21) will need a main merge for backlog conflicts.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T02:34:38Z",
+    "updated_at": "2026-11-10T02:36:10Z",
+    "merged_at": "2026-11-10T02:36:08Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/27",
+    "number": 27,
+    "title": "Decisions: the product has no risk tiers",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** record a maintainer decision. Risk tiers belong to how this repo merges its own PRs, not to the open source product. Review policy is up to the org that owns the PRs.\n\n**Behavior change:** none. One line in the \"Decided by the maintainer\" section of `backlog/decisions.md`. The product has no tiers today; this keeps it that way.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** none.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T02:29:35Z",
+    "updated_at": "2026-11-10T02:30:50Z",
+    "merged_at": "2026-11-10T02:30:48Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/26",
+    "number": 26,
+    "title": "Backlog: skip liberally, and prove it",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** the maintainer wants tours to skip more liberally. Mechanical changes like sweeping renames shouldn't cost a reviewer's attention. This reframes backlog item 5, which used to narrow skips, so it widens them safely.\n\n**Behavior change:** none. Item 5 becomes \"Skip liberally, and prove it\":\n- **Proven skips,** checked by a script, collapse quietly:\n  - renames of any size, where one consistent old→new mapping makes the lines identical;\n  - whitespace-only hunks;\n  - lockfiles whose cause is explained;\n  - generated or vendored files, judged from main's `.gitattributes`.\n- **Judged skips** cover anything else not worth reading. They're labeled as the guide's call, stay one click away, and get spot-checked.\n- The prompt changes as its own measured version. The eval tracks lines saved next to important code wrongly skipped, and the adversarial fixtures stay.\n\nFormatting is whitespace-only on purpose: checking \"identical after the formatter\" would mean loading formatter configs, which are code from the PR.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** none.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-10T02:16:33Z",
+    "updated_at": "2026-11-10T02:17:51Z",
+    "merged_at": "2026-11-10T02:17:49Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/24",
+    "number": 24,
+    "title": "Backlog: cover the whole brief, ranked around the v1 loop",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** the maintainer asked for the backlog to cover everything in the brief, ranked well, with feedback (comments that land on the PR) as a high priority.\n\n**What changed:** the backlog now covers every feature in the brief. In-flight PRs are marked.\n\n**New items** (things the brief planned that had no backlog item):\n- **An eval for every job, in CI:** the skip decision, the danger flag and cost, plus a model per job once the evidence exists.\n- **Answers the reviewer can trust:** the docent checks author answers, and answers itself, labeled, when no session exists.\n- **The author side for Claude Code:** a session-ID hook, the author handoff comment, a batch skill, and the MCP fallback.\n- **Snapshots and scrubbing,** starting with a spike.\n- **Learning across reviews** (`docent learn`).\n- **Release readiness** (`npx`, npm scope, signed releases).\n- An **After v1** list: the Codex adapter, practice mode, multiple reviewers, canonical cloud session, themes, language packs.\n\n**Folded into existing items:**\n- The code map goes into the explorer.\n- The light theme goes into the design item.\n- Spot checks of skips go into the injection item.\n- The commit-keyed cache goes into dogfood rough edges.\n- Comments are saved as structured records from the start.\n\n**Ranking:**\n1. The in-flight PRs first (#21, #19, #18).\n2. Then feedback, the maintainer's priority.\n3. Then trust: injection, per-job evals, rough edges.\n4. Then design, refs and the explorer.\n5. Then the rest of v1.\n\nThe feedback item lists the open \"how do comments land in the PR\" questions for a decision brief before it posts anything.\n\n**One flagged difference from the brief:** the explorer uses Tree-sitter, not language servers, because most language servers run the PR's code. If the maintainer agrees, the brief should change.\n\n**Tier 0:** `backlog/` only. This branch builds on [#23](https://github.com/hartz89/docent/pull/23).\n\n**Known gaps:** [#18](https://github.com/hartz89/docent/pull/18), [#19](https://github.com/hartz89/docent/pull/19) and [#21](https://github.com/hartz89/docent/pull/21) will need a main merge for the backlog conflicts.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T21:48:59Z",
+    "updated_at": "2026-11-08T22:34:54Z",
+    "merged_at": "2026-11-08T22:34:52Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/25",
+    "number": 25,
+    "title": "Web: guide opens new stops at the top; ask button reads as enabled",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** two pieces of dogfood feedback from the maintainer on the tour screen.\n\n**Behavior change:**\n- **The guide opens each new stop at the top.** The guide column stays mounted across stops, so \"Next stop\" used to keep the previous scroll position. Each stop's position is now remembered when you leave it. A stop you haven't seen opens at the top; one you go back to opens where you left it. This works the same for the button, the arrow keys and the route.\n- **\"Ask the guide\" looks enabled when it is.** The button inherited the faint gray of the \"⌘ Enter to ask\" hint row, so it looked disabled even when it worked. It now sets its own text color and gets a brass border on hover. The disabled state is flat and faint.\n\n**Tests:** a new e2e step clicks Next stop from a scrolled guide and expects the top, then goes back and expects the old position. I checked that it fails without the fix (340px instead of 0). `pnpm verify` and e2e pass.\n\n**Tier 1:** `apps/web` and one e2e step.\n\n**Known gaps:** questions and answers on a stop still disappear when you leave it, because the guide panel's state resets per stop. Restoring the scroll position doesn't bring them back. [#19](https://github.com/hartz89/docent/pull/19) is reworking that panel, so the fix belongs there or after it.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T21:51:19Z",
+    "updated_at": "2026-11-08T21:52:56Z",
+    "merged_at": "2026-11-08T21:52:54Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/23",
+    "number": 23,
+    "title": "Backlog: comments and a real review",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** the maintainer asked whether they can leave diff comments in Docent, so it works like a real PR review. The brief plans this for v1 (\"suggest a change, send the batch\"), but it was never a ranked backlog item.\n\n**Behavior change:** none. Adds backlog item 4, built in three steps:\n- **Comment:** comments on lines and ranges, saved locally and anchored so they survive code moves.\n- **Submit to GitHub:** one review under the reviewer's own login, sent only when they click.\n- **Send to the author agent:** one revision round behind the batch lock (tier 2b, with its own security review).\n\nLater items shift down by one, and the cross-references are updated.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** a full audit of the brief against the backlog follows in its own PR.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T21:45:19Z",
+    "updated_at": "2026-11-08T21:48:01Z",
+    "merged_at": "2026-11-08T21:48:00Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/22",
+    "number": 22,
+    "title": "Backlog: explore the codebase around the change",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** the maintainer wants to explore the code around a change during a tour: a directory tree, plus jumping to definitions and module origins, without a full IDE. The brief already describes this (\"code in context\"), but it was never a ranked backlog item, so nothing would have picked it up.\n\n**Behavior change:** none. Adds backlog item 7, built in three steps:\n- **Browse:** a repo-wide file tree at head, with changed files marked.\n- **Jump to definition and imports** with Tree-sitter tags, using search-based navigation as GitHub's code view does.\n- **Find references** the same way.\n\nLanguage servers stay out, because most of them run project code, which would break the read-only promise on untrusted PRs. The Shiki view stays unless design shows it falls short. Item 6 (design) now has to place the tree next to the tour's route, which currently fills that pane. Items 7–12 shift down by one.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** this conflicts with [#18](https://github.com/hartz89/docent/pull/18), [#19](https://github.com/hartz89/docent/pull/19) and [#21](https://github.com/hartz89/docent/pull/21) on `backlog/index.md`, so they'll need a main merge.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T21:40:36Z",
+    "updated_at": "2026-11-08T21:42:03Z",
+    "merged_at": "2026-11-08T21:42:01Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/20",
+    "number": 20,
+    "title": "Backlog: guard tours against prompt injection",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** close the one real prompt-injection gap the maintainer's security question surfaced. Read-only sessions mean injection can't make Docent act, but it could make a tour hide a change.\n\n**Behavior change:** none. Adds backlog item 4:\n- **Mechanical skip limits:** only lockfiles, generated or vendored paths, and snapshots can be skipped.\n- **Adversarial eval fixtures:** PRs carrying injection attempts next to a real malicious change, scored on whether the tour still surfaces it.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** none.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T05:16:09Z",
+    "updated_at": "2026-11-08T05:17:08Z",
+    "merged_at": "2026-11-08T05:17:06Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/14",
+    "number": 14,
+    "title": "Dogfood Docent on maintainer PRs: docent review --prepare",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "## Intent\n\nMake Docent the default way the maintainer reviews any PR that needs him (one that touches a path in `.github/CODEOWNERS`). The tour is generated ahead of time, so his first open is instant and free. What the tour misses feeds the evals.\n\n## Behavior change\n\n- **New flag: `docent review <pr-url> --prepare`.** Generates the tour, writes it to the cache (`~/Library/Caches/docent`), prints its cost and the command to open it, and exits. No server, no browser, and no web build needed. It exits explicitly once the job settles: 0 when ready, 1 when the tour fails, so a lingering agent subprocess can't hang an unattended run. If the tour is already cached, it says so and makes no model calls. It refuses `--no-cache` (caching is its whole job) and `--record` (a cache hit would leave an empty recording). With `--fixture` it does cache, which is what makes it testable.\n- **Flow step 6** in `docs/process/worktrees.md`: for a PR that needs the maintainer, after CI passes and the review is posted, run `--prepare` and post one tour-ready comment as the `builder` with the cost and `pnpm docent review <pr-url>`. The builder's as-agent allowlist already permits `gh pr comment`, so nothing was loosened.\n- **Feedback capture** (\"Dogfooding Docent\" in `docs/process/pull-requests.md`): the maintainer replies on the PR with `Docent feedback: ...`. Agents find these with one `gh api search/issues` call. Each miss becomes a normal manifest in `packages/evals/fixtures/public/docent-<pr>-<slug>.json`, using the existing schema and checks. The feedback comment is the evidence link, which already meets the evidence bar (\"a maintainer comment\"). No parallel format, no new folder, no code.\n\n## Tier\n\n**2b.** It touches `docs/process/` (the harness) and `apps/server/src/cli.ts` (code-owned).\n\n## Evidence\n\n- `pnpm verify`: 197 passed, 1 skipped.\n- `pnpm test:e2e`: 2 passed.\n- `pnpm check:context` (the harness eval): all PASS, $0.0031.\n- Fresh-context review posted; its should-fix items are addressed in c7b6752.\n- Dogfooded: `--prepare` on this PR produced an 8-stop tour for $0.1922 in 32s.\n- New `apps/server/src/cli.test.ts` runs the real CLI against the recorded hono-4813 fixture with a temp cache. The first `--prepare` prints the cost and starts no server. The second one loads from the cache. Other tests cover the failure exit (code 1, `Tour failed:`) and both refused flags.\n\n## Look here first\n\n- `apps/server/src/cli.ts`: the split into `prepare()` and `serve()`, and the cache condition.\n- `docs/process/pull-requests.md`, \"Dogfooding Docent\", and `packages/evals/AGENTS.md`: is the feedback loop light enough that you'll actually use it?\n\n## Known gaps\n\n- **Editing the description doesn't refresh the tour.** The cache key is base, head, model and prompt version. A tour prepared before a description edit keeps flagging what the old text said.\n\n- **Wrong claims have no home in the schema.** The manifest says what a tour must find, not what it must never say. They stay in the PR thread until three pile up, and then someone proposes a field, with those three as evidence.\n- **Cache hits depend on matching code.** The cache key includes the model and `TOUR_PROMPT_VERSION`. If the agent prepares from a worktree whose prompt version differs from the maintainer's checkout, or `DOCENT_MODEL` differs, his open misses the cache and pays for a fresh tour. A PR that changes the tour prompt hits this on purpose.\n- **Detecting \"needs the maintainer\" is manual.** The agent checks `reviewRequests` or reads CODEOWNERS. Backlog item 5 (mechanical tiering) would make this automatic.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T04:26:26Z",
+    "updated_at": "2026-11-08T04:56:47Z",
+    "merged_at": "2026-11-08T04:56:45Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/16",
+    "number": 16,
+    "title": "Backlog: inline code references in tour stop prose",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** record the maintainer's idea from dogfooding. When a stop's prose mentions a function or a piece of logic, hovering it highlights those lines in the code view. Use them sparingly, only where they help.\n\n**Behavior change:** none. Adds backlog item 2 and renumbers the rest.\n\n**Tier 0:** `backlog/` only. Merges on green CI.\n\n**Look here first:** item 2's four parts:\n- model output checked by the existing citation validator;\n- a core contract change, where references heal like stop anchors;\n- hover, focus and tap in the UI;\n- measured as its own prompt version, after item 1.\n\n**Known gaps:** none. The design gets settled when someone picks up the item.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T04:53:31Z",
+    "updated_at": "2026-11-08T04:54:19Z",
+    "merged_at": "2026-11-08T04:54:18Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/15",
+    "number": 15,
+    "title": "Record the first dogfood finding: tours narrate when they should guide",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** keep the first dogfood finding: tours narrate code when they should guide the reviewer.\n\n**Behavior change:** none. Adds a dated research note and two backlog items.\n- **Top backlog item:** tour prompt v3, built on a stated principle and measured against v2 on the public fixtures, without letting defect-finding drop.\n- **Last backlog item:** the smaller rough edges from the same review.\n\n**Tier 0:** `docs/research/` and `backlog/` only. Merges on green CI.\n\n**Evidence:** the maintainer's review of #14 through Docent, and their `Docent feedback:` reply on that PR. The note quotes the stop that failed, shows a rewrite, and traces the cause to the prompt's \"Describe, never judge\" rule. That rule doesn't separate judging (the reviewer's call) from guiding (the docent's job).\n\n**Look here first:** \"The principle\" in `docs/research/2026-11-08-first-dogfood.md`.\n\n**Known gaps:** the cause is a hypothesis until the v2-vs-v3 eval runs.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T04:49:21Z",
+    "updated_at": "2026-11-08T04:50:47Z",
+    "merged_at": "2026-11-08T04:50:46Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/12",
+    "number": 12,
+    "title": "Backlog: drop merged items; log the containment decision",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** keep the backlog true. The thin path (#7) and the core data model (#5) are merged, and the eval fixtures half of the eval harness is in (#6). Also logs the containment decision (option A) in `backlog/decisions.md`.\n\n**Behavior change:** none. Docs only.\n\n**Tier 0:** `backlog/` only. Agents merge on green CI.\n\n**Evidence:** this PR is also the first end-to-end test of the new merge path. The builder app opens it and queues it with `--squash --auto`, and GitHub lands it when `check` passes, with no human step.\n\n**Look here first:** the containment entry in `backlog/decisions.md`.\n\n**Known gaps:** none.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T04:19:51Z",
+    "updated_at": "2026-11-08T04:31:51Z",
+    "merged_at": "2026-11-08T04:20:38Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/6",
+    "number": 6,
+    "title": "Add @docent/evals: manifest schema and 10 public eval fixtures",
+    "user": {
+      "login": "hartz89",
+      "html_url": "https://github.com/hartz89"
+    },
+    "body": "**Intent:** First half of backlog item 4. A committed public core set of eval fixtures with known answers, plus the manifest schema and validator that the eval runner will build on. SDD experiment: approach A (loose).\n\n**Behavior change:** New private workspace package `@docent/evals`. Nothing user-facing. It adds:\n- `src/manifest.ts`: manifest types and a hand-written validator (no new dependencies). It rejects unknown fields and reports every problem as `path: what is wrong`. Rules across fields: a danger flag needs the `danger` job, a `tour` fixture needs findings, and every finding must sit inside a `mustNotSkip` range.\n- `fixtures/public/*.json`: 10 fixtures. Diffs are **not** committed. A runner fetches `base...head` at run time, so the same shape fits private fixture repos later (`visibility: \"private\"`).\n- `src/check-fixtures.ts` (`pnpm --filter @docent/evals check:fixtures`, not part of verify). Uses `gh api` to confirm each PR's head SHA, that `base` is the merge base, the size bucket, and that every line range sits inside one diff hunk.\n\n| Fixture | Repo / PR | Jobs | Size | Defect | Evidence |\n| --- | --- | --- | --- | --- | --- |\n| `ky-122-timeout-abort` | [sindresorhus/ky#122](https://github.com/sindresorhus/ky/pull/122) | tour | S (22) | `abort()` called with no AbortController guard | [#125](https://github.com/sindresorhus/ky/pull/125) |\n| `ky-536-unknown-fetch-options` | [sindresorhus/ky#536](https://github.com/sindresorhus/ky/pull/536) | tour, skip | M (157) | `key in request` misses `body` in Firefox, so body is forwarded twice; buried under moved type docs | [#540](https://github.com/sindresorhus/ky/pull/540) |\n| `ky-571-jsdoc-typo` | [sindresorhus/ky#571](https://github.com/sindresorhus/ky/pull/571) | tour, skip, danger | S (2) | Negative control: one JSDoc typo line | the diff itself |\n| `hono-4813-cors-credentials` | [honojs/hono#4813](https://github.com/honojs/hono/pull/4813) | tour, danger | S (78) | Wildcard + credentials now reflects any Origin with credentials | [GHSA-88fw-hqm2-52qc](https://github.com/honojs/hono/security/advisories/GHSA-88fw-hqm2-52qc), [f0b094d](https://github.com/honojs/hono/commit/f0b094db8474696344d98e5665a4ac2a6d5f346e) |\n| `hono-4267-client-index-param` | [honojs/hono#4267](https://github.com/honojs/hono/pull/4267) | tour | S (37) | `removeIndexString` after param substitution strips a param valued \"index\" | [#5297](https://github.com/honojs/hono/pull/5297) |\n| `hono-5205-etag-stream-digest` | [honojs/hono#5205](https://github.com/honojs/hono/pull/5205) | tour | S (85) | `subarray()` keeps a view on a reused stream buffer, so the ETag is wrong | [#5239](https://github.com/honojs/hono/pull/5239) |\n| `vite-15365-env-file-watch` | [vitejs/vite#15365](https://github.com/vitejs/vite/pull/15365) | tour | S (18) | Return value became absolute paths; HMR still compares bare file names | [#15559](https://github.com/vitejs/vite/pull/15559) |\n| `vite-4118-slash-esm` | [vitejs/vite#4118](https://github.com/vitejs/vite/pull/4118) | skip | S (6) | Bot bump to ESM-only slash v4 behind lockfile noise breaks plugin-vue dev | [comment](https://github.com/vitejs/vite/pull/4118#issuecomment-893543022), [#4519](https://github.com/vitejs/vite/pull/4519) |\n| `graphql-scalars-2719-phone-redos` | [graphql-hive/graphql-scalars#2719](https://github.com/graphql-hive/graphql-scalars/pull/2719) | danger, skip, tour | M (133) | One-line regex change with exponential backtracking (ReDoS), behind ~120 lines of test churn | [GHSA-x8rm-f576-gq67](https://github.com/advisories/GHSA-x8rm-f576-gq67), [210fd24](https://github.com/graphql-hive/graphql-scalars/commit/210fd2485641afa2452800c00144245c74361701) |\n| `yargs-766-command-validation` | [yargs/yargs#766](https://github.com/yargs/yargs/pull/766) | tour | L (782) | Post-hoc validation runs after the handler and flags positionals as unknown in strict() | [#784](https://github.com/yargs/yargs/pull/784) |\n\nAll source repos are MIT. Spread: 9 tour (one is the control), 4 skip, 3 danger (2 expect a flag, plus the control), 1 negative control.\n\n**Review findings → fixes** (commit 5d4690e):\n1. HIGH: ky-122's \"timer never cleared\" finding wasn't from #122. The reporter retracted it in [ky#138](https://github.com/sindresorhus/ky/issues/138). → I dropped that finding and its #138/#145 evidence.\n2. Findings that need facts the diff can't show. → Added an optional `externalKnowledge` field, used on vite-4118 (slash v4 is ESM-only) and ky-536 (Firefox's Request has no `body`).\n3. No way to score skip precision. → Added an optional `shouldSkip` (a file or a range). The validator rejects any overlap with `mustNotSkip`, and the check script confirms it's in the diff. It's filled in on all 4 skip fixtures: vite-4118 `yarn.lock`, ky-536 moved type docs (options.ts 194–236), graphql-scalars tests, and ky-571 hooks.ts.\n4. No scoring rules. → Added `DEFAULT_SCORING` (`toleranceLines: 3`, `maxStops: 10`) and `scoringFor()`. Fixtures can override with a `scoring` field. Matching is by range overlap with a tolerance; descriptions are not compared.\n5. A tour fixture with no findings was only allowed implicitly. → It now needs `negativeControl: true`, and a control must have no findings, no `mustNotSkip`, and no danger flag. ky-571 is marked as the control and now also covers the tour.\n6. → `AGENTS.md` now says ranges are on the new side only, so pure deletions can't be pinned yet. Sizes: 7 small, 2 medium, 1 large.\n\n**Tier: 2.** Adding a workspace package changes `pnpm-lock.yaml` (2 lines, a new empty importer), and the manifest is a shared contract the runner will depend on. It also touches root `tsconfig.json` and `vitest.config.ts` to wire the package in.\n\n**Evidence:**\n- `pnpm verify`: green in about 1.2 s (32 tests, 3 files).\n- `pnpm --filter @docent/evals check:fixtures`: `10 fixtures match GitHub` (about 9 s). I confirmed it fails on a range moved outside the hunk and on a wrong size bucket, then put both back.\n- Tests: every committed fixture validates. 15 malformed cases each give one exact message. Problems are reported all at once. The loader names the file for bad JSON, an id/file-name mismatch, and a private fixture in the public folder.\n\n**Look here first:**\n- `packages/evals/src/manifest.ts`: the shape and the cross-field rules.\n- One fixture against its evidence, e.g. `hono-4813-cors-credentials.json`.\n\n**Known gaps:**\n- No runner or scoring yet. That's the second half of item 4.\n- `answer-check` and `scrubber` are valid jobs, but no fixture exercises them. Both need planted content, not found PRs.\n- Every finding was checked by hand against the fix. The check script confirms the line ranges are in the diff, not that they're the right lines.\n- I updated the dated research note to match: diffs are no longer committed for the public set either.\n- Opened with the maintainer's login, because the builder app isn't configured yet.\n",
+    "created_at": "2026-11-07T05:48:27Z",
+    "updated_at": "2026-11-08T04:31:51Z",
+    "merged_at": "2026-11-07T05:57:32Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": null
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/13",
+    "number": 13,
+    "title": "Briefs: keep the send-to-Claude comment neutral",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** stop interactive briefs from failing to wake the agent.\n\n**Behavior change:** a brief's \"Send my answers to Claude\" comment now says only that answers are saved, never the choices themselves. The agent reads the choices from the page's owner-only database.\n\n**Why:** the Nov 7 morning brief's comment said \"#5: yes · #7: yes · #4: yes\". Auto mode treated that as page text ordering merges, and refused to start the turn. The maintainer's answers sat unread until they nudged in chat. The earlier briefs, whose comments didn't approve merges, woke the agent fine.\n\n**Tier 2b:** `docs/process/`. Waits for the maintainer.\n\n**Evidence:** the watch status after the failure read \"auto mode did not approve the last comment's auto-reply\". The live brief is already updated (version 3). Next time an answer is sent, check whether it wakes the agent.\n\n**Look here first:** the \"Make it answerable in place\" paragraph in `docs/process/decisions.md`.\n\n**Known gaps:**\n- The cause is inferred from the one failure and the two successes. The next brief will confirm or refute it.\n- A watch only lives in the session that published the brief. A brief from an older session can't wake a new one, so the chat nudge stays the fallback.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T04:24:38Z",
+    "updated_at": "2026-11-08T04:28:41Z",
+    "merged_at": "2026-11-08T04:28:32Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": {}
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/11",
+    "number": 11,
+    "title": "Allow the agent runner; keep agents off the maintainer's gh login",
+    "user": {
+      "login": "hartz89",
+      "html_url": "https://github.com/hartz89"
+    },
+    "body": null,
+    "created_at": "2026-11-08T04:18:52Z",
+    "updated_at": "2026-11-08T04:18:58Z",
+    "merged_at": "2026-11-08T04:18:55Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": null
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/10",
+    "number": 10,
+    "title": "Point the agent runner at the real builder and reviewer apps",
+    "user": {
+      "login": "docent-builder-hartz89[bot]",
+      "html_url": "https://github.com/apps/docent-builder-hartz89"
+    },
+    "body": "**Intent:** point the agent runner (`scripts/as-agent.ts`) at the real GitHub Apps, so agents act as `docent-builder-hartz89` and `docent-reviewer-hartz89` instead of the maintainer's login.\n\n**Behavior change:** `node scripts/as-agent.ts <builder|reviewer> -- …` now works. This PR is the first one opened by the builder app.\n\n**Tier 2b:** `.github/` is code-owned. Waits for the maintainer.\n\n**Evidence:**\n- Both apps are installed on this repo only. Their keys are in the Keychain, base64-encoded, and fingerprint-checked against the downloaded `.pem` files before those were deleted.\n- Smoke test: each role read #9 through the runner as its own identity.\n- The runner uses the root-owned `gh` at `/usr/local/bin` (official pkg, checksum and build attestation verified).\n\n**Look here first:** the two App IDs in `.github/agent-apps.json`.\n\n**Known gaps:**\n- The ruleset still has the admin bypass. Turning it off is the next step, once this merges.\n- `.claude/settings.json` still lets agents use the maintainer's `gh` login directly. The proposed settings file closes that.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T04:09:47Z",
+    "updated_at": "2026-11-08T04:11:50Z",
+    "merged_at": "2026-11-08T04:11:46Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": null
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/9",
+    "number": 9,
+    "title": "Agents queue merges with --auto; GitHub lands them (tier 2b)",
+    "user": {
+      "login": "hartz89",
+      "html_url": "https://github.com/hartz89"
+    },
+    "body": "**Intent:** the maintainer should never run a merge command. Agents queue every PR with `--auto`, and GitHub merges it once the ruleset is satisfied. For a tier-2 PR, approving on GitHub is the maintainer's only action.\n\n**Behavior change**\n- `scripts/as-agent.ts`: the builder may run `gh pr merge <n> --squash --auto` as well as `gh pr merge <n> --squash`. Those two forms only. `checkMerge` still refuses anything else (`--admin`, `--merge`, `--rebase`, `--body`, `--delete-branch`, `--auto` without `--squash`, repeated flags, two PR numbers). The reviewer still can't merge at all.\n- `docs/process/worktrees.md`, step 6: queue every PR with `--squash --auto` after the review is posted, and GitHub decides when it lands. Tier 2b is queued the same way and lands on the maintainer's approval.\n- `docs/process/worktrees.md`, step 7: agents clean up their own worktree once the PR shows `MERGED`. They use `git worktree remove <abs-path>` (never `--force`) and `git branch -D <branch>`, one git command per call, and never glob over `.claude/worktrees/`.\n- `docs/process/agent-identities.md`: a short \"Agents queue, GitHub merges\" paragraph, plus the updated usage line and allowlist summary.\n\n**Tier: 2b.** It touches `scripts/as-agent.ts` (agent identities), `docs/process/` (the harness), and the merge rules themselves. Waits for the maintainer.\n\n**Action needed before this does anything:** the repo's \"Allow auto-merge\" setting is off right now (`allow_auto_merge: false`). It's a repo setting, not part of the ruleset, so `.github/rulesets/main.json` needs no change. Turn it on with:\n\n```bash\ngh repo edit hartz89/docent --enable-auto-merge\n```\n\n**Evidence**\n- `pnpm verify`: typecheck, lint and tests pass (193 passed, 1 skipped).\n- New tests in `scripts/as-agent.test.ts`: the builder runs `gh pr merge 3 --squash --auto` unchanged. It's refused for `--squash --auto --admin`, `--auto` alone, `--auto --merge`, `--auto --rebase`, `--squash --auto --body x`, `--squash --auto --delete-branch`, `--squash --auto --auto`, and two PR numbers. The reviewer is refused `--squash --auto`.\n- Harness evals: only `pnpm check:context` exists so far, and nothing here changes which instruction files load, so I didn't run it.\n\n**Look here first:** `checkMerge` in `scripts/as-agent.ts` (the exact-form check), then step 6 of `docs/process/worktrees.md`.\n\n**Known gaps**\n- Pushed and opened with the maintainer's `gh` login, not the builder app. `.github/agent-apps.json` still holds `REPLACE_ME`, so `as-agent` can't run yet.\n- Tier 2a vs CODEOWNERS: some 2a paths (`package.json`, `pnpm-lock.yaml`) are code-owned. So a 2a PR an agent queues with `--auto` will still wait for the maintainer's approval on GitHub. That mismatch already existed; `--auto` just makes it visible. Worth deciding whether those paths stay code-owned.\n- With `--auto`, the authoring agent is often gone by the time the PR merges. Clean-up then happens the next time an agent sees the PR merged, or in a later sweep. No script does this yet.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T03:49:06Z",
+    "updated_at": "2026-11-08T03:49:44Z",
+    "merged_at": "2026-11-08T03:49:41Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": null
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/8",
+    "number": 8,
+    "title": "Process: post reviews on the PR; one worktree per branch, orchestrators included",
+    "user": {
+      "login": "hartz89",
+      "html_url": "https://github.com/hartz89"
+    },
+    "body": "**Intent:** Write down two process rules the maintainer adopted in the Nov 7 morning brief.\n\n**Behavior change:**\n- **Reviews live on the PR.** The fresh-context agent review is posted as its own PR comment before any merge, as a separate step from the merge command. The review stays on record, and the merge can point to it. (`pull-requests.md`, plus a new step 5 in the `worktrees.md` flow.)\n- **One worktree per branch, never shared, orchestrators included.** Once an orchestrating session lends its worktree to an agent, or an agent is working on that branch, the orchestrator stops writing there and hands further writes to agents in their own worktrees. (Extends the existing gotcha in `worktrees.md`.)\n\n**Tier 2b:** Harness and merge-rule change to `docs/process/`. Awaiting the maintainer's approval. Drafted by an agent; not merged by one.\n\n**Stacked on [PR #4](https://github.com/hartz89/docent/pull/4).** #4 edits the same files, so this branches from `harness/brief-design-rules` and targets it as base. GitHub retargets this PR to `main` when #4 merges.\n\n**Evidence:** `pnpm verify` passes. Docs only; no harness evals beyond the context check exist yet.\n\n**Look here first:** the new \"Reviews live on the PR\" paragraph in `docs/process/pull-requests.md`, and the extended first gotcha in `docs/process/worktrees.md`.\n\n**Known gaps:** Nothing enforces either rule mechanically yet. A check could flag a merge with no prior review comment on the PR.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+    "created_at": "2026-11-08T02:57:36Z",
+    "updated_at": "2026-11-08T03:46:39Z",
+    "merged_at": "2026-11-08T03:46:37Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": null
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/3",
+    "number": 3,
+    "title": "Give agents their own GitHub App identities; make tiers mechanical",
+    "user": {
+      "login": "hartz89",
+      "html_url": "https://github.com/hartz89"
+    },
+    "body": "**What this is, honestly:** `as-agent` gives agents **attribution and separation of duties**. It's for agents that are well-behaved but fallible, and it is **not containment**. An agent running as the same macOS user can read the app key from the Keychain, or edit the runner.\n\n**Real enforcement is GitHub-side:**\n- the app's permissions;\n- CODEOWNERS;\n- the `main` ruleset.\n\n**Containment is an open decision for the maintainer.** It needs OS separation: a separate macOS user or sandbox for the runner and keys. It also needs the maintainer's admin `gh` login out of agents' reach, because the ruleset's admin bypass makes that login a master key.\n\n**Intent:** give agents their own GitHub App identities (`builder`, `reviewer`), and turn the tier rules into GitHub rules. Today every agent acts as the maintainer, so the maintainer can't approve agent PRs, and agent work isn't attributable.\n\n**Behavior change**\n- **`node scripts/as-agent.ts <builder|reviewer> -- <command...>` runs one allowlisted command as that app.**\n  - It signs an RS256 JWT (node:crypto, no new deps) and mints a token scoped to the role. The builder gets contents write, PRs write and checks read; the reviewer gets PRs write and contents read.\n  - It runs the command, then revokes the token in a `finally`, or on SIGINT, SIGTERM or SIGHUP.\n- **Guards against honest mistakes:**\n  - `gh`/`git` come from fixed folders, resolved with realpath, and must be root-owned all the way up. The child's `PATH` is `/usr/bin:/bin`.\n  - The env is built from scratch, and the token reaches git only through `GIT_CONFIG_*`.\n  - Git hooks, global and system config, submodule pushes and non-HTTPS transports are off.\n  - Repo and worktree git config must use allowlisted keys only.\n  - Output passes through a scrubber.\n  - gh's `--jq`/`--template` and `--web`/`--editor` are refused.\n- **Allowlist per role,** parsed from argv and checked before any network call.\n  - Builder: `git push [-u] origin <plain-branch>`, run as `refs/heads/<b>:refs/heads/<b>` and never `main`.\n  - Builder also: `gh pr create|view|checks|diff|comment|edit`, `gh pr merge <n> --squash` (never `--admin`), and GET-only `gh api`.\n  - Reviewer: `gh pr view|diff|checks|review|comment`, and GET-only `gh api`.\n- **`.github/agent-apps.json`** holds each app's slug and App ID (the apps are private, so the ID can't be looked up).\n- **`.github/CODEOWNERS`** covers the tier-2 paths.\n- **`.github/rulesets/main.json`** is the `main` ruleset, and it is **not applied**.\n  - It requires a PR: 0 approvals, code-owner review, squash merges only.\n  - It requires CI's `check` job, pinned to GitHub Actions.\n  - It blocks force pushes and deletion, and lets admins bypass.\n- **New `docs/process/agent-identities.md`,** linked from `AGENTS.md` and `worktrees.md`.\n\n**Tier 2.** Touches the harness (`AGENTS.md`, `docs/process/`, `scripts/`) and `.github/`.\n\n**First review: findings and fixes**\n\n| Finding | Fix |\n| --- | --- |\n| Blocker: the child got the caller's whole env and spawned through `PATH` | Minimal env, fixed tool paths, hooks and global config off, output scrubbed |\n| Blocker: `DOCENT_<ROLE>_APP_KEY` leaked to the child | Not passed; a test asserts it's absent |\n| The token lived its full hour with full app permissions | Scoped `permissions` per role; revoked in a `finally` |\n| `heads/main`, `HEAD`, `@` and `refs/…` pushes | Safe branch-name pattern, plus an explicit `refs/heads` refspec |\n| CODEOWNERS gaps | Added the test/tool configs and all of `apps/server/src/` except tests |\n| Builder had Workflows: write; keys suggested as repo secrets | Dropped Workflows; CI use waits for an environment limited to `main` |\n| Ruleset allowed every merge method | `allowed_merge_methods: [\"squash\"]` |\n| The basic-auth value wasn't scrubbed | Now scrubbed |\n\n**Second review: findings and fixes**\n\n| Finding | Fix |\n| --- | --- |\n| Critical: `--jq`/`--template` can print `$ENV.GH_TOKEN` reshaped, past the scrubber | `-q`, `--jq`, `-t`, `--template` and their `=`/attached forms are refused on every gh command; `--web`, `-w`, `--editor` and `-e` are refused on `gh pr create`, `edit`, `comment` and `review` |\n| A signal left the token live | SIGINT, SIGTERM and SIGHUP kill the child, revoke, then exit 128+n; SIGKILL can't be caught, which is noted in a code comment |\n| Tool binaries could be swapped | Realpath, then the file and every parent must be root-owned and not group- or world-writable; otherwise a clear refusal. Child `PATH=/usr/bin:/bin` |\n| The config check missed worktree scope and was a denylist | `git config --list --show-scope` (global and system off), with an **allowlist** of local keys (`gc.*` included, since `actions/checkout` sets `gc.auto`); `push.recurseSubmodules=no` is injected too |\n| Race between check and run; a fresh bare repo | Not built; listed as a known gap |\n| The docs overclaimed | The top of `agent-identities.md` now says attribution, not containment (and so does this description) |\n\n**Evidence**\n- `pnpm verify` passes 77 tests in about 1.2s. `scripts/as-agent.test.ts` uses a throwaway RSA key, a faked `fetch`, and fake `gh`/`git` binaries that record what a real child sees. It covers:\n  - the JWT signature and claims, the scoped token request, and the revoke;\n  - SIGTERM mid-command: the child is killed, the token revoked once, and the exit code is 143;\n  - a minimal child env: no key, `GIT_TRACE`, `EDITOR` or caller `PATH`;\n  - a pre-commit hook that doesn't run;\n  - git config refusals: `http.proxy`, `include.path`, `alias.*`, `core.sshCommand`, a foreign `origin`, and a worktree-scope `url.*.insteadOf`;\n  - a user-owned `gh` refused by the real ownership check;\n  - scrubbing of the token and auth header in child output and in GitHub errors;\n  - 43 refused commands, each with fetch never called, including every `--jq`/`--template`/`--web`/`--editor` form;\n  - 4 allowed commands, checked against the exact argv.\n- On this machine, the real CLI refuses Homebrew's `gh` (`/opt/homebrew` is user-owned), as intended. It accepts `/usr/bin/git`.\n- `pnpm check:context`: all 11 checks pass.\n\n**Look here first**\n- `scripts/as-agent.ts`:\n  - `allowed()`, for the gh formatter and interactive guards;\n  - `findTool()`/`rootOwned()`;\n  - `checkLocalGitConfig()`;\n  - the signal handling in `asAgent()`.\n- The \"What this does, and what it doesn't\" section of `docs/process/agent-identities.md`.\n\n**Known gaps**\n- **Not containment:** see the top of this description. The OS-separation decision is the maintainer's.\n- **A race:** the config check happens before the command runs, so an agent could change config in between. An agent could also target a fresh bare repo.\n- **SIGKILL** leaves the token live until it expires, within the hour.\n- **Agents are forced through the runner** only once settings deny plain `gh` and `git push`. That's a second proposed settings file, to apply after the apps work.\n- **`git commit` isn't on the allowlist,** so local commits keep the session's identity.\n- **Admin role id 5** is community-confirmed. After applying, check that the bypass shows \"Repository admin\".\n- **This PR is authored by the maintainer's login,** because the apps aren't configured yet.\n- **Maintainer setup** (exact commands in the doc):\n  1. Install `gh` from the official `.pkg`, so it's root-owned in `/usr/local/bin`.\n  2. Give each app the listed permissions (no Workflows) and install it on hartz89/docent only.\n  3. Store each key with `security add-generic-password -U -a docent -s docent-<role>-app-key -w \"$(base64 -i <key>.pem)\"`.\n  4. Fill in the slug and App ID through a PR.\n  5. Apply the ruleset: `gh api -X POST /repos/hartz89/docent/rulesets --input .github/rulesets/main.json`.\n",
+    "created_at": "2026-11-07T05:14:55Z",
+    "updated_at": "2026-11-08T03:08:30Z",
+    "merged_at": "2026-11-08T03:08:27Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": null
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/7",
+    "number": 7,
+    "title": "Prototype: docent review <pr-url> works end to end",
+    "user": {
+      "login": "hartz89",
+      "html_url": "https://github.com/hartz89"
+    },
+    "body": "## Intent\n\nThe first working thin path: `pnpm docent review <github-pr-url>` fetches a PR, has a read-only Claude Code session write a guided tour, checks the tour against core's rules, and shows it in the tour screen.\n\n**Stacked on [PR #5](https://github.com/hartz89/docent/pull/5).** This branch merges `origin/core/data-model`, so #5's commits show here until it lands. My commits are the last five.\n\n## Behavior change\n\n- **CLI** (`apps/server/src/cli.ts`, root script `pnpm docent`). It builds, starts the server on a free port, prints the URL with its per-launch token, and opens the browser unless `CI` is set or `--no-open` is passed. Flags: `--model`, `--no-cache`, `--record <dir>`, `--fixture <dir>`.\n- **Fetching the PR** (`github.ts`). Metadata and diff come from `gh`. The diff base is the merge base, from GitHub's compare API, because `gh pr diff` is taken against it. The code is a shallow, blobless fetch of the merge base and `refs/pull/N/head`, so fork PRs work. It lives in the OS cache folder (`~/Library/Caches/docent` on macOS), never the repo.\n- **Diff parsing** (`packages/core/src/diff-parse.ts`). Pure: unified diff to core's `Diff`. It reads hunk bodies by their header counts, so a removed `--- x` line can't pass for a header.\n- **Tour job** (`tour.ts`, `agent.ts`):\n  - The Agent SDK runs with tools `Read`, `Grep` and `Glob`, `permissionMode: 'dontAsk'`, `strictMcpConfig`, `mcpServers: {}`, `settingSources: []` and a deny-all `canUseTool`. Its cwd is the cached checkout.\n  - Output is structured JSON. The server turns it into core's `Tour` with `anchorAt`, then runs `checkCoverage` and `checkStopOrder`.\n  - Problems go back to the same session (`resume`) as short lines like \"Unexplained: src/cors.ts base line 2 has no home\", up to 2 retries. Whatever is still wrong after that shows in the UI as \"unresolved checks\".\n  - The finished tour is cached at `<cache>/tours/<owner>__<repo>/<head>.v1.json`. Reopening makes no model calls.\n- **API**: `GET /api/review`, `GET /api/review/events` (SSE, read with `fetch` so the token stays in a header), `GET /api/file?side&path` (reads through `git show`, with path checks), and `POST /api/questions`. The existing token, Host and Origin checks cover all of them.\n- **Web**: the tour screen as specced:\n  - top bar, the route with its skips, and Shiki code with tints for added and cited lines;\n  - narration in Newsreader, citation chips, and mismatch and danger callouts;\n  - ← and → to move between stops;\n  - progress and error screens.\n- **Questions**: answered by the guide, labeled \"answered by the guide, not the author\", with their cost shown.\n\n## Tier: 2b\n\nThe Agent SDK (`@anthropic-ai/claude-agent-sdk@0.3.318`) is a new dependency used by `apps/server`, which makes this tier 2b under the new rules. It adds about 100 packages and a platform binary. The PR also adds a new security surface: headless agent sessions over untrusted code, a git checkout of untrusted repos, and new authenticated routes. It waits for the maintainer.\n\n## Fresh-context review: findings and fixes\n\n| # | Finding | Fix | Proof |\n| - | ------- | --- | ----- |\n| 1 | The checkout trusted the machine's git config and the repo's contents | `git()` in `github.ts` sets `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and `GIT_LFS_SKIP_SMUDGE=1`, plus `core.symlinks=false`, `core.hooksPath=/dev/null`, `submodule.recurse=false` and `protocol.file.allow=never`. `gh` is the only credential helper. The fetch is `--no-recurse-submodules`, by SHA. | Code review |\n| 2 | Nothing proved the sandbox | `agent.test.ts` pins `readOnlyOptions()` exactly. `agent.live.test.ts` (opt-in, `DOCENT_LIVE=1`) builds a hostile checkout: a SessionStart/PreToolUse hook, a CLAUDE.md that orders writes, a symlink to a secret outside, and settings that allow everything. | Live run passed in 6.7s for $0.0009 on Haiku: no hook marker, no new files, the canary wasn't read, 2 `permission_denials` (Read ../secret.txt and Read escape.txt) |\n| 2b | `canUseTool` was dead under `dontAsk`, and the comment about `allowedTools` misled | Removed `canUseTool`. The comment now says what actually holds. | `agent.test.ts` |\n| 3 | A failed retry threw away a good tour | The loop keeps the latest schema-valid tour through bad JSON and model errors | Integration test |\n| 4 | The cache key was the head SHA only | The key is base, head, model and `TOUR_PROMPT_VERSION` | Integration test: a new model writes a fresh tour |\n| 5 | Error results (max budget, max turns) cost nothing on paper | `AgentError` carries the cost. Failed tours show their costs. | Integration tests |\n| 6 | diff-parse threw on a bad `@@`; SSE abort could hang; `/api/file` served anything | Bad headers are skipped (the property test injects them). Abort wakes the loop. Files over 2 MB get 413, binary files 415. | Tests |\n| 7 | Answers showed literal `**`; the flags were server-side; core changed | A small Markdown renderer for answers that builds React elements, never HTML. Uses core's `Stop.flags`, with a note per flag kept server-side, since core has no note text. Adopts `judgedAt` and coverage `conflicts`, and adds `askedAt` to guide answers. | Screenshots |\n\nSmaller additions: `shiki`, and three `@fontsource-variable/*` packages (fonts are bundled, so the app makes no Google Fonts calls).\n\n## Evidence\n\n- `pnpm verify`: 118 tests pass in about 0.8s warm. The live sandbox test is skipped unless `DOCENT_LIVE=1` is set. New tests:\n  - property tests for diff-parse: it round-trips through a printer, ids included, and never throws on junk;\n  - 13 API integration tests with a scripted model boundary: the checker loop, retry exhaustion, out-of-file citations, the cache, SSE, file paths and questions.\n- `pnpm test:e2e`: 2 pass. `e2e/tour.spec.ts` runs the real CLI against `e2e/fixtures/hono-4813` (recorded with `--record`) and walks stops by keyboard. It makes no model calls.\n- **Real runs** against [honojs/hono#4813](https://github.com/honojs/hono/pull/4813) on `claude-opus-5-5`:\n  - Run 1 (recorded): `pnpm docent review https://github.com/honojs/hono/pull/4813 --no-open --record e2e/fixtures/hono-4813`. Tour ready in **25.0s**, 1 attempt, **$0.064**.\n  - Run 2: `node apps/server/dist/cli.js review https://github.com/honojs/hono/pull/4813 --no-open`. **40.0s**, 2 attempts (the checker loop fired), **$0.13**.\n  - Run 4, after the review fixes, recorded into the fixture: `node apps/server/dist/cli.js review https://github.com/honojs/hono/pull/4813 --no-open --record e2e/fixtures/hono-4813`. **24.2s**, 1 attempt, **$0.124**. The core stop carries both a danger flag and a mismatch flag.\n  - Run 3 (reopen): \"Tour loaded from cache: no model calls.\"\n  - One guide question: $0.03 to $0.05.\n- **What the tour said.** It flagged on its own that `cors({ credentials: true })` with the default `origin: '*'` now reflects any origin, `null` included. It also flagged that the description's \"matches Express\" claim may not hold.\n- **Screenshots**, saved locally and not committed:\n  - `/private/tmp/claude-501/-Users-ryan-hartzfeld-Development-docent/7e2cfb5b-77c5-46af-9de2-27ca9a1c1f85/scratchpad/proto-screenshot.png`\n  - `/private/tmp/claude-501/-Users-ryan-hartzfeld-Development-docent/7e2cfb5b-77c5-46af-9de2-27ca9a1c1f85/scratchpad/proto-question.png`\n\n## Look here first\n\n1. `apps/server/src/agent.ts`: the read-only flags and cost accounting.\n2. `apps/server/src/tour.ts`: the prompt and the checker loop's feedback.\n\n## Decisions (also in `backlog/decisions.md`)\n\n- **The CLI lives in `apps/server`, not a new `apps/cli`.** It's about 100 lines of wiring around a server that already owns startup.\n- **Cost comes from the result message's `usage`, priced with a list-price table.** Assistant frames carry a start-of-stream usage snapshot, with output tokens near zero, so per-frame sums undercount badly. `total_cost_usd` is wrong on resumes. 1-hour cache writes are priced at 2x input.\n- **I removed `allowedTools`.** The SDK warns that bare entries there skip `canUseTool`. Read, Grep and Glob still work inside the cwd under `dontAsk`, and everything else is denied.\n- **I added one line to `packages/core/src/index.ts`** (`export * from './diff-parse.ts'`), despite the \"only the new file\" instruction. Without it the server can't import the parser through the package's only export. It should merge cleanly with #5.\n- **Core's `Stop` has no flag field.** The mismatch and danger flags live in the server's `StopView`, which is where the gap is adapted.\n- **Removed lines need base-side citations** (C1). The prompt shows old and new line numbers, and the guide cites the base file for removed lines.\n\n## How to try it\n\n```\ngh auth status && claude --version\npnpm install\npnpm docent review https://github.com/honojs/hono/pull/4813        # cached on this machine after the first run\npnpm docent review --fixture e2e/fixtures/hono-4813                # no network, no model\n```\n\n## Known gaps\n\n- Dark theme only. No Monaco, no code map, and no verdict or batch flow yet: the footer and the verdict button are placeholders.\n- One tour job per launch. No cancel button.\n- The main JS chunk is 560 KB (179 KB gzipped). Shiki languages load on demand.\n- No AGENTS.md updates: those are harness changes, so they're left for a tier 2 follow-up.\n",
+    "created_at": "2026-11-07T06:13:49Z",
+    "updated_at": "2026-11-08T03:08:26Z",
+    "merged_at": "2026-11-08T03:08:24Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": null
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/4",
+    "number": 4,
+    "title": "Add design rules for interactive decision briefs",
+    "user": {
+      "login": "hartz89",
+      "html_url": "https://github.com/hartz89"
+    },
+    "body": "**Intent:** Record the lessons from decision briefs no. 1 and 2, and split tier 2 so agents can merge low-risk contract and dependency changes after a clean review.\n\n**Behavior change:**\n- Three brief design rules (`backlog/decisions.md`).\n- A worktree gotcha: one worktree per branch, never shared.\n- Tier 2 split into 2a and 2b (`pull-requests.md`, `worktrees.md`, and the backlog entry).\n- Rule changes stay 2b.\n\n**Tier 2b:** This PR changes the merge rules, so the maintainer approves it.\n\n**Evidence:** A fresh-context review found that the first version let agents loosen their own gates; fixed here. `pnpm verify` passes.\n\n**Look here first:** The tier table and \"Changing the rules is tier 2b\" in `docs/process/pull-requests.md`.\n\n**Known gaps:** Tiers are still assigned by hand until the tiering script exists.\n",
+    "created_at": "2026-11-07T05:23:56Z",
+    "updated_at": "2026-11-08T03:06:50Z",
+    "merged_at": "2026-11-08T03:06:44Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": null
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/5",
+    "number": 5,
+    "title": "Core data model: spec, types and property tests",
+    "user": {
+      "login": "hartz89",
+      "html_url": "https://github.com/hartz89"
+    },
+    "body": "**Intent.** Backlog item 2: the core domain model as a spec plus types that can't represent bad states. That covers review, diff, tour, anchor, skip, coverage, question thread, batch and cost record. Later items (tour, question path, evals) plug into these types.\n\n**SDD approach: C, spec-anchored.** `packages/core/SPEC.md` came first, in its own commit, and the review fixes changed it first too. From now on it changes in the same PR as the code. `src/spec.test.ts` ties the two together: it fails if an invariant isn't named by a test, or a test names one that doesn't exist. Only test names count, not comments.\n\n**Behavior change.** No user-visible change. `@docent/core` now exports the types and these pure functions:\n- `makeDiff`;\n- `checkCoverage`;\n- `reanchor` and `anchorAt`;\n- `addItem`, `send`, `revise` and `abandon` for batches;\n- `costByJob` and `microUsd`;\n- `checkStopOrder`.\n\n**Tier 2.** The tour schema is a shared contract. The PR also changes `biome.json`, the root `tsconfig.json` and `packages/core/AGENTS.md`, which are config and harness.\n\n> Opened with the maintainer's login because the builder GitHub App isn't configured yet.\n\n## Look here first\n\n1. **`packages/core/SPEC.md`**: 42 numbered invariants.\n2. **The coverage invariant (C1–C7)** and `src/coverage.ts`. Every changed line must be skipped or explained, and **not both**. The check reports lines that are neither as *unexplained*, and lines that are both as *conflicts*. Overlapping stops are fine (C4). Only `core_change` and `edge` stops explain lines (C2), so a map stop that cites everything can't hide gaps.\n\n## Review findings → fixes\n\n1. **Re-anchoring preferred the old line when a duplicate existed** → Anchors now store up to 2 lines of context on each side. A unique match moves the anchor. With duplicates, the context decides. If it's still ambiguous, the anchor goes out of date; the old line number never decides (A1, A4). `reanchor` takes `null` for a deleted file. `splitLines` drops the phantom last line a trailing newline creates. I replaced the test that locked in the old behavior with a property where two copies swap places, plus an example where even the context can't tell copies apart.\n2. **Skips never went stale** → Skips record `judgedAt`. Skips judged at another head skip nothing (C3). A tour for a different head comes back as `{ state: 'stale' }` and isn't checked (C7).\n3. **Mismatch and danger stops had no home; \"exactly one home\" was the wrong rule** → Stops carry `flags: ('mismatch' | 'danger')[]`, outside coverage (T5). Coverage now reports unexplained lines and skipped-and-explained conflicts (C4, C5).\n4. **The batch lock could get stuck** → `abandon(batches, reason)` moves the sent batch to `history` and frees the lock (B2, B5). The model-based property includes abandons.\n5. **No mechanical Node guard** → Core's `tsconfig.json` excludes `*.test.ts` and `*.testing.ts` and keeps `types: []`. The new `tsconfig.test.json` has Node types and `noEmit`. A Biome override turns on `correctness/noNodejsModules` for core's source files. I proved both guards fire with a throwaway probe, then deleted it. The generators file was renamed to `arbitraries.testing.ts`, and `dist/` now has no test code.\n6. **Answers didn't record their commit** → Each exchange has `askedAt` (Q4).\n7. **Micro-dollars weren't enforced** → `MicroUsd` is a branded type. Only `microUsd()`, which checks for a safe non-negative integer, makes one (K2).\n8. **Tests:**\n   - The coverage properties now use multi-line anchors over runs of changed lines. A `checkCoverage` that covers only `startLine` fails 8 tests.\n   - `spec.test.ts` counts citations only in test names. `types.test.ts` is now one test per rule.\n\n## Evidence\n\n- `pnpm verify` passes in about 0.55s, with core's `dist/` cleared or not. That's 72 tests, 60 of them in core, including 24 fast-check properties.\n- I hand-wrote 6 mutations of `coverage.ts`, each breaking one rule: first line only, stale skips, the head check, the conflict rule, C2 and base side. The tests catch all 6.\n\n## Deferred\n\n- **Validating agent input.** Brand constructors are plain casts; model output needs a runtime schema at the boundary. I'd suggest Valibot, or Zod 4 behind Standard Schema. **Not added.**\n- A verdict record and skip spot-checks are left for later, as agreed.\n\n## Known gaps\n\n- There's no unified-diff parser yet. `makeDiff` takes structured hunks, and `diff-parse.ts` is being built separately.\n- Question threads are types only, with no transitions yet.\n- In the first round, the tests came after the code rather than failing-first. The review fixes did go spec-first.\n",
+    "created_at": "2026-11-07T05:46:33Z",
+    "updated_at": "2026-11-08T02:55:56Z",
+    "merged_at": "2026-11-08T02:55:54Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": null
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/2",
+    "number": 2,
+    "title": "Keep the main checkout fast-forwarded",
+    "user": {
+      "login": "hartz89",
+      "html_url": "https://github.com/hartz89"
+    },
+    "body": "**Intent.** Keep Ryan's main checkout current without any agent touching it. Agents land changes only through GitHub, so nothing updates the local `main`. It was 2 commits behind `origin/main` when this was opened.\n\n**Behavior change.** New `scripts/sync-main-checkout.sh`, meant to run from a `SessionStart` hook. On every session start it fast-forwards the main checkout to `origin/main`, but only when that's safe. It does nothing unless the checkout is on `main` with no uncommitted changes; it only fast-forwards, never merges or resets; and it never fails the session.\n\n**Tier 2** (harness: scripts run by hooks).\n\n**Needs Ryan: the hook line in `.claude/settings.json`.** Agents can't edit their own settings. The proposed file is [PR #1](https://github.com/hartz89/docent/pull/1)'s settings plus one `SessionStart` hook, so merge PR #1 first.\n\n**Evidence.** Syntax-checked with `sh -n`. Not run yet: agents can't run git in the main checkout, which is the whole point. The first run is the hook itself, or Ryan running the script once with `!`.\n\n**Look here first:** the two guard lines in the script: on `main`, and no changes.\n\n**Known gaps:** untracked files that a fast-forward would overwrite make the merge refuse, quietly. That's the safe outcome, but the checkout then stays behind until they're moved.\n",
+    "created_at": "2026-11-07T04:59:03Z",
+    "updated_at": "2026-11-07T05:09:16Z",
+    "merged_at": "2026-11-07T05:09:00Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": null
+  },
+  {
+    "html_url": "https://github.com/hartz89/docent/pull/1",
+    "number": 1,
+    "title": "Land changes through GitHub PRs from worktrees",
+    "user": {
+      "login": "hartz89",
+      "html_url": "https://github.com/hartz89"
+    },
+    "body": "**Intent.** Agents should never need the main checkout. Every change lands as a PR from the agent's own worktree, and `main` moves only by merging on GitHub.\n\n**Behavior change.** No product change. For agents:\n- New process doc, `docs/process/worktrees.md`: branch from `origin/main`, push, open a PR, wait for CI, merge by tier, clean up.\n- The worktree gotchas found while publishing this repo: commands must target the session's own worktree, `gh repo create --source` fails in a worktree, and new public surfaces go to Ryan as a one-line command.\n- `AGENTS.md`'s worktree rule now links the doc.\n\n**Tier 2** (harness: `AGENTS.md`, `docs/process/`).\n\n**Not in this PR yet, needs Ryan:** the matching `.claude/settings.json` change. Auto mode blocked the agent from editing its own permissions (\"Self-Modification\"), which is correct. The proposed file:\n- `worktree.baseRef`: `head` → `fresh`, so new worktrees branch from `origin/main`.\n- Allow fetching, pushing a branch to `origin`, and read-only `gh pr` / `gh run` commands.\n- Deny force-pushes and any push to `main`. Deny rules win over allow rules.\n- `gh pr merge` stays un-allowed until tiers are assigned mechanically (backlog item 7).\n\n**Evidence.** `pnpm verify` passes. The first CI run on `main` passed in 30s.\n\n**Look here first:** `docs/process/worktrees.md`, steps 1 and 5.\n\n**Known gaps:** the docs say `baseRef` is `fresh`, which is only true once the settings change lands. Merge them together.\n",
+    "created_at": "2026-11-07T04:49:13Z",
+    "updated_at": "2026-11-07T05:09:16Z",
+    "merged_at": "2026-11-07T05:08:56Z",
+    "labels": [],
+    "draft": false,
+    "auto_merge": null
+  }
+]

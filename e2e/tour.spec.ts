@@ -216,6 +216,18 @@ test('while the guide writes, the reviewer reads the PR, then the first stop bef
       ).toBeVisible();
     });
 
+    await test.step('a file opened over the overview goes back to the overview, not a stop', async () => {
+      await page.getByRole('tab', { name: /Files/ }).click();
+      await page.getByPlaceholder('Go to file').fill('powered-by/index');
+      await page
+        .getByRole('button', { name: 'src/middleware/powered-by/index.ts', exact: true })
+        .click();
+      await expect(page.locator('.code-path')).toHaveText('src/middleware/powered-by/index.ts');
+      await expect(page.getByRole('button', { name: /Back to stop/ })).toHaveCount(0);
+      await page.getByRole('button', { name: 'Back to the overview' }).click();
+      await expect(page.locator('.overview .description')).toBeVisible();
+    });
+
     await test.step('the finished tour replaces the progress, and questions open', async () => {
       await expect(page.getByText(`Stop 1 of ${titles.length}`, { exact: true })).toBeVisible({
         timeout: 20_000,

@@ -27,7 +27,7 @@ Design rules for interactive briefs, learned from the first two:
 
 **Publishing steps go to the maintainer as a one-line command.** On 2026-11-06, a "Yes, go public" sent from a brief was not enough: auto mode's classifier blocked `gh repo create --public` as "Create Public Surface." That is the right kind of caution, so don't work around it. Do all the preparation, then hand the maintainer the exact command to run themselves with `!` (for example `! gh repo create … --public --push`). For anything that publishes, the brief says up front that this is how it will finish. Record any further friction with the classifier here, so this rule can be tuned.
 
-**Batch decisions.** The maintainer's attention comes in windows. Hold decisions that aren't urgent, and bring them together in one brief with one way to answer them all (for example "1A, 2 yes"). Send a decision on its own only when work is truly blocked on it.
+**Batch decisions.** The maintainer's attention comes in windows. Hold decisions that aren't urgent, and bring them together in one brief with one way to answer them all (for example "1A, 2 yes"). Send a decision on its own only when work is truly blocked on it. Batched decisions go in the maintainer's brief, which also reports what changed; see [`briefs.md`](briefs.md).
 
 ## Recording answers
 

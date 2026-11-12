@@ -1,0 +1,18 @@
+{
+  "html_url": "https://github.com/hartz89/docent/pull/26",
+  "number": 26,
+  "title": "Backlog: skip liberally, and prove it",
+  "user": {
+    "login": "docent-builder-hartz89[bot]",
+    "html_url": "https://github.com/apps/docent-builder-hartz89"
+  },
+  "body": "**Intent:** the maintainer wants tours to skip more liberally. Mechanical changes like sweeping renames shouldn't cost a reviewer's attention. This reframes backlog item 5, which used to narrow skips, so it widens them safely.\n\n**Behavior change:** none. Item 5 becomes \"Skip liberally, and prove it\":\n- **Proven skips,** checked by a script, collapse quietly:\n  - renames of any size, where one consistent old→new mapping makes the lines identical;\n  - whitespace-only hunks;\n  - lockfiles whose cause is explained;\n  - generated or vendored files, judged from main's `.gitattributes`.\n- **Judged skips** cover anything else not worth reading. They're labeled as the guide's call, stay one click away, and get spot-checked.\n- The prompt changes as its own measured version. The eval tracks lines saved next to important code wrongly skipped, and the adversarial fixtures stay.\n\nFormatting is whitespace-only on purpose: checking \"identical after the formatter\" would mean loading formatter configs, which are code from the PR.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** none.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+  "created_at": "2026-11-10T02:16:33Z",
+  "updated_at": "2026-11-10T02:17:51Z",
+  "merged_at": "2026-11-10T02:17:49Z",
+  "labels": [],
+  "draft": false,
+  "auto_merge": {},
+  "additions": 10,
+  "deletions": 5
+}

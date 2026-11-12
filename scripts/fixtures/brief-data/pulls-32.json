@@ -1,0 +1,18 @@
+{
+  "html_url": "https://github.com/hartz89/docent/pull/32",
+  "number": 32,
+  "title": "Backlog: show the PR's existing review comments in the tour",
+  "user": {
+    "login": "docent-builder-hartz89[bot]",
+    "html_url": "https://github.com/apps/docent-builder-hartz89"
+  },
+  "body": "**Intent:** the maintainer wants Docent to surface the PR's existing review comments, ideally in the relevant tour stop. Unresolved critical feedback on code the tour wouldn't otherwise visit should get a home in the tour. They asked for it as a lower-priority item.\n\n**Behavior change:** none. Adds backlog item 18, after release readiness:\n- comments appear with their stop, attributed and unedited;\n- unresolved critical threads on skipped or uncited lines get a home in the tour;\n- outdated threads show as outdated;\n- comment text is treated as untrusted data.\n\nDocent stays the guide and adds no opinion of its own. Items 18–20 shift down by one.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** none.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+  "created_at": "2026-11-10T03:05:16Z",
+  "updated_at": "2026-11-10T03:09:30Z",
+  "merged_at": "2026-11-10T03:09:29Z",
+  "labels": [],
+  "draft": false,
+  "auto_merge": {},
+  "additions": 10,
+  "deletions": 3
+}

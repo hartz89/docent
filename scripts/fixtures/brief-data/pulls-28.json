@@ -1,0 +1,18 @@
+{
+  "html_url": "https://github.com/hartz89/docent/pull/28",
+  "number": 28,
+  "title": "Backlog: a trust ledger, so autonomy is earned by evidence",
+  "user": {
+    "login": "docent-builder-hartz89[bot]",
+    "html_url": "https://github.com/apps/docent-builder-hartz89"
+  },
+  "body": "**Intent:** the maintainer asked how the agent harness earns more autonomy. Today it earns it through structure alone, with no measured track record. They agreed to add a trust ledger right after tiering.\n\n**Behavior change:** none. Adds backlog item 4, which tracks per tier:\n- escapes (merged PRs that later needed a revert or fix);\n- the review catch rate;\n- the maintainer's override rate.\n\nA standing rule, with thresholds proposed as a tier 2 change, widens or narrows autonomy based on that record. The morning brief reports it. Later items shift down by one, and the cross-references are updated.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** [#18](https://github.com/hartz89/docent/pull/18), [#19](https://github.com/hartz89/docent/pull/19) and [#21](https://github.com/hartz89/docent/pull/21) will need a main merge for backlog conflicts.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+  "created_at": "2026-11-10T02:34:38Z",
+  "updated_at": "2026-11-10T02:36:10Z",
+  "merged_at": "2026-11-10T02:36:08Z",
+  "labels": [],
+  "draft": false,
+  "auto_merge": {},
+  "additions": 25,
+  "deletions": 19
+}

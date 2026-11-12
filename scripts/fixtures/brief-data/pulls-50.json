@@ -1,0 +1,18 @@
+{
+  "html_url": "https://github.com/hartz89/docent/pull/50",
+  "number": 50,
+  "title": "Research: reviving an author session on another machine",
+  "user": {
+    "login": "docent-builder-hartz89[bot]",
+    "html_url": "https://github.com/apps/docent-builder-hartz89"
+  },
+  "body": "**Intent:** answer backlog item 15's open risk by experiment. Can an author's Claude Code session be revived on another machine, at another path, so a reviewer can still ask it questions?\n\n**Headline:** it works, with no path rewrite. A transcript forks from any file, in any checkout, using Docent's exact read-only options. Subagent transcripts need three fields changed first. Slimming a snapshot to user and assistant records removes most personal data by itself, and cut an Opus fork of PR #43's session from $1.16 to $0.73. Priming a snapshot once let later questions read the prompt cache ($0.018 per question down to about $0.002 on Haiku), which bears on item 23.\n\n**Behavior change:** none. One new research doc: `docs/research/2026-11-11-session-snapshots.md`.\n\n**Tier:** 1. Docs only, but it sets direction for the snapshot format and scrubbing, so it gets a fresh-context review.\n\n**Evidence:** 16 forks against two of this project's own transcripts, copied to a scratch folder (originals checksummed, unchanged). \"Another machine\" was a fresh clone at PR #43's head under a different path. Total model spend about $2.01. `pnpm verify` passes.\n\n**Look here first:** the \"What we checked\" table, and \"Recommendation for item 15\".\n\n**Known gaps:** same user, login and Claude Code version throughout; a separate `~/.claude` couldn't be logged in. One PR, four questions, one or two runs per variant. The primer result is Haiku only. The scrubbing inventory uses home-made gitleaks-style patterns, and the doc gives kinds and counts only.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+  "created_at": "2026-11-11T04:03:35Z",
+  "updated_at": "2026-11-11T04:13:04Z",
+  "merged_at": "2026-11-11T04:13:03Z",
+  "labels": [],
+  "draft": false,
+  "auto_merge": {},
+  "additions": 128,
+  "deletions": 0
+}
