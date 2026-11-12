@@ -1,7 +1,9 @@
-import { execFile } from 'node:child_process';
-import { cp, mkdtemp, rm } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, expect, test, vi } from 'vitest';
@@ -51,4 +53,29 @@ test.each(['--no-cache', '--record'])('--prepare refuses %s', async (flag) => {
   await expect(docent('review', '--fixture', fixture, '--prepare', ...args)).rejects.toThrow(
     `cannot be used with ${flag}`,
   );
+});
+
+test('serve --stop stops the launcher on that port, by the PID it wrote', async () => {
+  cacheDir = await mkdtemp(join(tmpdir(), 'docent-cli-'));
+  const config = join(cacheDir, 'config.json');
+  await writeFile(config, JSON.stringify({ allowedRepos: ['honojs/hono'] }));
+  const env = { ...process.env, DOCENT_CACHE_DIR: cacheDir, DOCENT_CONFIG: config, CI: '1' };
+  const launcher = spawn(process.execPath, [cli, 'serve', '--fixture', fixture, '--port', '0'], {
+    env,
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const exited = once(launcher, 'exit');
+  const port = await new Promise<string>((resolve, reject) => {
+    launcher.once('exit', (code) => reject(new Error(`docent serve exited early with ${code}`)));
+    createInterface({ input: launcher.stdout }).on('line', (line) => {
+      const match = /listening at http:\/\/127\.0\.0\.1:(\d+)/.exec(line);
+      if (match?.[1]) resolve(match[1]);
+    });
+  });
+  const stop = () =>
+    promisify(execFile)(process.execPath, [cli, 'serve', '--stop', '--port', port], { env });
+
+  expect((await stop()).stdout).toContain(`Stopped the launcher on port ${port}`);
+  expect(await exited).toEqual([0, null]);
+  expect((await stop()).stdout).toContain(`No launcher is running on port ${port}`);
 });
