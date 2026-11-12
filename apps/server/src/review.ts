@@ -1,10 +1,13 @@
 // One review: opens the PR, generates (or loads) its tour, and answers questions about it, from
 // the author's own session when it can. The server routes read from here; the model, GitHub and
 // the author's session sit behind injected boundaries.
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
+  type Candidate,
   type CommitSha,
   type CostRecord,
   type Diff,
@@ -12,28 +15,48 @@ import {
   type SessionId,
 } from '@docent/core';
 import { AgentError, type AgentRunner, forkCostEstimateUsd } from './agent.ts';
+import { type CheckOutcome, checkAnswer, DEFAULT_CHECK_MODEL } from './answer-check.ts';
 import { type AuthorSession, Busy, oneAtATime, type SessionLocator } from './author-session.ts';
 import {
   GitHubRefusal,
   type PrInfo,
   type PrSource,
   REVIEW_EVENTS,
+  type RepoFile,
+  type RepoTree,
   type ReviewEvent,
   type Workspace,
 } from './github.ts';
+import { describeError, RunLog } from './run-log.ts';
+import { type BuiltIndex, buildIndex, type IndexLimits, type IndexStatus } from './symbols.ts';
+import { type Timings, timings } from './timings.ts';
 import {
   generateTour,
+  type StopView,
   TOUR_PROMPT_VERSION,
+  TOUR_PROMPTS,
   TourError,
   type TourOutcome,
   type TourProgress,
 } from './tour.ts';
 
-export type StepId = 'reading' | 'planning' | 'checking';
+export type StepId = 'reading' | 'planning' | 'writing' | 'checking';
 export type Step = { id: StepId; label: string; status: 'done' | 'active' | 'pending' };
 
 export type TourState =
-  | { state: 'working'; steps: Step[]; detail: string | null; attempt: number }
+  | {
+      state: 'working';
+      steps: Step[];
+      detail: string | null;
+      attempt: number;
+      /**
+       * Stops already written and checked one by one, in order, so the reviewer can start reading.
+       * The finished tour still passes every check before it replaces them.
+       */
+      stops: StopView[];
+      /** How many stops the guide has begun writing, shown or not. */
+      writing: number;
+    }
   | ({ state: 'ready' } & TourOutcome)
   | { state: 'failed'; reason: string; costs: CostRecord[] };
 
@@ -104,29 +127,57 @@ export type AnswerView = {
   askedAt: string;
   costs: CostRecord[];
   costIncomplete: boolean;
-} & ({ source: 'author_session'; session: SessionId } | { source: 'guide'; whyNotAuthor: string });
+} & (
+  | {
+      source: 'author_session';
+      session: SessionId;
+      /** Fetch the guide's check of this answer with `Review.answerCheck`. */
+      checkId: string;
+    }
+  | { source: 'guide'; whyNotAuthor: string }
+);
 
 export type ReviewOptions = {
   source: PrSource;
   runner: AgentRunner;
   /** Finds the PR author's session, so questions can fork it. */
   locator: SessionLocator;
+  /** The guide's model: tours, and answers from the code. */
   model: string;
+  /**
+   * The model a fork of the author's session answers with. Default: `model`. A cheaper model
+   * costs cents a question on a long session, with some answers less sure of the author's
+   * reasons (docs/research/2026-11-11-cheaper-questions.md).
+   */
+  questionModel?: string;
   /** Where finished tours are cached, by head commit. Leave out to skip the cache. */
   cacheDir?: string;
   /** Skip the fork when its first call is estimated to cost more than this. Default $2. */
   forkBudgetUsd?: number;
   /** How long one answer may take, author or guide, before it's abandoned. Default 3 minutes. */
   questionTimeoutMs?: number;
+  /** The model that checks author answers against the code. Default `DEFAULT_CHECK_MODEL`. */
+  checkModel?: string;
+  /** Caps on the symbol index. Default `INDEX_LIMITS`. */
+  indexLimits?: IndexLimits;
+  /** How long a failed index build is remembered before one is tried again. Default 30 s. */
+  indexRetryMs?: number;
+  /** Where this run's events go: the tour, each question, the submit. Default: nowhere. */
+  log?: RunLog;
 };
+
+/** A jump returns at most this many candidates; `truncated` says when there were more. */
+export const MAX_CANDIDATES = 50;
+const INDEX_RETRY_MS = 30_000;
 
 const DEFAULT_FORK_BUDGET_USD = 2;
 const DEFAULT_QUESTION_TIMEOUT_MS = 180_000;
 
 const LABELS: Record<StepId, string> = {
-  reading: 'Reading the diff',
-  planning: 'Planning the tour',
-  checking: 'Checking citations',
+  reading: 'Fetching the pull request',
+  planning: 'Planning the route',
+  writing: 'Writing the stops',
+  checking: 'Checking the whole tour',
 };
 
 export class Review {
@@ -136,14 +187,32 @@ export class Review {
   #lookup: Promise<void> | null = null;
   /** Who answers. Turns to the guide for the rest of the review if a fork runs over budget. */
   #author: AuthorSession | null = null;
-  #tour: TourState = working('reading', null, 1);
+  #tour: TourState = working('reading', null, 1, []);
+  /** Where this review's time goes, from when it opened. */
+  #timings: Timings;
   #listeners = new Set<(tour: TourState) => void>();
   #posted: PostedReview | null = null;
   #posting = false;
+  /** The kept, primed copy of the author's session that questions fork, once it exists. */
+  #primed: string | null = null;
+  #primedDir: Promise<string> | null = null;
+  /** A primer still running, so closing can stop it and wait for its cleanup. */
+  #priming: { stop: AbortController; done: Promise<unknown> } | null = null;
+  #closed = false;
+  /** Checks of author answers, by check id. Each settles, never rejects. */
+  #checks = new Map<string, Promise<CheckOutcome>>();
+  /** The symbol index, built on first use. A review is bound to one head, so this is per head. */
+  #symbols: Promise<BuiltIndex> | null = null;
+  /** What a question to the author's session was estimated to cost, when it was estimated. */
+  #forkEstimateUsd: number | null = null;
+  #log: RunLog;
   readonly done: Promise<void>;
 
   constructor(options: ReviewOptions) {
     this.#options = options;
+    this.#log = options.log ?? RunLog.off();
+    // Spans also go to the run log, so `docent runs show` has the breakdown.
+    this.#timings = timings(this.#log);
     this.done = this.#start();
   }
 
@@ -169,8 +238,57 @@ export class Review {
     return () => this.#listeners.delete(listener);
   }
 
-  async readFile(side: 'old' | 'new', path: string): Promise<string | null> {
-    return this.#workspace ? this.#workspace.readFile(side, path) : null;
+  /** One file for the code view, read from the PR's base or head commit. */
+  async open(side: 'old' | 'new', path: string): Promise<RepoFile> {
+    return this.#workspace ? this.#workspace.open(side, path) : { kind: 'missing' };
+  }
+
+  /** The whole repo at head, or null until the PR has been read. */
+  async tree(): Promise<{ head: CommitSha; tree: RepoTree } | null> {
+    const workspace = this.#workspace;
+    return workspace ? { head: workspace.pr.head, tree: await workspace.tree() } : null;
+  }
+
+  /**
+   * Where `symbol` may be defined, ranked, from the index of the PR's head. Null until the PR
+   * has been read.
+   */
+  async definitions(
+    symbol: string,
+    from?: { path: string; line?: number },
+  ): Promise<{ candidates: Candidate[]; truncated: boolean; index: IndexStatus } | null> {
+    const built = await this.#symbolIndex();
+    if (!built) return null;
+    return { ...built.index.definitions(symbol, from, MAX_CANDIDATES), index: built.status };
+  }
+
+  /** The repo file an import specifier names, or a null path when it doesn't resolve. */
+  async resolveImport(
+    from: string,
+    spec: string,
+  ): Promise<{ path: string | null; index: IndexStatus } | null> {
+    const built = await this.#symbolIndex();
+    if (!built) return null;
+    return { path: built.index.resolveImport(from, spec), index: built.status };
+  }
+
+  #symbolIndex(): Promise<BuiltIndex> | null {
+    const workspace = this.#workspace;
+    if (!workspace) return null;
+    // Concurrent first requests share one build. A failed one is kept for a while, so a failure
+    // that always happens doesn't cost a whole new build on every click, then retried.
+    this.#symbols ??= buildIndex(workspace.headFiles, this.#options.indexLimits).catch(
+      (error: unknown) => {
+        console.error(`Docent couldn't index the repository: ${String(error)}`);
+        this.#log.error('symbol index', error);
+        const failed = this.#symbols;
+        setTimeout(() => {
+          if (this.#symbols === failed) this.#symbols = null;
+        }, this.#options.indexRetryMs ?? INDEX_RETRY_MS).unref();
+        throw error;
+      },
+    );
+    return this.#symbols;
   }
 
   /**
@@ -181,23 +299,52 @@ export class Review {
    * Throws `Busy` when too many questions are already waiting for the author's session.
    */
   async ask(stopId: string, question: string, signal?: AbortSignal): Promise<AnswerView> {
+    const started = Date.now();
+    const stops = this.#tour.state === 'ready' ? this.#tour.tour.stops : [];
+    const at = stops.findIndex((s) => s.id === stopId);
+    const asked = {
+      stopId,
+      ...(at >= 0 ? { stop: at + 1, stopTitle: stops[at]?.title } : {}),
+      question,
+    };
+    try {
+      const answer = await this.#answer(stopId, question, signal);
+      const fork = {
+        forkBudgetUsd: this.#forkBudgetUsd(),
+        ...(this.#forkEstimateUsd !== null ? { forkEstimateUsd: this.#forkEstimateUsd } : {}),
+      };
+      this.#log.event('question', {
+        ...asked,
+        source: answer.source,
+        ...(answer.source === 'author_session'
+          ? { session: answer.session }
+          : { whyNotAuthor: answer.whyNotAuthor }),
+        ...fork,
+        costMicroUsd: totalMicroUsd(answer.costs),
+        costIncomplete: answer.costIncomplete,
+        ms: Date.now() - started,
+        askedAt: answer.askedAt,
+        answer: answer.text,
+      });
+      return answer;
+    } catch (error) {
+      this.#log.event('question.failed', {
+        ...asked,
+        outcome: error instanceof Busy ? 'busy' : signal?.aborted ? 'dropped' : 'error',
+        ...describeError(error),
+        ms: Date.now() - started,
+      });
+      throw error;
+    }
+  }
+
+  async #answer(stopId: string, question: string, signal?: AbortSignal): Promise<AnswerView> {
     const workspace = this.#workspace;
     const tour = this.#tour;
     if (!workspace || tour.state !== 'ready') throw new Error('The tour is not ready yet.');
     const stop = tour.tour.stops.find((s) => s.id === stopId);
     if (!stop) throw new Error(`No stop ${stopId}.`);
-    const cited = await Promise.all(
-      stop.anchors.map(async (a) => {
-        const text = (await workspace.readFile(a.side, a.path)) ?? '';
-        const lines = text.split(/\r?\n/).slice(a.startLine - 1, a.endLine);
-        return `${a.path} (${a.side === 'new' ? 'head' : 'base'}) lines ${a.startLine}-${a.endLine}:\n${lines.join('\n')}`;
-      }),
-    );
-    const context = `The reviewer is at this stop of the tour:
-${stop.title}
-${stop.body}
-
-${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
+    const context = await stopContext(stop, workspace.readFile);
     const { pr } = workspace;
     const askedAt = pr.head;
     const timeoutMs = this.#options.questionTimeoutMs ?? DEFAULT_QUESTION_TIMEOUT_MS;
@@ -223,11 +370,13 @@ ${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
             // The deadline starts now, when the question leaves the line, not when it joined.
             const limit = deadline();
             try {
+              const primed = await this.#prime(author.id, workspace.dir, limit.signal);
+              if (primed.cost) costs.push(primed.cost);
               return await this.#options.runner({
                 job: 'question',
                 cwd: workspace.dir,
-                model: this.#options.model,
-                fork: author.id,
+                model: this.#questionModel(),
+                fork: primed.session,
                 prompt: authorPrompt(pr, workspace.dir, author.cwd, context, question),
                 signal: limit.signal,
                 maxBudgetUsd: this.#forkBudgetUsd(),
@@ -239,12 +388,26 @@ ${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
           },
           signal,
         );
+        // The answer goes out now; the check follows on its own, and only ever adds to it.
+        const checkId = randomUUID();
+        this.#checks.set(
+          checkId,
+          checkAnswer({
+            workspace,
+            runner: this.#options.runner,
+            model: this.#options.checkModel ?? DEFAULT_CHECK_MODEL,
+            context,
+            question,
+            answer: reply.text,
+          }),
+        );
         return {
           text: reply.text,
           source: 'author_session',
           session: author.id,
+          checkId,
           askedAt,
-          costs: [reply.cost],
+          costs: [...costs, reply.cost],
           costIncomplete: false,
         };
       } catch (error) {
@@ -293,6 +456,14 @@ Question: ${question}`,
   }
 
   /**
+   * The guide's check of an author answer, once it's done: a correction with cited lines, or
+   * null when the answer holds up or the check couldn't run. Undefined for an unknown id.
+   */
+  answerCheck(checkId: string): Promise<CheckOutcome> | undefined {
+    return this.#checks.get(checkId);
+  }
+
+  /**
    * Looks for the author's session once per review, alongside the tour. A session too big to
    * fork within budget goes to the guide from the start, with the estimate as the reason.
    */
@@ -314,11 +485,87 @@ Question: ${question}`,
       )
       .then((author) => {
         this.#author = this.#withinBudget(author);
+        const found = this.#author;
+        this.#log.event('author', {
+          found: found.found,
+          ...(found.found ? { session: found.id, via: found.via } : { reason: found.reason }),
+          ...(author.found ? { contextTokens: author.contextTokens } : {}),
+          ...(this.#forkEstimateUsd !== null ? { forkEstimateUsd: this.#forkEstimateUsd } : {}),
+          forkBudgetUsd: this.#forkBudgetUsd(),
+        });
       });
     return this.#lookup;
   }
 
-  /** Both the pre-fork estimate's limit and the fork's own spending cap. */
+  /**
+   * The author's session, primed once per review: a fork with one fixed turn, kept on disk.
+   * Claude Code caches a fork only up to its newest message, the question, so forks of the
+   * original that ask different questions each write the whole session to the cache again.
+   * Forks of the primed copy all start with the same turn, so they read its cache instead
+   * (docs/research/2026-11-11-cheaper-questions.md). The first question pays for the primer too,
+   * and shares its deadline. The fork budget caps each call: the primer, which is what the
+   * pre-fork estimate prices, and each question. A primed copy that has gone missing, or whose
+   * folder has, is primed again.
+   */
+  async #prime(
+    author: SessionId,
+    cwd: string,
+    signal: AbortSignal,
+  ): Promise<{ session: string; cost: CostRecord | null }> {
+    if (this.#closed) throw new Error('The review is closed.');
+    if (this.#primed && existsSync(this.#primed)) return { session: this.#primed, cost: null };
+    const existing = await this.#primedDir?.catch(() => null);
+    if (!existing || !existsSync(existing)) {
+      this.#primedDir = mkdtemp(join(tmpdir(), 'docent-primed-'));
+    }
+    const dir = await (this.#primedDir as Promise<string>);
+    // Closed while the folder was made: close() has already looked for a primer, so none starts.
+    if (this.#closed) throw new Error('The review is closed.');
+    const stop = new AbortController();
+    const running = this.#options.runner({
+      job: 'question',
+      cwd,
+      model: this.#questionModel(),
+      fork: author,
+      keepIn: dir,
+      prompt: PRIMER,
+      signal: AbortSignal.any([signal, stop.signal]),
+      maxBudgetUsd: this.#forkBudgetUsd(),
+    });
+    this.#priming = { stop, done: running.catch(() => undefined) };
+    const reply = await running.finally(() => {
+      this.#priming = null;
+    });
+    const primed = join(dir, `${reply.sessionId}.jsonl`);
+    // Closed while priming: the copy goes with the folder, and nothing forks it.
+    if (this.#closed) {
+      await rm(dir, { recursive: true, force: true });
+      throw new AgentError('The review is closed.', reply.cost);
+    }
+    this.#primed = primed;
+    return { session: primed, cost: reply.cost };
+  }
+
+  /**
+   * Deletes the primed copy of the author's session. Call it when the review ends. A primer still
+   * running is stopped first, and its own cleanup awaited.
+   */
+  async close(): Promise<void> {
+    this.#closed = true;
+    const priming = this.#priming;
+    priming?.stop.abort();
+    await priming?.done;
+    const dir = await this.#primedDir?.catch(() => null);
+    this.#primed = null;
+    this.#primedDir = null;
+    if (dir) await rm(dir, { recursive: true, force: true });
+  }
+
+  #questionModel(): string {
+    return this.#options.questionModel ?? this.#options.model;
+  }
+
+  /** Both the pre-fork estimate's limit and each fork call's own spending cap. */
   #forkBudgetUsd(): number {
     return this.#options.forkBudgetUsd ?? DEFAULT_FORK_BUDGET_USD;
   }
@@ -326,11 +573,12 @@ Question: ${question}`,
   #withinBudget(author: AuthorSession): AuthorSession {
     if (!author.found || author.contextTokens === null) return author;
     const budget = this.#forkBudgetUsd();
-    const estimate = forkCostEstimateUsd(this.#options.model, author.contextTokens);
+    const estimate = forkCostEstimateUsd(this.#questionModel(), author.contextTokens);
+    this.#forkEstimateUsd = estimate;
     if (estimate === null || estimate <= budget) return author;
     return {
       found: false,
-      reason: `The author's session is too big to ask within budget (about $${estimate.toFixed(2)} a question; the budget is $${budget.toFixed(2)})`,
+      reason: `The author's session is too big to ask within budget (about $${estimate.toFixed(2)} for the first question; the budget is $${budget.toFixed(2)})`,
     };
   }
 
@@ -341,6 +589,23 @@ Question: ${question}`,
    * `commit_id` keeps the review on the commit the tour covered either way.
    */
   async submit(verdict: Verdict): Promise<PostedReview> {
+    const what = { event: verdict.event, summaryChars: verdict.body.length, comments: 0 };
+    try {
+      const posted = await this.#submit(verdict);
+      this.#log.event('review.submit', { ...what, outcome: 'posted', url: posted.url });
+      return posted;
+    } catch (error) {
+      this.#log.event('review.submit', {
+        ...what,
+        outcome: 'refused',
+        reason: error instanceof SubmitRefused ? error.reason : 'error',
+        ...describeError(error),
+      });
+      throw error;
+    }
+  }
+
+  async #submit(verdict: Verdict): Promise<PostedReview> {
     const workspace = this.#workspace;
     if (!workspace || this.#tour.state !== 'ready') {
       throw new SubmitRefused('not_ready', 'The tour is not ready yet.');
@@ -377,12 +642,36 @@ Question: ${question}`,
   }
 
   async #start(): Promise<void> {
+    const started = Date.now();
+    const time = this.#timings;
+    // The source names each step as it starts; each one ends where the next begins.
+    let ended = (_note?: string) => {};
     try {
-      const workspace = await this.#options.source((detail) =>
-        this.#set(working('reading', detail, 1)),
-      );
+      const workspace = await this.#options.source((detail) => {
+        ended();
+        ended = time.span(detail);
+        this.#set(working('reading', detail, 1, []));
+      });
+      ended();
+      ended = time.span('Parse the diff');
       this.#workspace = workspace;
       this.#diff = parseUnifiedDiff(workspace.diffText, workspace.pr.base, workspace.pr.head);
+      const lines = this.#diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
+      const changed = lines.filter((l) => l.kind !== 'context').length;
+      ended(`${this.#diff.files.length} files, ${changed} changed lines`);
+      ended = time.span('Look up the cached tour');
+      const { pr } = workspace;
+      this.#log.event('pr', {
+        repo: pr.repo,
+        number: pr.number,
+        url: pr.url,
+        title: pr.title,
+        author: pr.author,
+        head: pr.head,
+        base: pr.base,
+        files: this.#diff.files.length,
+        ms: Date.now() - started,
+      });
       // Settled before the tour is ready, so the screen knows who will answer questions.
       const lookup = this.#findAuthor(workspace);
 
@@ -391,45 +680,104 @@ Question: ${question}`,
             this.#options.cacheDir,
             'tours',
             workspace.pr.repo.replace('/', '__'),
-            tourCacheName(workspace.pr, this.#options.model),
+            tourCacheName(
+              workspace.pr,
+              this.#options.model,
+              TOUR_PROMPTS[TOUR_PROMPT_VERSION](workspace.pr, this.#diff),
+            ),
           )
         : null;
-      if (cacheFile && existsSync(cacheFile)) {
+      // The tour's own time starts here, after the PR is loaded.
+      const tourStarted = Date.now();
+      const hit = cacheFile !== null && existsSync(cacheFile);
+      this.#log.event('tour.cache', cacheFile ? { hit } : { hit: false, reason: 'cache off' });
+      if (cacheFile && hit) {
         const outcome = JSON.parse(await readFile(cacheFile, 'utf8')) as TourOutcome;
         await lookup;
-        this.#set({ state: 'ready', ...outcome, cached: true });
+        ended('hit');
+        this.#tourReady({ ...outcome, timing: outcome.timing ?? [], cached: true }, tourStarted);
         return;
       }
+      ended('missed');
 
       const outcome = await generateTour({
         workspace,
         diff: this.#diff,
         runner: this.#options.runner,
         model: this.#options.model,
-        onProgress: (progress) => this.#set(fromProgress(progress, this.#tour)),
+        // Progress only moves a tour that's still being written, never a ready or failed one.
+        onProgress: (progress) => {
+          if (this.#tour.state === 'working') this.#set(fromProgress(progress, this.#tour));
+        },
+        timings: time,
+        log: this.#log,
       });
       if (cacheFile) {
         await mkdir(dirname(cacheFile), { recursive: true });
         await writeFile(cacheFile, JSON.stringify(outcome, null, 2));
       }
       await lookup;
-      this.#set({ state: 'ready', ...outcome });
+      this.#tourReady(outcome, tourStarted);
     } catch (error) {
+      const costs = error instanceof TourError ? error.costs : [];
+      this.#log.event('tour.failed', {
+        ...describeError(error),
+        costMicroUsd: totalMicroUsd(costs),
+        ms: Date.now() - started,
+      });
       this.#set({
         state: 'failed',
         reason: error instanceof Error ? error.message : String(error),
-        costs: error instanceof TourError ? error.costs : [],
+        costs,
       });
     }
   }
+
+  #tourReady(outcome: TourOutcome, started: number) {
+    this.#log.event('tour.ready', {
+      cached: outcome.cached,
+      stops: outcome.tour.stops.length,
+      skips: outcome.tour.skips.length,
+      attempts: outcome.attempts,
+      problems: outcome.problems,
+      model: outcome.model,
+      // A cached tour cost nothing this run.
+      costMicroUsd: outcome.cached ? 0 : totalMicroUsd(outcome.costs),
+      ms: Date.now() - started,
+    });
+    this.#set({ state: 'ready', ...outcome });
+  }
 }
+
+/** The fixed turn that primes the author's session. Changing it starts a fresh cache. */
+const PRIMER = `A reviewer is about to ask you questions about your pull request through Docent, in a read-only copy of this session. Reply with just: Ready.`;
+/** The stop a question was asked at, with the code it cites: what every answer starts from. */
+export async function stopContext(
+  stop: StopView,
+  readFile: Workspace['readFile'],
+): Promise<string> {
+  const cited = await Promise.all(
+    stop.anchors.map(async (a) => {
+      const text = (await readFile(a.side, a.path)) ?? '';
+      const lines = text.split(/\r?\n/).slice(a.startLine - 1, a.endLine);
+      return `${a.path} (${a.side === 'new' ? 'head' : 'base'}) lines ${a.startLine}-${a.endLine}:\n${lines.join('\n')}`;
+    }),
+  );
+  return `The reviewer is at this stop of the tour:
+${stop.title}
+${stop.body}
+
+${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
+}
+const totalMicroUsd = (costs: readonly CostRecord[]) =>
+  costs.reduce((sum, c) => sum + c.costMicroUsd, 0);
 
 /** A queued question found the author's session turned over to the guide while it waited. */
 class TurnedOver extends Error {}
 
 /** Text from the PR can't close or open the prompt's fenced blocks. */
 const unfence = (text: string) =>
-  text.replace(/<\/?(pull_request|question)>/gi, (tag) => tag.replace(/[<>]/g, ''));
+  text.replace(/<\s*\/?\s*(pull_request|question)\b[^>]*>/gi, (tag) => tag.replace(/[<>]/g, ''));
 
 /** The prompt for a fork of the author's session: it answers as the author, read-only. */
 function authorPrompt(
@@ -462,8 +810,14 @@ ${unfence(question)}
 </question>`;
 }
 
-function working(active: StepId, detail: string | null, attempt: number): TourState {
-  const order: StepId[] = ['reading', 'planning', 'checking'];
+function working(
+  active: StepId,
+  detail: string | null,
+  attempt: number,
+  stops: StopView[],
+  writing = 0,
+): TourState {
+  const order: StepId[] = ['reading', 'planning', 'writing', 'checking'];
   const at = order.indexOf(active);
   return {
     state: 'working',
@@ -474,34 +828,60 @@ function working(active: StepId, detail: string | null, attempt: number): TourSt
     })),
     detail,
     attempt,
+    stops,
+    writing,
   };
 }
 
 function fromProgress(progress: TourProgress, previous: TourState): TourState {
-  const attempt = previous.state === 'working' ? previous.attempt : 1;
+  const was = previous.state === 'working' ? previous : null;
+  const attempt = was?.attempt ?? 1;
+  // Stops already shown stay shown until the finished tour replaces them.
+  const stops = was?.stops ?? [];
+  const writing = was?.writing ?? 0;
   switch (progress.step) {
-    case 'planning':
+    case 'planning': {
+      // A file read while the stops are being written doesn't send the steps backwards.
+      const step =
+        was?.steps.find((s) => s.status === 'active')?.id === 'writing' ? 'writing' : 'planning';
+      return working(step, progress.detail ?? was?.detail ?? null, attempt, stops, writing);
+    }
+    case 'writing':
       return working(
-        'planning',
-        progress.detail ?? (previous.state === 'working' ? previous.detail : null),
+        'writing',
+        progress.writing > progress.stops.length
+          ? `Writing stop ${progress.writing}`
+          : `${progress.stops.length} stop${progress.stops.length === 1 ? '' : 's'} written`,
         attempt,
+        progress.stops,
+        progress.writing,
       );
     case 'checking':
-      return working('checking', null, progress.attempt);
+      return working('checking', null, progress.attempt, stops, writing);
     case 'retrying':
       return working(
         'planning',
         `${progress.problems} problem${progress.problems === 1 ? '' : 's'} found, sending them back (retry ${progress.attempt} of 2)`,
         progress.attempt + 1,
+        stops,
+        writing,
       );
   }
 }
 
 /**
  * The cached tour's file name. A tour depends on the exact diff (base and head), the model and
- * the prompt, so all four are in the key; changing any of them writes a fresh tour.
+ * the prompt, so all of them are in the key; changing any of them writes a fresh tour. The prompt
+ * goes in as a fingerprint of the exact text sent, not just its version number: editing an
+ * unshipped prompt, or the PR's title or description, must not serve a tour written from the old
+ * text.
  */
-export function tourCacheName(pr: { base: string; head: string }, model: string): string {
+export function tourCacheName(
+  pr: { base: string; head: string },
+  model: string,
+  prompt: string,
+): string {
   const safeModel = model.replace(/[^\w.-]/g, '_');
-  return `${pr.base.slice(0, 12)}-${pr.head}-${safeModel}-p${TOUR_PROMPT_VERSION}.json`;
+  const fingerprint = createHash('sha256').update(prompt).digest('hex').slice(0, 12);
+  return `${pr.base.slice(0, 12)}-${pr.head}-${safeModel}-p${TOUR_PROMPT_VERSION}-${fingerprint}.json`;
 }

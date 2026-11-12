@@ -14,9 +14,11 @@
     "docent": "pnpm -s build && node apps/server/dist/cli.js",
     "fix": "biome check --write",
     "check:context": "node scripts/check-context-loading.ts",
+    "trust-ledger": "node scripts/trust-ledger.ts",
     "build": "tsc -b && pnpm --filter @docent/web build",
     "prepare": "lefthook install",
-    "pack:cli": "pnpm build && node scripts/pack.ts"
+    "pack:cli": "pnpm build && node scripts/pack.ts",
+    "eval:tours": "node packages/evals/src/run-tours.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.5",

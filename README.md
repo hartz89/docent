@@ -45,6 +45,20 @@ If `ANTHROPIC_API_KEY` is set in your shell, Claude Code bills that key instead 
 
 Docent never runs the PR's code, its agents can only read, and it posts only the review you submit, as you. The details, and how to report a problem, are in [SECURITY.md](SECURITY.md).
 
+## The run log
+
+Each time you run `docent review`, Docent keeps a short diary of that run on your machine. It's there so that you, or an agent helping you, can look back at what happened without retracing it from memory.
+
+**What's in it:** the PR and its head commit, the model and the flags you used, how the tour went (cache hit or miss, each attempt and why it was sent back, cost and time), each question with its answer, who answered it and why, the review you posted, and any errors from the server or the page. From the page it notes only which stop you're on, a rough window width and your theme. Never your keystrokes or mouse.
+
+**What's never in it:** the launch token, GitHub tokens, API keys, or your environment. Long text is cut short.
+
+**Where it lives:** one file per run in Docent's data folder, under `runs/`. On macOS that's `~/Library/Application Support/docent/runs`; on Linux, `~/.local/share/docent/runs`; set `DOCENT_DATA_DIR` to move it. The files are readable only by you, and they never leave your machine. Runs older than 30 days are removed, and at most 200 are kept.
+
+**Reading it:** `docent runs` lists recent runs (in this repo, `pnpm docent runs`). `docent runs show latest` (or a run's id) prints a summary, and `--json` gives the raw events.
+
+**Turning it off:** pass `--no-run-log`, or set `DOCENT_RUN_LOG=off` to turn it off for good. You can also delete the folder any time.
+
 ## Developing
 
 You need Node 24 and pnpm 10.

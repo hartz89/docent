@@ -25,4 +25,6 @@ export {
   renameLookups,
 } from './rename.ts';
 export * from './review.ts';
+export * from './symbol-index.ts';
+export * from './symbols.ts';
 export * from './tour.ts';
