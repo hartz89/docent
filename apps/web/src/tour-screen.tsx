@@ -79,15 +79,18 @@ export function TourScreen({ snapshot, tour }: Props) {
   // When the finished tour replaces the streamed stops, a repair may have added a stop before
   // this one. Follow the stop the reviewer was reading, by its title, not its number.
   const reading = useRef<{ stops: readonly StopView[]; title: string | null } | null>(null);
-  useEffect(() => {
+  // A layout effect, so the wrong stop never shows for a frame.
+  useLayoutEffect(() => {
     const was = reading.current;
     const title = stops[index]?.title ?? null;
     // Only a new list of stops re-selects; the reviewer moving changes the title on purpose.
     if (was && was.stops !== stops && was.title !== null && title !== was.title) {
       const moved = stops.findIndex((s) => s.title === was.title);
-      if (moved !== -1) {
-        reading.current = { stops, title: was.title };
-        setIndex(moved);
+      // A whole new tour may have dropped that stop: stay as close as the new route allows.
+      const next = moved !== -1 ? moved : Math.min(index, Math.max(0, stops.length - 1));
+      if (next !== index) {
+        reading.current = { stops, title: stops[next]?.title ?? null };
+        setIndex(next);
         return;
       }
     }
@@ -445,7 +448,7 @@ function UpcomingStop({ stops, writing }: { stops: readonly StopView[]; writing:
       : step === 'checking' || verdictIn
         ? 'Checking the whole tour'
         : step === 'writing'
-          ? `Writing stop ${stops.length + 1}`
+          ? `Writing stop ${Math.max(writing.writing, stops.length + 1)}`
           : 'Planning the route';
   return (
     <li className="upcoming-stop" aria-live="polite">

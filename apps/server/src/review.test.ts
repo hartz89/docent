@@ -549,7 +549,54 @@ describe('the tour, while it is written', () => {
 
     const writing = states.flatMap((s) => (s.state === 'working' && s.detail ? [s.detail] : []));
     expect(writing).toContain('Writing stop 4');
+    // The count the screen's route row shows, too.
+    expect(Math.max(...states.map((s) => (s.state === 'working' ? s.writing : 0)))).toBe(4);
     expect(new Set(titlesShown(states).flat())).toEqual(new Set(['Why']));
+  });
+
+  test('a malformed stop mid-stream is turned away, and the server stays up', async () => {
+    const malformed = {
+      ...goodTour,
+      stops: [
+        { ...goodTour.stops[0], flags: [null], citations: [null] },
+        ...goodTour.stops.slice(1),
+      ],
+    };
+    // The runner's reply passes the schema, as the SDK's would; only the stream saw the bad stop.
+    const guide = streaming([malformed]);
+    const runner: AgentRunner = async (request) => ({
+      ...(await guide.runner(request)),
+      structured: goodTour,
+    });
+
+    const states = await watch(runner);
+
+    expect(titlesShown(states)).toEqual([]);
+    expect(ready(states.at(-1) as TourState).problems).toEqual([]);
+  });
+
+  test('stops already shown stay shown when a later attempt writes the tour again', async () => {
+    let call = 0;
+    const guide = streaming([goodTour]);
+    // The first reply streams every stop, then comes back unreadable; the second is the tour.
+    const runner: AgentRunner = async (request) => {
+      const reply = call++ === 0 ? await guide.runner(request) : null;
+      return reply
+        ? { ...reply, structured: 'not a tour' }
+        : {
+            sessionId: 'session-1',
+            text: '',
+            structured: goodTour,
+            denials: [],
+            cost: cost('tour', 1500),
+          };
+    };
+
+    const states = await watch(runner);
+
+    const counts = states.flatMap((s) => (s.state === 'working' ? [s.stops.length] : []));
+    expect(counts.every((n, i) => i === 0 || n >= (counts[i - 1] ?? 0))).toBe(true);
+    expect(ready(states.at(-1) as TourState).attempts).toBe(2);
   });
 
   test('order problems get a whole new tour, since a repair can only replace or add stops', async () => {

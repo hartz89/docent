@@ -47,6 +47,8 @@ export type TourState =
        * The finished tour still passes every check before it replaces them.
        */
       stops: StopView[];
+      /** How many stops the guide has begun writing, shown or not. */
+      writing: number;
     }
   | ({ state: 'ready' } & TourOutcome)
   | { state: 'failed'; reason: string; costs: CostRecord[] };
@@ -552,6 +554,7 @@ function working(
   detail: string | null,
   attempt: number,
   stops: StopView[],
+  writing = 0,
 ): TourState {
   const order: StepId[] = ['reading', 'planning', 'writing', 'checking'];
   const at = order.indexOf(active);
@@ -565,6 +568,7 @@ function working(
     detail,
     attempt,
     stops,
+    writing,
   };
 }
 
@@ -573,12 +577,13 @@ function fromProgress(progress: TourProgress, previous: TourState): TourState {
   const attempt = was?.attempt ?? 1;
   // Stops already shown stay shown until the finished tour replaces them.
   const stops = was?.stops ?? [];
+  const writing = was?.writing ?? 0;
   switch (progress.step) {
     case 'planning': {
       // A file read while the stops are being written doesn't send the steps backwards.
       const step =
         was?.steps.find((s) => s.status === 'active')?.id === 'writing' ? 'writing' : 'planning';
-      return working(step, progress.detail ?? was?.detail ?? null, attempt, stops);
+      return working(step, progress.detail ?? was?.detail ?? null, attempt, stops, writing);
     }
     case 'writing':
       return working(
@@ -588,15 +593,17 @@ function fromProgress(progress: TourProgress, previous: TourState): TourState {
           : `${progress.stops.length} stop${progress.stops.length === 1 ? '' : 's'} written`,
         attempt,
         progress.stops,
+        progress.writing,
       );
     case 'checking':
-      return working('checking', null, progress.attempt, stops);
+      return working('checking', null, progress.attempt, stops, writing);
     case 'retrying':
       return working(
         'planning',
         `${progress.problems} problem${progress.problems === 1 ? '' : 's'} found, sending them back (retry ${progress.attempt} of 2)`,
         progress.attempt + 1,
         stops,
+        writing,
       );
   }
 }

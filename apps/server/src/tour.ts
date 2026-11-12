@@ -187,9 +187,10 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
       detail: best ? 'Fixing the problems found' : 'Reading the changed files',
     });
     // Only the first tour streams. Anything later is checked as a whole before it's shown.
-    const stream = best
-      ? null
-      : streamStops(diff, files, onProgress, () => time.span('First stop shown')());
+    const stream =
+      attempts > 1
+        ? null
+        : streamStops(diff, files, onProgress, () => time.span('First stop shown')());
     let reply: Awaited<ReturnType<AgentRunner>>;
     ended = time.span(`Attempt ${attempts}: ${repairing ? 'repair' : 'whole tour'}`);
     try {
@@ -296,9 +297,17 @@ function streamStops(
   const take = async (raw: unknown) => {
     const position = index++;
     if (!accepting) return;
-    const stop = isWireStop(raw) ? raw : null;
-    const checked = stop ? await checkStop(stop, position, files, diff) : null;
-    const stopRank = stop ? STOP_KINDS.indexOf(stop.kind) : -1;
+    let checked: Awaited<ReturnType<typeof checkStop>> | null = null;
+    let stopRank = -1;
+    try {
+      const stop = isWireStop(raw) ? raw : null;
+      checked = stop ? await checkStop(stop, position, files, diff) : null;
+      stopRank = stop ? STOP_KINDS.indexOf(stop.kind) : -1;
+    } catch {
+      // Anything unexpected turns the stop away. The queue must never reject: nothing awaits it
+      // until the call ends, and an unhandled rejection would take the server down.
+      checked = null;
+    }
     const afterVerdict = shown.at(-1)?.kind === 'verdict_prompt';
     if (!accepting) return;
     if (!checked || checked.problems.length > 0 || stopRank < rank || afterVerdict) {
@@ -564,11 +573,17 @@ function isWireStop(value: unknown): value is WireStop {
     (s.flags === undefined ||
       (Array.isArray(s.flags) &&
         s.flags.every(
-          (f) => (f.kind === 'mismatch' || f.kind === 'danger') && typeof f.note === 'string',
+          (f) =>
+            typeof f === 'object' &&
+            f !== null &&
+            (f.kind === 'mismatch' || f.kind === 'danger') &&
+            typeof f.note === 'string',
         ))) &&
     Array.isArray(s.citations) &&
     s.citations.every(
       (c) =>
+        typeof c === 'object' &&
+        c !== null &&
         typeof c.path === 'string' &&
         (c.side === 'new' || c.side === 'old') &&
         Number.isInteger(c.startLine) &&

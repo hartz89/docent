@@ -153,12 +153,13 @@ async function serve(review: Review) {
 }
 
 /**
- * Text that came from the guide or the PR, made safe for a terminal: control characters, such as
- * the escape sequences that move the cursor or rewrite earlier lines, become spaces.
+ * Text that came from the guide or the PR, made safe for a terminal, on one line: control
+ * characters (escape sequences that move the cursor or rewrite lines, and newlines that could
+ * fake a line of Docent's own) and bidi overrides (which reorder how a line reads) become spaces.
  */
 function printable(text: string): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point.
-  return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, ' ');
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ');
 }
 
 /** Prints the tour's outcome: its cost, or why it failed. */
@@ -174,7 +175,7 @@ function report(review: Review) {
           : `Tour ready in ${seconds}s: ${tour.tour.stops.length} stops, ${tour.attempts} attempt(s), $${cost.toFixed(4)} on ${tour.model}.`,
       );
       if (tour.problems.length) {
-        console.log(`Unresolved checks:\n- ${tour.problems.map(printable).join('\n- ')}`);
+        console.log(`Unresolved checks:\n- ${tour.problems.map((p) => printable(p)).join('\n- ')}`);
       }
       if (!tour.cached && tour.timing.length) {
         const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`.padStart(7);
