@@ -574,6 +574,51 @@ code,
   color: var(--muted);
 }
 
+.proof-rules {
+  grid-column: 1 / -1;
+  font: 10.5px var(--mono);
+  color: var(--faint);
+  overflow-wrap: anywhere;
+}
+
+.ledger-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.ledger-row .ledger-file {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.ledger-sides {
+  display: inline-flex;
+  gap: 2px;
+  padding-top: 4px;
+}
+
+.side-count {
+  border: 0;
+  border-radius: 5px;
+  padding: 2px 5px;
+  background: transparent;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.side-count:hover {
+  background: var(--panel-raised);
+}
+
+.side-count.added {
+  color: var(--added-mark);
+}
+
+.side-count.removed {
+  color: var(--removed-mark);
+}
+
 .guide-word {
   font: 500 10.5px var(--sans);
   font-style: normal;
@@ -957,6 +1002,12 @@ code,
 
 .line.removed .line-mark {
   color: var(--removed-mark);
+}
+
+/* A changed line nobody cited and nothing proved: hatched in the gutter, like the ledger's bar. */
+.line.off-route .line-mark,
+.swatch.off-route {
+  background: repeating-linear-gradient(45deg, var(--muted) 0 1px, transparent 1px 4px);
 }
 
 .line-text {

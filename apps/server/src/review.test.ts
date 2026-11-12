@@ -234,6 +234,7 @@ describe('GET /api/review', () => {
       files: [
         {
           path: 'src/cors.ts',
+          oldPath: 'src/cors.ts',
           place: 'on_route',
           onRoute: 2,
           proven: null,
@@ -242,10 +243,11 @@ describe('GET /api/review', () => {
         },
         {
           path: 'pnpm-lock.yaml',
+          oldPath: 'pnpm-lock.yaml',
           place: 'not_on_route',
           onRoute: 0,
           proven: null,
-          notOnRoute: { added: 1, removed: 1 },
+          notOnRoute: { added: [1], removed: [1] },
           note: 'Lockfile bump',
         },
       ],
@@ -270,7 +272,7 @@ describe('GET /api/review', () => {
     expect(tour.ledger.files[0]).toMatchObject({
       path: 'src/cors.ts',
       place: 'on_route',
-      notOnRoute: { added: 0, removed: 1 },
+      notOnRoute: { added: [], removed: [2] },
     });
   });
 

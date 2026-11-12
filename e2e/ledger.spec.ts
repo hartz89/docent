@@ -34,7 +34,6 @@ test('the left pane shows where every changed line stands: on the route, proven,
     await test.step('the rest is listed by file, with the guide’s note marked as its word', async () => {
       const off = route.getByRole('region', { name: 'Not on the route' });
       const notes = off.getByRole('button', { name: /notes\.md/ });
-      await expect(notes).toContainText('+2');
       await expect(notes.locator('.guide-note')).toHaveText(
         'guide: Release notes for the new flag',
       );
@@ -42,6 +41,18 @@ test('the left pane shows where every changed line stands: on the route, proven,
       await expect(off.locator('.proof')).toHaveCount(0);
       await notes.click();
       await expect(page.locator('.code-path')).toHaveText('docs/notes.md');
+      await expect(page.locator('.code-side')).toHaveText('head');
+      await expect(page.locator('.line[data-line="3"]')).toHaveClass(/added.*off-route/);
+    });
+
+    await test.step('an uncited removed line opens at base, marked not on the route', async () => {
+      const off = route.getByRole('region', { name: 'Not on the route' });
+      await off.getByRole('button', { name: 'Open 1 removed line at base' }).click();
+      await expect(page.locator('.code-path')).toHaveText('docs/notes.md');
+      await expect(page.locator('.code-side')).toHaveText('base');
+      const removed = page.locator('.line[data-line="3"]');
+      await expect(removed).toHaveClass(/removed.*off-route/);
+      await expect(removed).toContainText('Greetings are plain.');
     });
 
     await test.step('the file tree marks a proven skip with a dashed dot', async () => {

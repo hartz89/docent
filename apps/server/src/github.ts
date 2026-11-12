@@ -56,9 +56,9 @@ export type Workspace = {
   headFiles: () => Promise<HeadFiles>;
   /**
    * Every `.gitattributes` file at the base commit, by path. Generated-file proofs read these,
-   * never the PR's own (core's P8).
+   * never the PR's own (core's P8). Null when git couldn't list or read every one of them.
    */
-  baseGitattributes: () => Promise<Map<string, string>>;
+  baseGitattributes: () => Promise<Map<string, string> | null>;
   /**
    * The paths where each word appears as a whole word, at the base or head commit, across the
    * whole repo (`git grep -lw`). Rename proofs ask these (core's P9). A word the answer leaves
@@ -306,23 +306,30 @@ export function commitReader(
       return listing;
     },
     baseGitattributes: async () => {
-      const { entries } = await listTree(dir, base, maxTreeEntries);
+      // A listing cut short, or one that can't be read as text, might hide the file that opts a
+      // folder back into review, so the whole answer is unknown.
+      const listed = await listTree(dir, base, maxTreeEntries);
+      if (listed.truncated) return null;
       const found = new Map<string, string>();
-      for (const { path, kind } of entries) {
-        if (kind !== 'file' || (path !== '.gitattributes' && !path.endsWith('/.gitattributes')))
-          continue;
+      for (const { path } of listed.entries) {
+        if (path !== '.gitattributes' && !path.endsWith('/.gitattributes')) continue;
         const file = await blob(base, path, MAX_FILE_BYTES);
-        if (file.kind === 'text') found.set(path, file.text);
+        if (file.kind !== 'text') return null;
+        found.set(path, file.text);
       }
       return found;
     },
     findWords: async (side, words) => {
       const found = new Map<string, string[]>();
       if (words.length > MAX_WORD_LOOKUPS) return found;
-      for (const word of words) {
-        const paths = await grepWord(dir, at(side), word);
-        if (paths !== null) found.set(word, paths);
-      }
+      const queue = [...words];
+      const worker = async () => {
+        for (let word = queue.shift(); word !== undefined; word = queue.shift()) {
+          const paths = await grepWord(dir, at(side), word);
+          if (paths !== null) found.set(word, paths);
+        }
+      };
+      await Promise.all(Array.from({ length: GREP_CONCURRENCY }, worker));
       return found;
     },
   };
@@ -330,6 +337,8 @@ export function commitReader(
 
 /** More rename candidates than this aren't looked up at all, so they prove nothing. */
 const MAX_WORD_LOOKUPS = 200;
+/** Word lookups run at once. */
+const GREP_CONCURRENCY = 4;
 
 /**
  * The paths that contain `word` as a whole word at a commit, or null when git couldn't say (a
@@ -349,10 +358,16 @@ async function grepWord(dir: string, sha: CommitSha, word: string): Promise<stri
       .filter(Boolean)
       .map((name) => (name.startsWith(`${sha}:`) ? name.slice(sha.length + 1) : name));
   } catch (error) {
-    // git grep exits 1, with no output, when nothing matches.
-    const failure = error as { code?: unknown; stdout?: unknown; killed?: unknown };
-    if (failure.code === 1 && failure.stdout === '' && !failure.killed) return [];
-    return null;
+    // git grep exits 1, with no output, when nothing matches. It also exits 1 when it can't read
+    // a blob, but then it says so on stderr: that's unknown, never "found nowhere".
+    const failure = error as {
+      code?: unknown;
+      stdout?: unknown;
+      stderr?: unknown;
+      killed?: unknown;
+    };
+    const quiet = failure.stdout === '' && failure.stderr === '' && !failure.killed;
+    return failure.code === 1 && quiet ? [] : null;
   }
 }
 

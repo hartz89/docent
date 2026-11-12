@@ -222,7 +222,7 @@ describe('the skip ledger, from a real repo', () => {
       place: 'on_route',
       onRoute: 1,
       proven: null,
-      notOnRoute: { added: 1, removed: 1 },
+      notOnRoute: { added: [2], removed: [3] },
     });
     // In a new file, named imports and blank lines are proven.
     expect(files.get('src/new.ts')).toMatchObject({
@@ -263,7 +263,7 @@ describe('the skip ledger, from a real repo', () => {
     expect(files.get('src/main.ts')).toMatchObject({
       place: 'not_on_route',
       proven: null,
-      notOnRoute: { added: 3, removed: 3 },
+      notOnRoute: { added: [1, 3, 4], removed: [1, 3, 4] },
     });
   });
 
@@ -296,7 +296,10 @@ describe('the skip ledger, from a real repo', () => {
     const files = byPath(ledger.files);
     expect(files.get('src/schema.gen.ts')).toMatchObject({
       place: 'proven_skip',
-      proven: { labels: ['generated'] },
+      proven: {
+        labels: ['generated'],
+        rules: ['base .gitattributes:1 src/schema.gen.ts'],
+      },
     });
     // Marked generated only by the PR: listed, with the guide's note shown as its own word.
     expect(files.get('src/api.gen.ts')).toMatchObject({
@@ -305,6 +308,39 @@ describe('the skip ledger, from a real repo', () => {
       note: 'Generated client',
     });
     expect(files.get('.gitattributes')).toMatchObject({ place: 'not_on_route', proven: null });
+  });
+
+  test(".gitattributes git can't list or read in full prove nothing generated", async () => {
+    const partial: Workspace = { ...workspace, baseGitattributes: async () => null };
+    const ledger = await ledgerFor(
+      diff,
+      (await tour()).view,
+      await proveForReview(partial, diff),
+      workspace.readFile,
+    );
+    expect(byPath(ledger.files).get('src/schema.gen.ts')).toMatchObject({
+      place: 'not_on_route',
+      proven: null,
+    });
+    // A tree listing cut short is such a case: a later file might opt a folder back in.
+    expect(await commitReader(workspace.dir, diff.base, diff.head, 2).baseGitattributes()).toBe(
+      null,
+    );
+  });
+
+  test('word lookups past the deadline prove no rename', async () => {
+    const slow: Workspace = {
+      ...workspace,
+      findWords: (side, words) =>
+        new Promise((resolve) => setTimeout(() => resolve(workspace.findWords(side, words)), 200)),
+    };
+    const ledger = await ledgerFor(
+      diff,
+      (await tour()).view,
+      await proveForReview(slow, diff, 20),
+      workspace.readFile,
+    );
+    expect(byPath(ledger.files).get('src/clock.ts')).toMatchObject({ place: 'not_on_route' });
   });
 
   test('a word lookup git cannot answer proves nothing', async () => {

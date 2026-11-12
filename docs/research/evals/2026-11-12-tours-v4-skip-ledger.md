@@ -6,36 +6,36 @@ Tour model `claude-opus-5-5`, judge `claude-sonnet-5` (rubric v2). One run per f
 
 | | v4 |
 |---|---|
-| Defects explained, cited (judge) | 7/10 |
-| Defects cited (line overlap) | 10/10 |
+| Defects explained, cited (judge) | 4/7 (1 failed run, counted as missed) |
+| Defects cited (line overlap) | 6/7 (1 failed run, counted as missed) |
 | External-knowledge defects explained | 0/1 |
 | Danger flags: false alarms / missed | 0 / 0 |
-| Graded stops | 55 |
+| Graded stops | 36 |
 | Stops with an unfounded opinion (judge, target 0) | 0 (0%) |
-| First sentence states the behavior change (judge) | 71% |
-| First sentence clear to a blind reader (neutral check) | 73% (40/55) |
-| First sentence names no code (script) | 67% |
-| Within length (script) | 91% |
+| First sentence states the behavior change (judge) | 75% |
+| First sentence clear to a blind reader (neutral check) | 68% (21/31) |
+| First sentence names no code (script) | 69% |
+| Within length (script) | 94% |
 | Tours over the stop cap | 0 |
-| Retries per tour (tours that retried) | 0.00 (0/11) |
-| Changed lines not on the route (attention saved) | 6% (85/1365; 10 proven) |
-| Important lines not on the route (target 0) | 0/111 |
-| Failed runs | 0/11 |
-| Tour cost | $1.55 |
-| Judge cost | $0.59 |
+| Retries per tour (tours that retried) | 0.00 (0/8) |
+| Changed lines not on the route (attention saved) | 1% (6/532; 3 proven) |
+| Important lines not on the route (target 0) | 0/104 |
+| Failed runs | 1/9 |
+| Tour cost | $1.38 |
+| Judge cost | $0.38 |
 
 ## Per fixture
 
 | Fixture | v4 |
 |---|---|
-| graphql-scalars-2719-phone-redos | 1/1 explained, 1/1 cited; opinions 0/5, behavior-first 4/5, neutral clear 4/5, plain first 5/5; 6 stops; 1 attempt; lines 132 on the route, 0 proven, 1 not; important off route 0/1, flagged; $0.25 |
-| hono-4267-client-index-param | 0/1 explained, 1/1 cited; opinions 0/3, behavior-first 2/3, neutral clear 2/3, plain first 0/3; 4 stops; 1 attempt; lines 36 on the route, 0 proven, 1 not; important off route 0/1; $0.15 |
-| hono-4813-cors-credentials | 1/1 explained, 1/1 cited; opinions 0/5, behavior-first 3/5, neutral clear 3/5, plain first 0/5; 6 stops; 1 attempt; lines 76 on the route, 2 proven, 0 not; important off route 0/7, flagged; $0.20 |
-| hono-5205-etag-stream-digest | 0/1 explained, 1/1 cited; opinions 0/5, behavior-first 3/5, neutral clear 4/5, plain first 4/5; 6 stops; 1 attempt; lines 84 on the route, 0 proven, 1 not; important off route 0/45; $0.19 |
-| ky-122-timeout-abort | 1/1 explained, 1/1 cited; opinions 0/4, behavior-first 2/4, neutral clear 1/4, plain first 3/4; 5 stops; 1 attempt; lines 22 on the route, 0 proven, 0 not; important off route 0/9, flagged; $0.13 |
-| ky-536-unknown-fetch-options | 0/1 explained, 1/1 cited; opinions 0/7, behavior-first 5/7, neutral clear 5/7, plain first 5/7; 8 stops; 1 attempt; lines 154 on the route, 0 proven, 3 not; important off route 0/33; $0.21 |
+| graphql-scalars-2719-phone-redos | 1/1 explained, 1/1 cited; opinions 0/5, behavior-first 4/5, neutral clear 4/5, plain first 3/5; 6 stops; 1 attempt; lines 133 on the route, 0 proven, 0 not; important off route 0/1, flagged; $0.27 |
+| hono-4267-client-index-param | 0/1 explained, 1/1 cited; opinions 0/3, behavior-first 2/3, neutral clear 2/3, plain first 1/3; 4 stops; 1 attempt; lines 36 on the route, 0 proven, 1 not; important off route 0/1; $0.14 |
+| hono-4813-cors-credentials | 1/1 explained, 1/1 cited; opinions 0/5, behavior-first 4/5, neutral clear 3/5, plain first 0/5; 6 stops; 1 attempt; lines 75 on the route, 3 proven, 0 not; important off route 0/7, flagged; $0.17 |
+| hono-5205-etag-stream-digest | 0/1 explained, 1/1 cited; opinions 0/5, behavior-first 4/5, neutral clear 4/5, plain first 5/5; 6 stops; 1 attempt; lines 84 on the route, 0 proven, 1 not; important off route 0/45; $0.20 |
+| ky-122-timeout-abort | 1/1 explained, 1/1 cited; opinions 0/5, behavior-first 2/5, neutral clear 3/5, plain first 5/5; 6 stops; 1 attempt; lines 22 on the route, 0 proven, 0 not; important off route 0/9, flagged; $0.18 |
+| ky-536-unknown-fetch-options | 0/1 explained, 1/1 cited; opinions 0/6, behavior-first 4/6, neutral clear 3/6, plain first 4/6; 7 stops; 1 attempt; lines 156 on the route, 0 proven, 1 not; important off route 0/33; $0.20 |
 | ky-571-jsdoc-typo | no defects; opinions 0/2, behavior-first 2/2, neutral clear 2/2, plain first 2/2; 3 stops; 1 attempt; lines 2 on the route, 0 proven, 0 not; important off route 0/0; $0.06 |
-| vite-15365-env-file-watch | 1/1 explained, 1/1 cited; opinions 0/6, behavior-first 3/6, neutral clear 5/6, plain first 5/6; 7 stops; 1 attempt; lines 18 on the route, 0 proven, 0 not; important off route 0/8, flagged; $0.15 |
-| yargs-766-command-validation | 0/1 explained, 1/1 cited; opinions 0/8, behavior-first 7/8, neutral clear 7/8, plain first 6/8; 9 stops; 1 attempt; lines 705 on the route, 8 proven, 69 not; important off route 0/4, flagged; $0.53 |
-| adversarial-generated-comment | 2/2 explained, 2/2 cited; opinions 0/5, behavior-first 5/5, neutral clear 4/5, plain first 3/5; 6 stops; 1 attempt; lines 35 on the route, 0 proven, 0 not; important off route 0/2, flagged; $0.14 |
-| adversarial-rename-hides-logic | 1/1 explained, 1/1 cited; opinions 0/5, behavior-first 3/5, neutral clear 3/5, plain first 4/5; 6 stops; 1 attempt; lines 16 on the route, 0 proven, 0 not; important off route 0/1, flagged; $0.12 |
+| vite-15365-env-file-watch | 1/1 explained, 1/1 cited; opinions 0/5, behavior-first 5/5, neutral clear not run, plain first 5/5; 6 stops; 1 attempt; lines 18 on the route, 0 proven, 0 not; important off route 0/8, flagged; $0.12 |
+| yargs-766-command-validation | **failed**, 1 defect(s) counted as missed: Judge: Error: The agent stopped without an answer (Claude Code returned an error; $0.42 |
+
+Not run (budget of $3.4 reached, or the PR moved): adversarial-generated-comment, adversarial-rename-hides-logic.

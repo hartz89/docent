@@ -41,7 +41,16 @@ import { postedLabel, VerdictForm } from './verdict.tsx';
 type Props = { snapshot: ReviewSnapshot; tour: Ready | Working };
 type Diff = NonNullable<ReviewSnapshot['diff']>;
 /** A file opened outside the stop's citations, at the lines in focus if any. */
-type Viewing = { path: string; side: 'old' | 'new'; focus?: AnchorView; label?: string };
+type Viewing = {
+  path: string;
+  side: 'old' | 'new';
+  focus?: AnchorView;
+  label?: string;
+  /** A line to scroll to without marking it cited, like the first line not on the route. */
+  at?: number;
+};
+/** Opens a file on one side, optionally scrolled to a line. */
+type OpenFile = (path: string, side: 'old' | 'new', at?: number) => void;
 
 const KIND_LABELS: Record<StopView['kind'], string> = {
   intent: 'Intent',
@@ -223,11 +232,25 @@ export function TourScreen({ snapshot, tour }: Props) {
   const changes = useMemo(() => changedLines(diff), [diff]);
   // The ledger places each file once the tour is checked; until then, a cited file is on the route.
   const ledger = ready?.ledger ?? null;
+  // Changed lines not on the route per `side:path`, so the code view marks them where they are.
+  const offRoute = useMemo(() => {
+    const map = new Map<string, ReadonlySet<number>>();
+    for (const file of ledger?.files ?? []) {
+      if (!file.notOnRoute) continue;
+      map.set(`new:${file.path}`, new Set(file.notOnRoute.added));
+      map.set(`old:${file.oldPath}`, new Set(file.notOnRoute.removed));
+    }
+    return map;
+  }, [ledger]);
   const places = useMemo(
     (): ReadonlyMap<string, Place> =>
       ledger
         ? new Map(ledger.files.map((f) => [f.path, f.place]))
-        : new Map(stops.flatMap((s) => s.anchors.map((a) => [a.path, 'on_route'] as const))),
+        : new Map(
+            stops
+              .filter((s) => s.kind === 'core_change' || s.kind === 'edge')
+              .flatMap((s) => s.anchors.map((a) => [a.path, 'on_route'] as const)),
+          ),
     [ledger, stops],
   );
   if (!snapshot.pr) return null;
@@ -271,8 +294,8 @@ export function TourScreen({ snapshot, tour }: Props) {
             go(i);
             closeRoute();
           }}
-          onOpenFile={(path) => {
-            setViewing({ path, side: sideFor(diff, path) });
+          onOpenFile={(path, side, at) => {
+            setViewing({ path, side, ...(at ? { at } : {}) });
             closeRoute();
           }}
           tour={ready}
@@ -349,8 +372,14 @@ export function TourScreen({ snapshot, tour }: Props) {
                 path={shown.path}
                 side={shown.side}
                 cited={viewing ? (viewing.focus ? [viewing.focus] : []) : cited}
-                focus={viewing ? (viewing.focus ?? null) : anchor}
+                focus={
+                  viewing
+                    ? (viewing.focus ??
+                      (viewing.at ? { startLine: viewing.at, endLine: viewing.at } : null))
+                    : anchor
+                }
                 changed={changes.get(`${shown.side}:${shown.path}`) ?? new Set()}
+                offRoute={offRoute.get(`${shown.side}:${shown.path}`) ?? new Set()}
                 onStep={viewing ? undefined : stepAnchor}
               />
             </>
@@ -637,7 +666,7 @@ function Route({
   stops: readonly StopView[];
   index: number;
   onSelect: (index: number) => void;
-  onOpenFile: (path: string) => void;
+  onOpenFile: OpenFile;
   /** The finished tour, or null while it's still being written. */
   tour: Ready | null;
   writing: Working | null;
@@ -766,7 +795,7 @@ function LedgerSummary({ ledger }: { ledger: LedgerView }) {
 }
 
 /** The two groups off the route: what a script proved, then everything else, by file. */
-function LedgerGroups({ ledger, onOpen }: { ledger: LedgerView; onOpen: (path: string) => void }) {
+function LedgerGroups({ ledger, onOpen }: { ledger: LedgerView; onOpen: OpenFile }) {
   const proven = ledger.files.filter(
     (f): f is LedgerFileView & { proven: NonNullable<LedgerFileView['proven']> } =>
       f.proven !== null,
@@ -790,7 +819,11 @@ function LedgerGroups({ ledger, onOpen }: { ledger: LedgerView; onOpen: (path: s
           <ul className="ledger-files">
             {proven.map((file) => (
               <li key={file.path}>
-                <button type="button" className="ledger-file" onClick={() => onOpen(file.path)}>
+                <button
+                  type="button"
+                  className="ledger-file"
+                  onClick={() => onOpen(file.path, 'new')}
+                >
                   <FilePath path={file.path} />
                   <span className="ledger-lines">{plural(file.proven.lines, 'line')}</span>
                   <span className="proofs">
@@ -814,6 +847,9 @@ function LedgerGroups({ ledger, onOpen }: { ledger: LedgerView; onOpen: (path: s
                       )}
                     </span>
                   )}
+                  {file.proven.rules.length > 0 && (
+                    <span className="proof-rules">by {file.proven.rules.join(', ')}</span>
+                  )}
                 </button>
               </li>
             ))}
@@ -833,28 +869,67 @@ function LedgerGroups({ ledger, onOpen }: { ledger: LedgerView; onOpen: (path: s
         ) : (
           <ul className="ledger-files">
             {off.map((file) => (
-              <li key={file.path}>
-                <button type="button" className="ledger-file" onClick={() => onOpen(file.path)}>
-                  <FilePath path={file.path} />
-                  <span className="ledger-lines">
-                    {file.notOnRoute.added > 0 && (
-                      <span className="added">+{file.notOnRoute.added}</span>
-                    )}
-                    {file.notOnRoute.removed > 0 && (
-                      <span className="removed">−{file.notOnRoute.removed}</span>
-                    )}
-                  </span>
-                  {file.note && (
-                    <span className="guide-note">
-                      <span className="guide-word">guide:</span> {file.note}
-                    </span>
-                  )}
-                </button>
+              <li key={file.path} className="ledger-row">
+                <OffRouteFile file={file} onOpen={onOpen} />
               </li>
             ))}
           </ul>
         )}
       </section>
+    </>
+  );
+}
+
+/**
+ * A file with lines not on the route. The row opens the file where those lines are; each count
+ * opens its own side, so removed lines are always one click away at base.
+ */
+function OffRouteFile({
+  file,
+  onOpen,
+}: {
+  file: LedgerFileView & { notOnRoute: NonNullable<LedgerFileView['notOnRoute']> };
+  onOpen: OpenFile;
+}) {
+  const { added, removed } = file.notOnRoute;
+  const openAdded = () => onOpen(file.path, 'new', added[0]);
+  const openRemoved = () => onOpen(file.oldPath, 'old', removed[0]);
+  return (
+    <>
+      <button
+        type="button"
+        className="ledger-file"
+        onClick={added.length > 0 ? openAdded : openRemoved}
+      >
+        <FilePath path={file.path} />
+        {file.note && (
+          <span className="guide-note">
+            <span className="guide-word">guide:</span> {file.note}
+          </span>
+        )}
+      </button>
+      <span className="ledger-sides">
+        {added.length > 0 && (
+          <button
+            type="button"
+            className="side-count added"
+            aria-label={`Open ${plural(added.length, 'added line')} at head`}
+            onClick={openAdded}
+          >
+            +{added.length}
+          </button>
+        )}
+        {removed.length > 0 && (
+          <button
+            type="button"
+            className="side-count removed"
+            aria-label={`Open ${plural(removed.length, 'removed line')} at base`}
+            onClick={openRemoved}
+          >
+            −{removed.length}
+          </button>
+        )}
+      </span>
     </>
   );
 }

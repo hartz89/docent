@@ -761,7 +761,16 @@ Question: ${question}`,
 
   async #tourReady(outcome: TourOutcome, proofs: readonly Proof[], started: number) {
     const workspace = this.#workspace as Workspace;
-    const ledger = await ledgerFor(this.#diff as Diff, outcome.tour, proofs, workspace.readFile);
+    let ledger: LedgerView;
+    try {
+      ledger = await ledgerFor(this.#diff as Diff, outcome.tour, proofs, workspace.readFile);
+    } catch (error) {
+      // The tour is paid for, so its costs stay on the record even though it can't be shown.
+      throw new TourError(
+        `Docent couldn't place the changed lines: ${error instanceof Error ? error.message : String(error)}`,
+        outcome.cached ? [] : outcome.costs,
+      );
+    }
     this.#log.event('tour.ready', {
       cached: outcome.cached,
       stops: outcome.tour.stops.length,

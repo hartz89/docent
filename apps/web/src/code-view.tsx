@@ -14,6 +14,8 @@ type Props = {
   focus: Range | null;
   /** Line numbers changed by the PR on this side: added at head, removed at base. */
   changed: ReadonlySet<number>;
+  /** Changed lines on this side that no stop cites and no script proved (the ledger's rest). */
+  offRoute: ReadonlySet<number>;
   /**
    * Moves to the stop's next (1) or previous (-1) citation. Returns false when there is none,
    * and the arrow keys then scroll the file instead. Absent when no citation is in focus.
@@ -25,7 +27,7 @@ type Props = {
 const REVEAL_PADDING = 48;
 
 /** A read-only view of one file, with the PR's changes and the stop's citations marked. */
-export function CodeView({ path, side, cited, focus, changed, onStep }: Props) {
+export function CodeView({ path, side, cited, focus, changed, offRoute, onStep }: Props) {
   const file = useQuery({
     queryKey: ['file', side, path],
     queryFn: async () => {
@@ -126,7 +128,12 @@ export function CodeView({ path, side, cited, focus, changed, onStep }: Props) {
             {file.data.map((tokens, index) => {
               const line = index + 1;
               const isChanged = changed.has(line);
-              const classes = ['line', isChanged ? changeClass : '', isCited(line) ? 'cited' : '']
+              const classes = [
+                'line',
+                isChanged ? changeClass : '',
+                isCited(line) ? 'cited' : '',
+                isChanged && offRoute.has(line) ? 'off-route' : '',
+              ]
                 .filter(Boolean)
                 .join(' ');
               return (
@@ -159,6 +166,12 @@ export function CodeView({ path, side, cited, focus, changed, onStep }: Props) {
           <span>
             <i className="swatch cited" />
             Cited by this stop
+          </span>
+        )}
+        {offRoute.size > 0 && (
+          <span>
+            <i className="swatch off-route" />
+            Not on the route
           </span>
         )}
         <span className="legend-keys">
