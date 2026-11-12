@@ -84,13 +84,14 @@ function parseArgs(argv: string[]): { role: Role; command: string[] } {
 }
 
 // The allowlist. A broad "allow as-agent" permission rule is only safe because this is strict:
-// anything not matching one of these forms is refused before a token exists. scripts/ is
-// code-owned, so widening it needs the maintainer's approval.
+// anything not matching one of these forms is refused before a token exists. Widening it grants
+// agents new powers, so it escalates to the maintainer. The app's permissions cap it.
 const ALLOWED: Record<Role, string[]> = {
   builder: [
     'git push [-u] origin <branch>   (a plain branch name: not main, HEAD or refs/...; no flags but -u)',
     'gh pr create|view|checks|diff|comment|edit ...',
     'gh pr merge <number> --squash [--auto]',
+    'gh issue create|view|list|comment|edit|close ...',
     'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
     'gh api --method POST /repos/hartz89/docent/pulls/<n>/comments/<id>/replies --input <file.json>',
     '                                (reply to a review comment; the file is exactly {"body": string})',
@@ -111,8 +112,23 @@ const PR_SUBCOMMANDS: Record<Role, string[]> = {
   reviewer: ['view', 'diff', 'checks', 'review', 'comment'],
 };
 
-/** `stdin`, when set, is exactly what the command reads on standard input. */
-type Allowed = { tool: 'gh' | 'git'; args: string[]; stdin?: string };
+const ISSUE_SUBCOMMANDS = ['create', 'view', 'list', 'comment', 'edit', 'close'];
+
+/**
+ * --web and --editor, including -w or -e bundled with other short flags (-wl), which gh also
+ * accepts. A glued short value that happens to contain w or e (-bweb) is refused too: write it as
+ * a separate flag and value.
+ */
+const INTERACTIVE = /^(--web|--editor)(=|$)|^-[A-Za-z]*[we]/;
+
+type Allowed = {
+  tool: 'gh' | 'git';
+  args: string[];
+  /** Permissions this command needs beyond the role's base set. */
+  extra?: Record<string, 'read' | 'write'>;
+  /** When set, exactly what the command reads on standard input. */
+  stdin?: string;
+};
 
 /** Returns the exact command to run, or throws why it's refused. */
 function allowed(role: Role, command: string[], cwd: string): Allowed {
@@ -136,13 +152,27 @@ function allowed(role: Role, command: string[], cwd: string): Allowed {
   }
   if (program === 'gh' && sub === 'api') {
     checkGhApi(rest, refuse);
-    return { tool: 'gh', args: ['api', ...rest] };
+    // Reading issues needs issues: read. Requested only for those calls, so other commands keep
+    // working on an app without the permission.
+    const issues =
+      role === 'builder' && rest.some((arg) => /^\/?repos\/[^/]+\/[^/]+\/issues\b/.test(arg));
+    return { tool: 'gh', args: ['api', ...rest], ...(issues ? { extra: { issues: 'read' } } : {}) };
+  }
+  if (program === 'gh' && sub === 'issue' && role === 'builder') {
+    const [action, ...args] = rest;
+    if (!action || !ISSUE_SUBCOMMANDS.includes(action)) {
+      refuse(`"gh issue ${action ?? ''}" isn't allowed for the ${role}`);
+    }
+    const interactive = args.find((arg) => INTERACTIVE.test(arg));
+    if (interactive) refuse(`${interactive} opens a browser or editor`);
+    const writes = action !== 'view' && action !== 'list';
+    return { tool: 'gh', args: ['issue', ...rest], extra: { issues: writes ? 'write' : 'read' } };
   }
   if (program === 'gh' && sub === 'pr') {
     const [action, ...args] = rest;
     if (args.some((arg) => arg.startsWith('--admin'))) refuse('--admin bypasses branch protection');
     // A browser or editor would run outside the scrubber, with the token in its env.
-    const interactive = args.find((arg) => /^(--web|--editor)(=|$)|^-[we]$/.test(arg));
+    const interactive = args.find((arg) => INTERACTIVE.test(arg));
     if (interactive && ['create', 'edit', 'comment', 'review'].includes(action ?? '')) {
       refuse(`${interactive} opens a browser or editor`);
     }
@@ -180,8 +210,8 @@ function checkMerge(args: string[], refuse: (reason: string) => never): void {
   const [number, ...extra] = args.filter((arg) => !arg.startsWith('-'));
   const options = args.filter((arg) => arg.startsWith('-'));
   if (!number || !/^\d+$/.test(number) || extra.length > 0) refuse('merge takes one PR number');
-  // --auto queues the merge; GitHub lands it once the ruleset is satisfied (green CI, and the
-  // maintainer's approval on code-owned paths). The builder isn't an admin, so it can't bypass that.
+  // --auto queues the merge; GitHub lands it once the ruleset is satisfied (green CI). The builder
+  // isn't an admin, so it can't bypass that.
   const form = options.join(' ');
   if (form !== '--squash' && form !== '--squash --auto') {
     refuse('merge only with --squash, optionally followed by --auto');
@@ -620,7 +650,7 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
   };
   try {
     const { role, command } = parseArgs(argv);
-    const { tool, args, stdin } = allowed(role, command, deps.cwd ?? process.cwd());
+    const { tool, args, extra, stdin } = allowed(role, command, deps.cwd ?? process.cwd());
     const file = findTool(tool, deps);
     const base = baseEnv(deps.env);
     checkLocalGitConfig(findTool('git', deps), deps.cwd);
@@ -652,7 +682,10 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
       path: `/app/installations/${installation.id}/access_tokens`,
       auth: `Bearer ${jwt}`,
       hint: `Check that the key belongs to the ${role} app and that it has these permissions.`,
-      body: { repositories: [REPO.split('/')[1]], permissions: TOKEN_PERMISSIONS[role] },
+      body: {
+        repositories: [REPO.split('/')[1]],
+        permissions: { ...TOKEN_PERMISSIONS[role], ...extra },
+      },
     });
     const basicAuth = Buffer.from(`x-access-token:${token}`).toString('base64');
     secrets.push(token, basicAuth);
