@@ -411,6 +411,15 @@ describe('as-agent allowlist', () => {
     ['reviewer', 'gh pr merge 3 --squash'],
     ['reviewer', 'gh pr merge 3 --squash --auto'],
     ['reviewer', 'gh pr create --title x'],
+    ['builder', 'gh issue delete 4'],
+    ['builder', 'gh issue transfer 4 other/repo'],
+    ['builder', 'gh issue create --web'],
+    ['builder', 'gh issue comment 4 -e'],
+    ['builder', 'gh issue view 4 --json body --jq .body'],
+    ['reviewer', 'gh issue create --title x'],
+    // gh accepts -w bundled with other short flags, so -wl opens a browser too.
+    ['builder', 'gh issue create --title x -wl bug'],
+    ['builder', 'gh pr create --title x -wl bug'],
   ];
 
   test.each(refused)('%s refuses: %s', async (role, command) => {
@@ -436,5 +445,30 @@ describe('as-agent allowlist', () => {
     const { deps, ran } = setup();
     expect(await asAgent(['builder', '--', ...command.split(' ')], deps)).toBe(0);
     expect(ran()).toEqual([expected]);
+  });
+
+  // Issues access is requested only for the commands that need it, so every other command keeps
+  // working on an app that hasn't been granted the Issues permission.
+  const scoped: [string, Record<string, string>][] = [
+    ['gh issue create --title x --label backlog', { issues: 'write' }],
+    ['gh issue edit 4 --add-label backlog', { issues: 'write' }],
+    ['gh issue edit 4 --remove-label backlog', { issues: 'write' }],
+    ['gh issue comment 4 --body-file triage.md', { issues: 'write' }],
+    ['gh issue list --label backlog', { issues: 'read' }],
+    ['gh issue view 4', { issues: 'read' }],
+    ['gh api /repos/hartz89/docent/issues/4/comments', { issues: 'read' }],
+    ['gh pr view 3', {}],
+    ['gh api /repos/hartz89/docent/pulls', {}],
+  ];
+
+  test.each(scoped)('builder token for "%s" adds %o', async (command, extra) => {
+    const { deps, calls, ran } = setup();
+    expect(await asAgent(['builder', '--', ...command.split(' ')], deps)).toBe(0);
+    expect(ran()).toEqual([command]);
+    const exchange = calls.find((call) => call.url.endsWith('/access_tokens'));
+    expect(exchange?.body).toEqual({
+      repositories: ['docent'],
+      permissions: { contents: 'write', pull_requests: 'write', checks: 'read', ...extra },
+    });
   });
 });
