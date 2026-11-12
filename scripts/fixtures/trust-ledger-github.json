@@ -1,0 +1,963 @@
+{
+  "repos/hartz89/docent/pulls?state=all&per_page=100&page=1": [
+    {
+      "number": 42,
+      "title": "Core: proven-skip detectors and the computed skip ledger",
+      "body": "**Intent:** the pure-logic half of backlog item 6, \"Skip liberally, and prove it\". Scripts, not the model, decide which changed lines can't change behavior, and a ledger places every changed line in exactly one of three places. Follows the 2026-11-09 decision \"The skip ledger is computed, not written\".\n\n**Behavior change:** none for users yet. Core gains new exports; nothing calls them. **Wiring is a later tier 2b PR**: the server's checker, the tour schema (dropping required skips) and the prompt. The existing coverage check (C5) stays in place, unchanged; SPEC.md says how the ledger replaces it once wired.\n\nNew in `packages/core`:\n- **Detectors** (`detect.ts`, `rename.ts`), each fed plain data (diff, file text at base and head, base `.gitattributes`), never the disk. Each returns branded `Proof`s (only detectors can make one) for a file, hunk or line, with a label and evidence.\n  - **Whitespace only (P3):** indentation and trailing changes in an allow-list of languages. Spacing between tokens only in JS/TS/Java/C#/Go/JSON, only on lines without strings, regexes, comments or `#`, and never where it joins tokens (`a + +b` vs `a ++b`, `1 .e3` vs `1.e3`). Never Python, YAML, Makefiles, unlisted languages, files where a string could span lines (including any backtick line that also holds a quote, slash, backslash, brace or `$`), or Go directives.\n  - **Blank lines (P4)** and **named or type-only imports in a new JS/TS file (P5)**, read statement by statement from the top of the file.\n  - **Re-exports (P6):** whole barrel files only. A changed barrel must load the same modules in the same order, keep every existing name bound to the same source, and add no names next to an `export *` (shadowing).\n  - **Lockfiles (P7):** by name, with the changed manifest as evidence; the ledger counts it only if that manifest is on the route. Not proven if created, deleted or moved, or if changed lines point outside known registries (git URLs, tarballs, `file:`).\n  - **Generated and vendored (P8):** base `.gitattributes` (nested files, last match wins, unsets honored; any line it can't parse makes the attribute prove nothing) plus a short known list, which only vouches for files that already existed at base. The PR's own `.gitattributes` never counts.\n  - **Renames (P9), by allowlist:** JS and TS without JSX only. One consistent, one-to-one mapping across the PR, plus import paths explained by the diff's own file moves; literals, operators, spacing, strings and `//` comments must match exactly, and lines with any other `/` (possible regex) are never read. Each renamed word must sit in a safe position on both sides: a top-level definition (column 0), a plain item of an `import {\u2026}`/`export {\u2026}` statement read whole, or a reference right after an operator, `(`, `[`, a call's `,` or a keyword like `return`. Every file that uses a renamed name must rename its top-level definition, or import it by a relative path from a diff file that exports it by name and has no `export *`. New names absent at base and old names absent at head, in the diff's files and, through `renameLookups` and the caller's `git grep -lw`, the whole repo.\n- **Ledger (`ledger.ts`, L1\u2013L5):** `computeLedger(diff, tour, proofs)` lists every changed line once, in diff order, as `on_route` (a stop explains it, same rules as C1\u2013C3; the route wins), `proven_skip` (all valid proofs kept), or `not_on_route`. Disjoint and total by construction: one discriminated `Placement` per line.\n- `coverage.ts`: extracted `explainedBy` and `lineKey`, so coverage and the ledger share one definition of \"explained\". No behavior change.\n\n**Tier: 1.** Feature work inside one package, with tests. The new exports add types and functions but change no existing contract type (`Tour`, `Skip`, `Diff`, `CoverageReport` are untouched), so it isn't 2a.\n\n**Evidence:** `pnpm verify` passes (289 tests). New tests: `detect.test.ts`, `rename.test.ts`, `ledger.test.ts`, plus `@ts-expect-error` checks for P1 and L1. Property tests: the ledger invariant over generated diffs, with proofs from the real detectors (and stale proofs that must count for nothing), checked against an independent oracle, plus a check that the generated scenarios reach all three places; and \"any single-character tamper of a proven rename un-proves it\". Adversarial cases: a rename that also changes a literal or an operator, `Math.min` to `Math.max`, property and shorthand renames, swaps and merges, `true` to `false`, re-indenting Python/YAML/Makefile, a template literal's indentation, a `.gitattributes` change in the PR itself, a re-export line that also declares something, rebinding and shadowing in barrels, side-effect imports in a new file, a lockfile pointing at a new tarball, and every input from the two adversarial review rounds (hidden templates, regex bodies, package and aliased imports, globals licensed from another file or a nested scope, keys, keyword arguments, JSX attributes, methods and class fields, barrel reordering).\n\n**Look here first:** `rename.ts` (`role`, `licensed` and `solve`), then `mayHaveMultilineStrings` in `proof.ts`, which the whitespace, blank-line and rename proofs lean on.\n\n**Known gaps** (also in SPEC.md):\n- Renames are lexical. Names read by reflection, string building or code outside the repo can still change meaning; the evidence carries the mapping so the UI can show it. The allowlist trades coverage for safety: member and method renames, statement-start calls (`foo();`), JSX, Python, Go and other languages are never proven, and stay visible as \"not on the route\".\n- Generated and vendored proofs say where a file lives, not that it matches its sources (for example a committed `dist/` that a GitHub Action runs).\n- A lockfile proof checks sources, not that the lockfile matches the manifest.\n- Pure file moves, mode changes and binary files have no changed lines, so they're not in the ledger.\n- CRLF files never get text-based proofs (the parsed diff keeps `\\r`).\n- For the wiring PR: the server fetches base and head text and base `.gitattributes`, answers `renameLookups` with `git grep -lw` at each commit, runs `proveSkips`, and replaces the C5 check with the ledger. The tour schema drops required skips (2a), and the UI shows proof labels and the rename mapping.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+      "state": "closed",
+      "created_at": "2026-11-10T05:24:13Z",
+      "merged_at": "2026-11-10T05:52:49Z",
+      "labels": []
+    },
+    {
+      "number": 33,
+      "title": "Web: questions read like a chat, and survive leaving the stop",
+      "body": "**Intent:** maintainer dogfood feedback. Asking a second question meant scrolling up to the box above the answers, then back down to read. It should work like an agent session, with the input after the latest answer. This also fixes the gap noted in [#25](https://github.com/hartz89/docent/pull/25): a stop's questions disappeared when you left it.\n\n**Behavior change:**\n- The thread reads top to bottom: question, answer, question, answer, then the box. After the first answer, the box's label becomes \"Ask a follow-up\".\n- A new question scrolls smoothly to the top of the guide, so its answer arrives right below it, and the box follows underneath.\n- Each stop's thread is kept in the tour screen, keyed by stop. Leaving a stop and coming back shows the whole conversation, and an answer that arrives while you're on another stop lands in the right thread.\n- The request no longer uses `useMutation` in the stop's component. That component remounts on every stop change, which is why threads were lost.\n\n**Tests:** a new e2e step:\n- asks a question and checks the box sits below the answer;\n- asks a follow-up with \u2318/Ctrl+Enter;\n- leaves the stop and comes back, and expects both questions still there.\n\n`pnpm verify` and e2e pass. I also checked a screenshot.\n\n**Tier 1:** `apps/web` and one e2e step.\n\n**Known gaps:**\n- Follow-ups don't carry the earlier questions to the model. Each question is still answered on its own.\n- [#19](https://github.com/hartz89/docent/pull/19) changes the answer labels in the same component, so it will need a small main merge.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+      "state": "closed",
+      "created_at": "2026-11-10T03:39:43Z",
+      "merged_at": "2026-11-10T03:42:59Z",
+      "labels": []
+    },
+    {
+      "number": 31,
+      "title": "Revert line wrapping (#29, #30)",
+      "body": "**Intent:** the maintainer would rather revert than fix forward. [#29](https://github.com/hartz89/docent/pull/29) merged on green CI before its review, which requested changes for a real bug. [#30](https://github.com/hartz89/docent/pull/30) then fixed that bug forward. This undoes both, and the long-line problem moves to a Biome plugin that keeps our own source within 100 characters.\n\n**Behavior change:** the code view no longer wraps long lines, and the \"Wrap long lines\" toggle is gone. This is exactly the state after [#28](https://github.com/hartz89/docent/pull/28): `git diff 1f80e34` on this branch is empty.\n\n**Tier 1:** `apps/web` and the e2e step #29 added.\n\n**Known gaps:** sideways scrolling returns for long lines, mostly Markdown, which Biome doesn't lint. The plugin and the prompt rewrap follow after [#21](https://github.com/hartz89/docent/pull/21).\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+      "state": "closed",
+      "created_at": "2026-11-10T02:58:55Z",
+      "merged_at": "2026-11-10T02:59:55Z",
+      "labels": []
+    },
+    {
+      "number": 30,
+      "title": "Web: keep wrapped lines' tabs in place",
+      "body": "**Intent:** fix the bug the reviewer found in [#29](https://github.com/hartz89/docent/pull/29). #29 auto-merged on green CI 19 seconds before its review, which requested changes, landed.\n\n**Behavior change:** with wrapping on (the default), lines indented with tabs no longer shift 2ch left.\n- **Cause:** tab stops are measured from the padded edge, so a hang of indent + 2ch put the first row 2ch before a tab stop.\n- **Fix:** the hang is now rounded up to a whole tab stop. Tabs in the indentation also count as moving to the next stop, so a mix like \"2 spaces + tab\" is measured correctly.\n\n**Tests:** measured in headless Chromium with the real CSS, with wrapping on and off. The cases were two tabs, eight spaces, one tab, four spaces, \"2 spaces + tab\", a tab mid-line, and three spaces. Every marker lands at the same x with wrapping on and off (before the fix, the tab cases were 15px off). `pnpm verify` and e2e pass.\n\n**Tier 1:** `apps/web`.\n\n**Known gaps:**\n- There's no permanent regression test for tabs. The e2e fixture has no tab-indented lines, and `apps/web` has no unit test project yet; adding one is a config change, which is code-owned.\n- The process gap that let #29 merge before its review is reported to the maintainer separately.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+      "state": "closed",
+      "created_at": "2026-11-10T02:40:53Z",
+      "merged_at": "2026-11-10T02:42:48Z",
+      "labels": []
+    },
+    {
+      "number": 29,
+      "title": "Web: wrap long lines in the code view, with a toggle",
+      "body": "**Intent:** the maintainer was scrolling sideways a lot while reviewing PRs in Docent. Most long lines are Markdown prose and prompt strings, which no formatter wraps, and Docent will review repos whose line lengths it can't control. So the fix belongs in the code view.\n\n**Behavior change:**\n- Long lines wrap by default, as on GitHub. Continuation rows hang 2ch past the line's own indentation, so a wrapped line still reads as one line, like an editor's soft wrap.\n- A \"Wrap long lines\" toggle in the legend turns it off. The choice is remembered in this browser, and every storage access is guarded.\n- Toggling re-centers the cited range, since every line moves.\n- The legend is no longer hidden from screen readers as a whole: only the decorative items are, so the toggle is reachable.\n\n**Tests:** a new e2e step checks there's no sideways scroll by default, that it appears when the toggle is off, and that the choice survives a reload. I also checked screenshots before and after the indentation fix. `pnpm verify` and e2e pass.\n\n**Tier 1:** `apps/web` and one e2e step.\n\n**Known gaps:** a line with very deep indentation in a narrow column wraps into a thin strip. That's rare, and the toggle covers it.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+      "state": "closed",
+      "created_at": "2026-11-10T02:38:13Z",
+      "merged_at": "2026-11-10T02:39:14Z",
+      "labels": []
+    },
+    {
+      "number": 25,
+      "title": "Web: guide opens new stops at the top; ask button reads as enabled",
+      "body": "**Intent:** two pieces of dogfood feedback from the maintainer on the tour screen.\n\n**Behavior change:**\n- **The guide opens each new stop at the top.** The guide column stays mounted across stops, so \"Next stop\" used to keep the previous scroll position. Each stop's position is now remembered when you leave it. A stop you haven't seen opens at the top; one you go back to opens where you left it. This works the same for the button, the arrow keys and the route.\n- **\"Ask the guide\" looks enabled when it is.** The button inherited the faint gray of the \"\u2318 Enter to ask\" hint row, so it looked disabled even when it worked. It now sets its own text color and gets a brass border on hover. The disabled state is flat and faint.\n\n**Tests:** a new e2e step clicks Next stop from a scrolled guide and expects the top, then goes back and expects the old position. I checked that it fails without the fix (340px instead of 0). `pnpm verify` and e2e pass.\n\n**Tier 1:** `apps/web` and one e2e step.\n\n**Known gaps:** questions and answers on a stop still disappear when you leave it, because the guide panel's state resets per stop. Restoring the scroll position doesn't bring them back. [#19](https://github.com/hartz89/docent/pull/19) is reworking that panel, so the fix belongs there or after it.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+      "state": "closed",
+      "created_at": "2026-11-08T21:51:19Z",
+      "merged_at": "2026-11-08T21:52:54Z",
+      "labels": []
+    },
+    {
+      "number": 11,
+      "title": "Allow the agent runner; keep agents off the maintainer's gh login",
+      "state": "closed",
+      "created_at": "2026-11-08T04:18:52Z",
+      "merged_at": "2026-11-08T04:18:55Z",
+      "labels": []
+    },
+    {
+      "number": 6,
+      "title": "Add @docent/evals: manifest schema and 10 public eval fixtures",
+      "body": "**Intent:** First half of backlog item 4. A committed public core set of eval fixtures with known answers, plus the manifest schema and validator that the eval runner will build on. SDD experiment: approach A (loose).\n\n**Behavior change:** New private workspace package `@docent/evals`. Nothing user-facing. It adds:\n- `src/manifest.ts`: manifest types and a hand-written validator (no new dependencies). It rejects unknown fields and reports every problem as `path: what is wrong`. Rules across fields: a danger flag needs the `danger` job, a `tour` fixture needs findings, and every finding must sit inside a `mustNotSkip` range.\n- `fixtures/public/*.json`: 10 fixtures. Diffs are **not** committed. A runner fetches `base...head` at run time, so the same shape fits private fixture repos later (`visibility: \"private\"`).\n- `src/check-fixtures.ts` (`pnpm --filter @docent/evals check:fixtures`, not part of verify). Uses `gh api` to confirm each PR's head SHA, that `base` is the merge base, the size bucket, and that every line range sits inside one diff hunk.\n\n| Fixture | Repo / PR | Jobs | Size | Defect | Evidence |\n| --- | --- | --- | --- | --- | --- |\n| `ky-122-timeout-abort` | [sindresorhus/ky#122](https://github.com/sindresorhus/ky/pull/122) | tour | S (22) | `abort()` called with no AbortController guard | [#125](https://github.com/sindresorhus/ky/pull/125) |\n| `ky-536-unknown-fetch-options` | [sindresorhus/ky#536](https://github.com/sindresorhus/ky/pull/536) | tour, skip | M (157) | `key in request` misses `body` in Firefox, so body is forwarded twice; buried under moved type docs | [#540](https://github.com/sindresorhus/ky/pull/540) |\n| `ky-571-jsdoc-typo` | [sindresorhus/ky#571](https://github.com/sindresorhus/ky/pull/571) | tour, skip, danger | S (2) | Negative control: one JSDoc typo line | the diff itself |\n| `hono-4813-cors-credentials` | [honojs/hono#4813](https://github.com/honojs/hono/pull/4813) | tour, danger | S (78) | Wildcard + credentials now reflects any Origin with credentials | [GHSA-88fw-hqm2-52qc](https://github.com/honojs/hono/security/advisories/GHSA-88fw-hqm2-52qc), [f0b094d](https://github.com/honojs/hono/commit/f0b094db8474696344d98e5665a4ac2a6d5f346e) |\n| `hono-4267-client-index-param` | [honojs/hono#4267](https://github.com/honojs/hono/pull/4267) | tour | S (37) | `removeIndexString` after param substitution strips a param valued \"index\" | [#5297](https://github.com/honojs/hono/pull/5297) |\n| `hono-5205-etag-stream-digest` | [honojs/hono#5205](https://github.com/honojs/hono/pull/5205) | tour | S (85) | `subarray()` keeps a view on a reused stream buffer, so the ETag is wrong | [#5239](https://github.com/honojs/hono/pull/5239) |\n| `vite-15365-env-file-watch` | [vitejs/vite#15365](https://github.com/vitejs/vite/pull/15365) | tour | S (18) | Return value became absolute paths; HMR still compares bare file names | [#15559](https://github.com/vitejs/vite/pull/15559) |\n| `vite-4118-slash-esm` | [vitejs/vite#4118](https://github.com/vitejs/vite/pull/4118) | skip | S (6) | Bot bump to ESM-only slash v4 behind lockfile noise breaks plugin-vue dev | [comment](https://github.com/vitejs/vite/pull/4118#issuecomment-893543022), [#4519](https://github.com/vitejs/vite/pull/4519) |\n| `graphql-scalars-2719-phone-redos` | [graphql-hive/graphql-scalars#2719](https://github.com/graphql-hive/graphql-scalars/pull/2719) | danger, skip, tour | M (133) | One-line regex change with exponential backtracking (ReDoS), behind ~120 lines of test churn | [GHSA-x8rm-f576-gq67](https://github.com/advisories/GHSA-x8rm-f576-gq67), [210fd24](https://github.com/graphql-hive/graphql-scalars/commit/210fd2485641afa2452800c00144245c74361701) |\n| `yargs-766-command-validation` | [yargs/yargs#766](https://github.com/yargs/yargs/pull/766) | tour | L (782) | Post-hoc validation runs after the handler and flags positionals as unknown in strict() | [#784](https://github.com/yargs/yargs/pull/784) |\n\nAll source repos are MIT. Spread: 9 tour (one is the control), 4 skip, 3 danger (2 expect a flag, plus the control), 1 negative control.\n\n**Review findings \u2192 fixes** (commit 5d4690e):\n1. HIGH: ky-122's \"timer never cleared\" finding wasn't from #122. The reporter retracted it in [ky#138](https://github.com/sindresorhus/ky/issues/138). \u2192 I dropped that finding and its #138/#145 evidence.\n2. Findings that need facts the diff can't show. \u2192 Added an optional `externalKnowledge` field, used on vite-4118 (slash v4 is ESM-only) and ky-536 (Firefox's Request has no `body`).\n3. No way to score skip precision. \u2192 Added an optional `shouldSkip` (a file or a range). The validator rejects any overlap with `mustNotSkip`, and the check script confirms it's in the diff. It's filled in on all 4 skip fixtures: vite-4118 `yarn.lock`, ky-536 moved type docs (options.ts 194\u2013236), graphql-scalars tests, and ky-571 hooks.ts.\n4. No scoring rules. \u2192 Added `DEFAULT_SCORING` (`toleranceLines: 3`, `maxStops: 10`) and `scoringFor()`. Fixtures can override with a `scoring` field. Matching is by range overlap with a tolerance; descriptions are not compared.\n5. A tour fixture with no findings was only allowed implicitly. \u2192 It now needs `negativeControl: true`, and a control must have no findings, no `mustNotSkip`, and no danger flag. ky-571 is marked as the control and now also covers the tour.\n6. \u2192 `AGENTS.md` now says ranges are on the new side only, so pure deletions can't be pinned yet. Sizes: 7 small, 2 medium, 1 large.\n\n**Tier: 2.** Adding a workspace package changes `pnpm-lock.yaml` (2 lines, a new empty importer), and the manifest is a shared contract the runner will depend on. It also touches root `tsconfig.json` and `vitest.config.ts` to wire the package in.\n\n**Evidence:**\n- `pnpm verify`: green in about 1.2 s (32 tests, 3 files).\n- `pnpm --filter @docent/evals check:fixtures`: `10 fixtures match GitHub` (about 9 s). I confirmed it fails on a range moved outside the hunk and on a wrong size bucket, then put both back.\n- Tests: every committed fixture validates. 15 malformed cases each give one exact message. Problems are reported all at once. The loader names the file for bad JSON, an id/file-name mismatch, and a private fixture in the public folder.\n\n**Look here first:**\n- `packages/evals/src/manifest.ts`: the shape and the cross-field rules.\n- One fixture against its evidence, e.g. `hono-4813-cors-credentials.json`.\n\n**Known gaps:**\n- No runner or scoring yet. That's the second half of item 4.\n- `answer-check` and `scrubber` are valid jobs, but no fixture exercises them. Both need planted content, not found PRs.\n- Every finding was checked by hand against the fix. The check script confirms the line ranges are in the diff, not that they're the right lines.\n- I updated the dated research note to match: diffs are no longer committed for the public set either.\n- Opened with the maintainer's login, because the builder app isn't configured yet.\n",
+      "state": "closed",
+      "created_at": "2026-11-07T05:48:27Z",
+      "merged_at": "2026-11-07T05:57:32Z",
+      "labels": []
+    },
+    {
+      "number": 1,
+      "title": "Land changes through GitHub PRs from worktrees",
+      "body": "**Intent.** Agents should never need the main checkout. Every change lands as a PR from the agent's own worktree, and `main` moves only by merging on GitHub.\n\n**Behavior change.** No product change. For agents:\n- New process doc, `docs/process/worktrees.md`: branch from `origin/main`, push, open a PR, wait for CI, merge by tier, clean up.\n- The worktree gotchas found while publishing this repo: commands must target the session's own worktree, `gh repo create --source` fails in a worktree, and new public surfaces go to Ryan as a one-line command.\n- `AGENTS.md`'s worktree rule now links the doc.\n\n**Tier 2** (harness: `AGENTS.md`, `docs/process/`).\n\n**Not in this PR yet, needs Ryan:** the matching `.claude/settings.json` change. Auto mode blocked the agent from editing its own permissions (\"Self-Modification\"), which is correct. The proposed file:\n- `worktree.baseRef`: `head` \u2192 `fresh`, so new worktrees branch from `origin/main`.\n- Allow fetching, pushing a branch to `origin`, and read-only `gh pr` / `gh run` commands.\n- Deny force-pushes and any push to `main`. Deny rules win over allow rules.\n- `gh pr merge` stays un-allowed until tiers are assigned mechanically (backlog item 7).\n\n**Evidence.** `pnpm verify` passes. The first CI run on `main` passed in 30s.\n\n**Look here first:** `docs/process/worktrees.md`, steps 1 and 5.\n\n**Known gaps:** the docs say `baseRef` is `fresh`, which is only true once the settings change lands. Merge them together.\n",
+      "state": "closed",
+      "created_at": "2026-11-07T04:49:13Z",
+      "merged_at": "2026-11-07T05:08:56Z",
+      "labels": []
+    }
+  ],
+  "repos/hartz89/docent/issues/1/timeline?per_page=100&page=1": [
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-07T04:48:33Z"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-07T04:49:23Z"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-07T04:52:39Z"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-07T04:53:10Z"
+      }
+    },
+    {
+      "event": "cross-referenced",
+      "created_at": "2026-11-07T04:59:04Z",
+      "actor": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "event": "reviewed",
+      "state": "commented",
+      "body": "A couple quick notes, otherwise LGTM; merge after feedback is adressed.",
+      "submitted_at": "2026-11-07T05:05:16Z",
+      "user": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-07T05:07:01Z"
+      }
+    },
+    {
+      "event": "merged",
+      "created_at": "2026-11-07T05:08:56Z",
+      "actor": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "event": "closed",
+      "created_at": "2026-11-07T05:08:56Z",
+      "actor": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "event": "head_ref_deleted",
+      "created_at": "2026-11-07T05:09:16Z",
+      "actor": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "event": "cross-referenced",
+      "created_at": "2026-11-08T05:06:46Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "cross-referenced",
+      "created_at": "2026-11-08T05:12:49Z",
+      "actor": {
+        "login": "docent-reviewer-hartz89[bot]"
+      }
+    },
+    {
+      "event": "cross-referenced",
+      "created_at": "2026-11-10T04:28:53Z",
+      "actor": {
+        "login": "docent-reviewer-hartz89[bot]"
+      }
+    }
+  ],
+  "repos/hartz89/docent/pulls/1/comments?per_page=100&page=1": [
+    {
+      "body": "Even though I'm the sole owner of this repo right now, naming me feels to specific / unprofessional.",
+      "created_at": "2026-11-07T05:04:25Z",
+      "user": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "body": "this slide should move quickly. we can dial it back if we see isssues.",
+      "created_at": "2026-11-07T05:04:52Z",
+      "user": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "body": "Fixed across the whole repo, not just here: every doc now says \"the maintainer\" (they/them). NOTICE keeps the copyright name, which is a legal notice.",
+      "created_at": "2026-11-07T05:07:11Z",
+      "in_reply_to_id": 4500216747,
+      "user": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "body": "Done: agents now merge tier 0 and 1 once CI passes (tier 1 after a fresh-context review). Tier 2 waits for the maintainer. Added \"The autonomy dial\" to pull-requests.md: tighten a tier one step when an agent-merged PR causes an escaped defect, and loosen it again when the metric is clean.",
+      "created_at": "2026-11-07T05:07:13Z",
+      "in_reply_to_id": 4500218578,
+      "user": {
+        "login": "hartz89"
+      }
+    }
+  ],
+  "repos/hartz89/docent/pulls/1/files?per_page=100&page=1": [
+    {
+      "filename": ".claude/settings.json"
+    },
+    {
+      "filename": "AGENTS.md"
+    },
+    {
+      "filename": "CLAUDE.md"
+    },
+    {
+      "filename": "backlog/decisions.md"
+    },
+    {
+      "filename": "backlog/index.md"
+    },
+    {
+      "filename": "docs/experiments/sdd.md"
+    },
+    {
+      "filename": "docs/north-stars.md"
+    },
+    {
+      "filename": "docs/process/decisions.md"
+    },
+    {
+      "filename": "docs/process/pull-requests.md"
+    },
+    {
+      "filename": "docs/process/worktrees.md"
+    }
+  ],
+  "repos/hartz89/docent/issues/6/timeline?per_page=100&page=1": [
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-07T05:47:59Z"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-07T05:48:41Z"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-07T05:55:52Z"
+      }
+    },
+    {
+      "event": "commented",
+      "body": "**Fresh-context agent review** (an independent agent, read-only; posted through the maintainer's login because the reviewer app isn't configured yet).\n\nIt spot-checked 4 of the 10 fixtures against upstream GitHub (ky-122, hono-5205, vite-15365, graphql-scalars-2719): head SHAs, merge bases, sizes and cited lines all match, and each fix touches the cited lines. The lockfile change only adds the importer. No secrets; verify makes no network calls. Licensing is fine (MIT sources; only SHAs, paraphrases and short quotes).\n\nFindings, all fixed in 5d4690e:\n1. (High) ky-122 cited a defect its reporter retracted in #138. Finding and evidence removed.\n2. and 3. Two findings need outside knowledge (ESM-only npm package, Firefox Request). Marked with `externalKnowledge`.\n4. Skip precision couldn't be scored. Added `shouldSkip`.\n5. No matching rules for the runner. Added `DEFAULT_SCORING`: overlap with \u00b13 lines, maxStops 10.\n6. No negative control for tours. Added `negativeControl`.\n\n**Verdict: merge.** Tier 2a (a new contract that doesn't touch security, and a workspace-only lockfile change), merged under the 2a rule and logged for the maintainer's veto.\n",
+      "created_at": "2026-11-07T05:57:15Z",
+      "actor": {
+        "login": "hartz89"
+      },
+      "user": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "event": "merged",
+      "created_at": "2026-11-07T05:57:32Z",
+      "actor": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "event": "closed",
+      "created_at": "2026-11-07T05:57:32Z",
+      "actor": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "event": "cross-referenced",
+      "created_at": "2026-11-08T04:19:52Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "head_ref_deleted",
+      "created_at": "2026-11-08T04:31:51Z",
+      "actor": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "event": "cross-referenced",
+      "created_at": "2026-11-08T05:06:46Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    }
+  ],
+  "repos/hartz89/docent/pulls/6/comments?per_page=100&page=1": [],
+  "repos/hartz89/docent/pulls/6/files?per_page=100&page=1": [
+    {
+      "filename": "backlog/index.md"
+    },
+    {
+      "filename": "docs/experiments/sdd.md"
+    },
+    {
+      "filename": "docs/research/2026-11-06-eval-fixtures.md"
+    },
+    {
+      "filename": "packages/evals/AGENTS.md"
+    },
+    {
+      "filename": "packages/evals/CLAUDE.md"
+    },
+    {
+      "filename": "packages/evals/fixtures/public/graphql-scalars-2719-phone-redos.json"
+    },
+    {
+      "filename": "packages/evals/fixtures/public/hono-4267-client-index-param.json"
+    },
+    {
+      "filename": "packages/evals/fixtures/public/hono-4813-cors-credentials.json"
+    },
+    {
+      "filename": "packages/evals/fixtures/public/hono-5205-etag-stream-digest.json"
+    },
+    {
+      "filename": "packages/evals/fixtures/public/ky-122-timeout-abort.json"
+    },
+    {
+      "filename": "packages/evals/fixtures/public/ky-536-unknown-fetch-options.json"
+    },
+    {
+      "filename": "packages/evals/fixtures/public/ky-571-jsdoc-typo.json"
+    },
+    {
+      "filename": "packages/evals/fixtures/public/vite-15365-env-file-watch.json"
+    },
+    {
+      "filename": "packages/evals/fixtures/public/vite-4118-slash-esm.json"
+    },
+    {
+      "filename": "packages/evals/fixtures/public/yargs-766-command-validation.json"
+    },
+    {
+      "filename": "packages/evals/package.json"
+    },
+    {
+      "filename": "packages/evals/src/check-fixtures.ts"
+    },
+    {
+      "filename": "packages/evals/src/fixtures.ts"
+    },
+    {
+      "filename": "packages/evals/src/index.ts"
+    },
+    {
+      "filename": "packages/evals/src/manifest.test.ts"
+    },
+    {
+      "filename": "packages/evals/src/manifest.ts"
+    },
+    {
+      "filename": "packages/evals/tsconfig.json"
+    },
+    {
+      "filename": "pnpm-lock.yaml"
+    },
+    {
+      "filename": "tsconfig.json"
+    },
+    {
+      "filename": "vitest.config.ts"
+    }
+  ],
+  "repos/hartz89/docent/issues/11/timeline?per_page=100&page=1": [
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-08T04:18:49Z"
+      }
+    },
+    {
+      "event": "merged",
+      "created_at": "2026-11-08T04:18:55Z",
+      "actor": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "event": "closed",
+      "created_at": "2026-11-08T04:18:55Z",
+      "actor": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "event": "head_ref_deleted",
+      "created_at": "2026-11-08T04:18:58Z",
+      "actor": {
+        "login": "hartz89"
+      }
+    },
+    {
+      "event": "cross-referenced",
+      "created_at": "2026-11-08T05:06:46Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    }
+  ],
+  "repos/hartz89/docent/pulls/11/comments?per_page=100&page=1": [],
+  "repos/hartz89/docent/pulls/11/files?per_page=100&page=1": [
+    {
+      "filename": ".claude/settings.json"
+    }
+  ],
+  "repos/hartz89/docent/issues/25/timeline?per_page=100&page=1": [
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-08T21:51:05Z"
+      }
+    },
+    {
+      "event": "auto_squash_enabled",
+      "created_at": "2026-11-08T21:51:31Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "reviewed",
+      "state": "commented",
+      "body": "Fresh-context review. No bugs found.\n\nWhat I checked:\n\n- **Stale closure in `go`.** `stop` is in the deps, so `go` always saves the stop you're leaving. The keyboard effect re-subscribes on `go`, and Route gets `go` directly, so all three paths (button, arrows, route) save the right stop.\n- **Effect timing.** The `Narration` remount (via `key`) and the parent's layout effect land in the same commit, and the parent's layout effect runs after the child's DOM is in place. Narration content is synchronous (Markdown builds elements inline, no async fetch), so the restored `scrollTop` isn't clamped by a half-rendered panel.\n- **Edges.** At either end, `go` clamps to the same index, so `stopId` doesn't change and the effect doesn't fire. The scroll stays put, which is right. A route click on the current stop does the same. StrictMode's double layout effect is harmless here.\n- **CSS.** `:hover:not(:disabled)` keeps the brass border off the disabled button. The disabled state overrides the new `color` and background. `--brass`, `--border` and `--faint` all exist.\n- **E2E.** \"Next stop\" sits at the bottom of the narration, so once the guide is scrolled to the bottom it's already in view, and Playwright's auto-scroll before the click won't change the saved position. `expect.poll` covers the post-render timing. The viewport resize is the last step, so it can't leak into the others.\n\nOne small, accepted gap that the description already covers: a revisited stop that had Q&A comes back shorter, so its saved position gets clamped. It does no harm, and #19 owns it.\n",
+      "submitted_at": "2026-11-08T21:52:47Z",
+      "user": {
+        "login": "docent-reviewer-hartz89[bot]"
+      }
+    },
+    {
+      "event": "merged",
+      "created_at": "2026-11-08T21:52:54Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "closed",
+      "created_at": "2026-11-08T21:52:54Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "head_ref_deleted",
+      "created_at": "2026-11-08T21:52:56Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "cross-referenced",
+      "created_at": "2026-11-10T03:39:44Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    }
+  ],
+  "repos/hartz89/docent/pulls/25/comments?per_page=100&page=1": [],
+  "repos/hartz89/docent/pulls/25/files?per_page=100&page=1": [
+    {
+      "filename": "apps/web/src/styles.css"
+    },
+    {
+      "filename": "apps/web/src/tour-screen.tsx"
+    },
+    {
+      "filename": "e2e/tour.spec.ts"
+    }
+  ],
+  "repos/hartz89/docent/issues/29/timeline?per_page=100&page=1": [
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T02:37:59Z"
+      }
+    },
+    {
+      "event": "auto_squash_enabled",
+      "created_at": "2026-11-10T02:38:24Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "merged",
+      "created_at": "2026-11-10T02:39:14Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "closed",
+      "created_at": "2026-11-10T02:39:14Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "head_ref_deleted",
+      "created_at": "2026-11-10T02:39:16Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "reviewed",
+      "state": "changes_requested",
+      "body": "One real bug, otherwise this looks good.\n\n**Tab-indented lines shift 2ch left when wrapping is on (the default).** Tab stops are measured from the content edge of `.line-text`, which the padding moves right by `indent + 2ch`. The negative `text-indent` then starts the first row 2ch before a tab stop, so the first tab only advances 2ch. Every tab-indented line (Go, Makefiles, some TS) renders 2ch left of where it sits with wrapping off, and out of line with space-indented neighbours. Mid-line tabs are off by the same 2ch.\n\nI checked this in Chromium with the PR's CSS (x of the first non-space character):\n\n| line | wrap off | wrap on |\n|---|---|---|\n| `\\t\\t` | 142 | 127 |\n| 8 spaces | 142 | 142 |\n| `\\t` | 112 | 97 |\n| 4 spaces | 112 | 112 |\n\nA small fix: make the total hang a multiple of the tab size, so the first row starts on a tab stop. For example, set the custom property to the whole hang, `Math.ceil((indentOf(tokens) + 2) / TAB_WIDTH) * TAB_WIDTH`, and use it directly in `padding-left` and `text-indent`. Continuation rows then hang 2 to 4ch past the indent, which still reads fine. A tab-indented line in the e2e fixture, or a unit check on alignment, would keep it fixed.\n\nOther things I looked at and found fine:\n- Space-indented first rows stay put. `.line-text` is a grid item, so it's blockified and `text-indent` applies.\n- `1fr` with `overflow-wrap: anywhere` lets the column shrink, and `.code.wrap { min-width: 0 }` overrides `max-content`.\n- The localStorage guard, the legend `aria-hidden` change, and the `wrap` effect dependency are all fine.\n- The e2e step is sound. Reload keeps the token through sessionStorage, and it's the last step, so the viewport change doesn't leak.\n",
+      "submitted_at": "2026-11-10T02:39:33Z",
+      "user": {
+        "login": "docent-reviewer-hartz89[bot]"
+      }
+    },
+    {
+      "event": "cross-referenced",
+      "created_at": "2026-11-10T02:40:55Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "cross-referenced",
+      "created_at": "2026-11-10T02:58:56Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "referenced",
+      "created_at": "2026-11-10T02:59:57Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    }
+  ],
+  "repos/hartz89/docent/pulls/29/comments?per_page=100&page=1": [],
+  "repos/hartz89/docent/pulls/29/files?per_page=100&page=1": [
+    {
+      "filename": "apps/web/src/code-view.tsx"
+    },
+    {
+      "filename": "apps/web/src/styles.css"
+    },
+    {
+      "filename": "e2e/tour.spec.ts"
+    }
+  ],
+  "repos/hartz89/docent/issues/30/timeline?per_page=100&page=1": [
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T02:37:59Z"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T02:40:31Z"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T02:41:26Z"
+      }
+    },
+    {
+      "event": "reviewed",
+      "state": "approved",
+      "body": "This fixes the tab shift from #29. Approving.\n\n- Because the hang is always a whole number of tab stops, the first row starts on a tab stop. So tabs line up no matter what `indentOf` returns. The indent only decides how far continuation rows hang.\n- `indentOf` now snaps a tab to the next stop, which matches how the browser lays out `tab-size: 4`. \"2 spaces + tab\" now counts as 4, where the old code counted 6.\n- Lines that are empty or only whitespace get a hang of 4ch, which is harmless.\n- I reran `tabtest2.mjs` in Chromium. All seven markers land at the same x with wrapping on and off.\n\nOne follow-up, not blocking: the regression test gap noted in the PR. A single tab-indented line in the e2e fixture, plus an x-position check with wrapping on and off, would guard this without a new unit test project.\n",
+      "submitted_at": "2026-11-10T02:42:03Z",
+      "user": {
+        "login": "docent-reviewer-hartz89[bot]"
+      }
+    },
+    {
+      "event": "auto_squash_enabled",
+      "created_at": "2026-11-10T02:42:23Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "merged",
+      "created_at": "2026-11-10T02:42:48Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "closed",
+      "created_at": "2026-11-10T02:42:48Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "head_ref_deleted",
+      "created_at": "2026-11-10T02:42:49Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "cross-referenced",
+      "created_at": "2026-11-10T02:58:56Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "referenced",
+      "created_at": "2026-11-10T02:59:57Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    }
+  ],
+  "repos/hartz89/docent/pulls/30/comments?per_page=100&page=1": [],
+  "repos/hartz89/docent/pulls/30/files?per_page=100&page=1": [
+    {
+      "filename": "apps/web/src/code-view.tsx"
+    },
+    {
+      "filename": "apps/web/src/styles.css"
+    }
+  ],
+  "repos/hartz89/docent/issues/31/timeline?per_page=100&page=1": [
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T02:58:39Z"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T02:58:39Z"
+      }
+    },
+    {
+      "event": "reviewed",
+      "state": "approved",
+      "body": "This is a clean revert. Approving.\n\n- The head (9ae7f55) has exactly the same files as 1f80e34, the last main commit before #29. `git diff 1f80e34 origin/web/revert-wrap` prints nothing.\n- Only #29 and #30 have landed on main since 1f80e34, so nothing else depends on the wrap code.\n",
+      "submitted_at": "2026-11-10T02:59:15Z",
+      "user": {
+        "login": "docent-reviewer-hartz89[bot]"
+      }
+    },
+    {
+      "event": "auto_squash_enabled",
+      "created_at": "2026-11-10T02:59:26Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "merged",
+      "created_at": "2026-11-10T02:59:55Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "closed",
+      "created_at": "2026-11-10T02:59:55Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "head_ref_deleted",
+      "created_at": "2026-11-10T02:59:57Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    }
+  ],
+  "repos/hartz89/docent/pulls/31/comments?per_page=100&page=1": [],
+  "repos/hartz89/docent/pulls/31/files?per_page=100&page=1": [
+    {
+      "filename": "apps/web/src/code-view.tsx"
+    },
+    {
+      "filename": "apps/web/src/styles.css"
+    },
+    {
+      "filename": "e2e/tour.spec.ts"
+    }
+  ],
+  "repos/hartz89/docent/issues/33/timeline?per_page=100&page=1": [
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T03:39:28Z"
+      }
+    },
+    {
+      "event": "reviewed",
+      "state": "approved",
+      "body": "Approving. I found no real bugs.\n\nWhat I checked:\n- **Asking on stop A, then on stop B while A is pending.** `settle` captures its own `stopId`, so A's answer lands in A's thread. Pending is worked out from the thread, so it also survives leaving the stop and coming back.\n- **One question at a time per stop.** This holds in the UI. Clicks and keydowns are discrete events, so React re-renders and disables the button before a second submit can get through. One thing to harden later: `settle` patches \"the last exchange\", which is only right because of that UI guard. If two asks ever overlapped on one stop, the first answer would land on the second question, and the first would stay \"reading\" forever. Tagging each exchange with an id, or its index at append time, would remove that dependency.\n- **Scroll effect.** `exchanges.length` only changes on append, and the `asked` ref keeps the scroll from firing on mount or on a revisit. So it doesn't fight the per-stop scroll restore. The biome-ignore is fine.\n- **Errors.** A non-JSON body makes `res.json()` throw, and the catch shows the parse error. The message is ugly but nothing hangs. The old code behaved the same.\n- **Labels.** `htmlFor`/`id` are right, and the label text change works with `getByLabel`.\n- **E2e.** The fixture repeats the last recorded reply, and the test only counts answers, so two questions are safe. After Ctrl+Enter, focus leaves the textarea when Next stop is clicked, so ArrowLeft isn't swallowed. Small thing: `answerBottom` reads `.y`, which is the answer's top. The assertion is weaker than its name says. `y + height` would test what was meant.\n",
+      "submitted_at": "2026-11-10T03:40:48Z",
+      "user": {
+        "login": "docent-reviewer-hartz89[bot]"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T03:41:34Z"
+      }
+    },
+    {
+      "event": "auto_squash_enabled",
+      "created_at": "2026-11-10T03:41:39Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "merged",
+      "created_at": "2026-11-10T03:42:59Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "closed",
+      "created_at": "2026-11-10T03:42:59Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "head_ref_deleted",
+      "created_at": "2026-11-10T03:43:00Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    }
+  ],
+  "repos/hartz89/docent/pulls/33/comments?per_page=100&page=1": [],
+  "repos/hartz89/docent/pulls/33/files?per_page=100&page=1": [
+    {
+      "filename": "apps/web/src/styles.css"
+    },
+    {
+      "filename": "apps/web/src/tour-screen.tsx"
+    },
+    {
+      "filename": "e2e/tour.spec.ts"
+    }
+  ],
+  "repos/hartz89/docent/issues/42/timeline?per_page=100&page=1": [
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T05:23:21Z"
+      }
+    },
+    {
+      "event": "reviewed",
+      "state": "changes_requested",
+      "body": "Adversarial review, round 1. I ran every input below against the branch's real detectors (via `changes()` from `changes.testing.ts` and `renameLookups` answered with \"nowhere else\", as the tests do). Each one produced a proof for a change that alters behavior. None of them falls under the accepted gaps in the description.\n\nThe ledger itself looks right: one placement per line, removed lines keyed by `oldPath` on both sides, hunk ids unique per file path, stale proofs dropped. The gitattributes subset also matched git's rules in everything I tried. The lockfile source check held up (`registry.npmjs.org.evil.com`, `registry.npmjs.org@evil.com` both stay unproven).\n\n## Blockers\n\n### 1. A backtick inside a string hides a multi-line template or Go raw string (`proof.ts`, `mayHaveMultilineStrings`)\n\nThe check counts backticks per line. A backtick inside a quote, rune, regex or comment makes the count even, so a template left open at the end of the line goes unnoticed. Whitespace (P3), blank-line (P4) and rename (P9) proofs then reach inside the string.\n\n```ts\n// a.ts, before                      // a.ts, after\nconst t = '`' + `                    const t = '`' + `\nhello                                        hello\nworld${'`'}`;                        world${'`'}`;\n```\n\n- `proveWhitespace` proves the hunk (`whitespace`). The string's value changed.\n- Inserting a blank line between `hello` and `world` gets a `blank_line` proof.\n- With `function admin()` \u2192 `function guest()` in the same file, the template text line `role: admin` \u2192 `role: guest` is proven as a `rename`.\n- Go, same idea: `var t = string('`') + \\`` / `hello` \u2192 `    hello` / `` ` + string('`') `` gets a `whitespace` proof inside a raw string.\n\n**Fix:** decide this with a small per-file scan that tracks quote, template and comment state across lines. Or, more simply and conservatively, treat any line that has a backtick together with any of `' \" /` as \"may span lines\".\n\n### 2. Rename treats regex literal bodies as code (`rename.ts`, `tokenize`)\n\n`tokenize` only knows quote strings, so the words inside `/\u2026/` become identifiers.\n\n```ts\n// before\nfunction admin() { return 1; }\nexport const ok = (s: string) => /^admin\\b/.test(s) && admin();\n// after\nfunction guest() { return 1; }\nexport const ok = (s: string) => /^guest\\b/.test(s) && guest();\n```\n\nProven as `rename admin \u2192 guest`. The regex now matches different input.\n\n**Fix:** in JS/TS, have `tokenize` return null for a line with a `/` that doesn't start a `//` comment. Or lex regex literals as string-like tokens that must match exactly.\n\n### 3. A renamed name in an import list rebinds to a different export of an outside module (`rename.ts`, `propertyAt` / `inImportList`)\n\nImport lists are exempt from the property rule. That's fine for `x as y` and for local modules whose definition is renamed too. But the imported name *is* a property of the source module. Any definition with the same name anywhere in the PR licenses the rename.\n\n```ts\n// util.ts:  export function pick(o) {\u2026}      \u2192  export function omit(o) {\u2026}\n// b.ts:     import { pick } from 'lodash';    \u2192  import { omit } from 'lodash';\n//           export const x = pick(user, keys) \u2192  export const x = omit(user, keys)\n```\n\nBoth hunks are proven `rename pick \u2192 omit`. The `omit` lookup finds nothing in the repo, since `node_modules` isn't committed. b.ts now calls a different lodash function. Python does the same: `from hashlib import md5` \u2192 `from hashlib import sha1`, licensed by `def md5` \u2192 `def sha1` in another file, is proven.\n\n### 4. A local definition licenses renaming a global in another file (`rename.ts`, `solve`)\n\nThe \"defined\" check is global across the PR, so a definition in one file justifies a use in a file that never imports it.\n\n```ts\n// a.ts:  function fetch() { return 1; }  \u2192  function steal() { return 1; }\n// b.js:  export const r = fetch(url);    \u2192  export const r = steal(url);\n```\n\nBoth are proven. In b.js, `fetch` was the platform global. Now it's whatever `steal` resolves to: a `ReferenceError`, or an attacker's global if a.ts is loaded as a script.\n\n**Fix for 3 and 4 together:** license a renamed use in file F only if F itself renames the definition, or F's import list renames it from a relative specifier that resolves (as `reaches` already does) to a diff file that renames the definition. Treat the imported side of a non-relative import (`'lodash'`, `hashlib`) as risky.\n\n### 5. More property and key positions the rename proof misses (`rename.ts`, `propertyAt`)\n\nAll of these were proven, and all of them change which outside key or parameter is named:\n\n- Destructuring with a default: `const { limit = 10 } = opts;` \u2192 `const { quota = 10 } = opts;` now reads `opts.quota`.\n- Python keyword argument: `requests.get(url, timeout=timeout())` \u2192 `requests.get(url, deadline=deadline())`. Licensed by `def timeout` \u2192 `def deadline` in the same file.\n- JSX attribute: `<button disabled={disabled()} />` \u2192 `<button hidden={hidden()} />`.\n- Method shorthand: `{ toJSON() { return toJSON(); } }` \u2192 `{ toJson() { return toJson(); } }`. `JSON.stringify` stops calling it.\n\n**Fix:** also mark as risky a name followed by a single `=` (not `==` or `=>`) when it comes after `{`, `,`, `(` or an identifier or tag name, and a name followed by `(` when it comes after `{` or `,`. Both rules are conservative. They'll refuse some default parameters, and that's the right side to err on.\n\n### 6. Reordering a barrel changes module evaluation order (`detect.ts`, `unchangedMeaning`)\n\n```ts\n// before                         // after\nexport * from './polyfill';       export { a } from './a';\nexport { a } from './a';          export * from './polyfill';\n```\n\nProven `re_export`. But `./a` now runs before the polyfill is installed.\n\n**Fix:** require the specifiers, in order of first appearance, to be the same list, not just the same set.\n\n## Suggestions (non-blocking)\n\n- P8's known patterns prove *new* files the PR creates in any `dist/` or `vendor/` folder, for example `src/lib/vendor/helper.ts` that real code imports. The accepted gap is about files that really are generated. Here, the PR picks the location. Consider applying the known patterns only to files that already existed at base.\n- Add each input above as an adversarial test case. The existing adversarial list is good, and these fit right next to it.\n",
+      "submitted_at": "2026-11-10T05:30:00Z",
+      "user": {
+        "login": "docent-reviewer-hartz89[bot]"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T05:34:08Z"
+      }
+    },
+    {
+      "event": "reviewed",
+      "state": "changes_requested",
+      "body": "Adversarial review, round 2, at 93ee230. All six round-1 inputs now print NO PROOF, and the barrel order and P8 base-only fixes look right.\n\nThe new code still lets a behavior change through. I ran every input below against the branch's detectors, the same way as in round 1. Each one produced a proof.\n\n## Blockers\n\n### 1. Two more shapes hide an open template (`proof.ts`, `mayHaveMultilineStrings`)\n\nThe new rule catches a backtick next to a quote, slash or backslash. These two shapes have none of those, an even backtick count and balanced braces, yet they leave a template open at the end of the line.\n\nPlain TS: a nested template opened after a `}` that closes an earlier block.\n\n```ts\nif (a) {\n} const s = `${`hello\nworld                    // re-indented to \"    world\": proven `whitespace`\n`}`; if (b) {\n}\n```\n\nAdding a blank line inside the template gets a `blank_line` proof too.\n\nTSX: a backtick in JSX text.\n\n```tsx\nexport const el = <p>{a\n}` {`hello\nworld                    // re-indented: proven `whitespace`\nx`}`{b\n}</p>;\n```\n\nBoth attacks need the base to already hold the odd shape, since a normal template is still caught at base. So an earlier, innocent-looking PR has to plant it first. That's a real path for a patient attacker, and the per-line heuristic has now been beaten twice.\n\n**Fix:** a small per-file lexer for JS/TS/Go that tracks string, template (with `${}` depth), comment, regex and JSX-text state across lines, and errs to \"open\" whenever it's unsure. It's what the heuristic approximates, and it closes the whole class.\n\n### 2. Import lists that `inImportList` can't read count as `'local'` (`rename.ts`, `importedFrom` / `inImportList`)\n\nWhen an import list's item line doesn't match `LIST_ITEM`, the line isn't seen as an import. A `name as alias` item then passes the shorthand rule, because `as` follows the name. The imported name is renamed, licensed by a same-file definition of the same name.\n\n```py\n# a.py: md5 \u2192 sha1 everywhere; h is now hashlib.sha1\nfrom hashlib import (\n    md5 as h,\n)\n\ndef md5(x):\n    return h(x)\n```\n\n```ts\n// a.ts: pick \u2192 omit everywhere; p is now lodash's omit\nimport {\n  pick as p, // lodash\n} from 'lodash';\n\nfunction pick() { return p; }\npick();\n```\n\nBoth are proven `rename`.\n\n**Fix:** decide \"is this inside an import or export statement\" with a forward scan from the statement start, not line shape. Inside one, anything that isn't a relative JS/TS specifier is risky, as it is now. For Python, any line between `from \u2026 import (` and `)` counts as an import.\n\n### 3. A relative import is licensed even when the source doesn't export the definition (`rename.ts`, `licensed`)\n\n`licensed` checks that the importer `reaches` a file that renames a definition of the name. It doesn't check that this definition is what the file exports.\n\n```ts\n// util.ts: export * from 'lodash';  function pick() {\u2026} (not exported)  \u2192  function omit() {\u2026}\n// b.ts:    import { pick } from './util'  \u2192  import { omit } from './util'\n```\n\nBoth are proven. At base, b.ts got lodash's `pick` through the star. Now it gets lodash's `omit`.\n\n**Fix:** only license an importer when the source's definition is exported: `export` on the defining line, or the name in a local `export { \u2026 }` list. And never license through a source that has an `export *`.\n\n### 4. A nested definition licenses renaming a global in the same file (`rename.ts`, `licensed` / `definesAt`)\n\nRound 1's cross-file case is closed. The same thing still works inside one file, because any definition at any depth licenses every use in its file.\n\n```ts\n// a.ts\nfunction test() {\n  const setTimeout = (f: () => void) => f();   // \u2192 const queueMicrotask = \u2026\n  return setTimeout(run);                      // \u2192 return queueMicrotask(run);\n}\nsetTimeout(poll, 1000);                        // \u2192 queueMicrotask(poll, 1000);  the real global\n```\n\nProven `rename setTimeout \u2192 queueMicrotask`. `queueMicrotask` is absent from the repo, so it looks fresh. The last line now runs `poll` right away instead of after a second.\n\n**Fix:** only a top-level definition licenses a file. That means one at column 0, optionally after `export`. A top-level binding shadows any global for the whole file, so every use then refers to it or to a shadow that's renamed the same way.\n\n### 5. Member definitions still get renamed (`rename.ts`, `propertyAt` / `definesAt`)\n\nA method or field name is a property that outside code or the runtime looks up. These were all proven:\n\n- Python dunder: `def __eq__(self, other):` \u2192 `def __ne__(self, other):`. Equality is now inverted.\n- Go method: `func (m Money) String() string` \u2192 `func (m Money) Text() string`. `Money` stops being a `fmt.Stringer`.\n- TS class field: `toJSON = () => toJSON();` \u2192 `toJson = () => toJson();`, licensed by a top-level `function toJSON`.\n- TS method with its parameters on the following lines (Prettier's format for long signatures): `toJSON(` / `key: string,` / `) {`. The new rule only catches a method line that ends in `{`.\n\n**Fix:**\n- Treat a definition as risky when it's indented under `class` (Python `def` with `self`/`cls`, any indented `def` inside a class).\n- Treat Go receiver methods as risky.\n- Never map dunder names.\n- For JS/TS class bodies, a name at line start followed by `=`, `(` or `<` should be risky whatever the line ends with.\n\nFix 4's top-level rule doesn't cover the TS cases: a top-level function and a class member can share a name.\n\n## A suggestion on approach (non-blocking)\n\nRound 1 found four missing property positions. Round 2 found four more. Listing *risky* positions is a denylist, and denylists keep leaking. Consider flipping P9 to an allowlist: a renamed token is proven only in positions known to be a plain reference or a top-level definition. That means after a definer at column 0, or in expression position after `(`, `,`, `=`, `return`, an operator or line-start-followed-by-`(`-or-`.` call. Everything else stays visible. You'd prove fewer renames. But each proof would rest on positions you've enumerated as safe, not on the absence of ones you thought to forbid.\n\nRepro scripts: every input above is a self-contained `changes([...])` call. Adding each to `rename.test.ts` / `detect.test.ts` as an adversarial case would lock them in.\n",
+      "submitted_at": "2026-11-10T05:37:14Z",
+      "user": {
+        "login": "docent-reviewer-hartz89[bot]"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T05:42:31Z"
+      }
+    },
+    {
+      "event": "reviewed",
+      "state": "changes_requested",
+      "body": "Adversarial review, round 3, at 96af5cb. The switch to an allowlist is a big step. All round-1 and round-2 inputs now print NO PROOF.\n\nThe new template rule held up. A backtick line with any of `' \" / \\ { } $` counts as open, and the rest of the line can't hide a backtick, so I couldn't find a way past it. `importStatement`, `blockCommentLines` and the `export *` and `exported` checks in `licensed` also held against everything I tried.\n\nThree holes remain in `role` and in what counts as a definition. I ran each input below with the branch's detectors, and each one gets a rename proof.\n\n## Blockers\n\n### 1. The `,` rule only looks at the current line (`rename.ts`, `role` / `enclosing`)\n\n`enclosing` returns `''` when the bracket opened on an earlier line. `'' !== '{'`, so the name counts as a plain reference. That's the normal shape of a multi-line object literal or destructuring pattern.\n\n```ts\n// a.ts: limit \u2192 quota everywhere\nexport const limit = 10;\nexport const config = {\n  retries: 3, limit,        // shorthand: config.limit becomes config.quota\n};\n```\n\nThe same thing works for multi-line destructuring. `const {` / `    retries, limit,` / `  } = opts;` now reads `opts.quota`. It also works for an object method key: `  a() {}, toJSON() { return 2; },` inside a multi-line literal renames the key `JSON.stringify` looks for.\n\n**Fix:** treat `,` as safe only when the enclosing bracket is found on the same line and is `(` or `[`. When `enclosing` returns `''`, it's unsafe.\n\n### 2. Column 0 doesn't mean top level (`rename.ts`, `DEFINITION` / `role`)\n\nAn unindented `const` inside a function body passes as a top-level definition. That brings back round 2's same-file case.\n\n```ts\nexport function test() {\nconst setTimeout = (f: () => void) => f();     // \u2192 const queueMicrotask = \u2026\nreturn setTimeout(run);                        // \u2192 return queueMicrotask(run);\n}\nexport const t = () => setTimeout(poll, 1000); // \u2192 queueMicrotask(poll, 1000): the real global\n```\n\nThis is proven as `rename setTimeout \u2192 queueMicrotask`.\n\n**Fix:** track brace depth across the file. You can use `tokenize` per line, refusing the file if any line fails. Then a definition counts only at depth 0. Indentation can't be trusted, since the PR controls it.\n\n### 3. `declare` binds nothing at runtime, yet licenses the rename (`rename.ts`, `DEFINITION`)\n\n```ts\ndeclare const setTimeout: (f: () => void, ms: number) => void;   // \u2192 declare const queueMicrotask: \u2026\nexport const start = () => setTimeout(poll, 1000);               // \u2192 queueMicrotask(poll, 1000)\n```\n\nThis is proven. The `declare` line only describes a global, so every use of the name is the runtime global. Renaming it switches to a different global.\n\n**Fix:** drop `declare` from `DEFINITION`, or let `declare` lines define but never license.\n\n## Suggestion (non-blocking)\n\n- `with (obj) { return (limit); }` in a sloppy-mode `.js` file is proven. Inside `with`, `limit` may be `obj.limit`. It's rare, but cheap to close: refuse rename proofs in any file whose text contains `with (` or `with(`.\n- Add each input above to `rename.test.ts`.\n",
+      "submitted_at": "2026-11-10T05:44:55Z",
+      "user": {
+        "login": "docent-reviewer-hartz89[bot]"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T05:46:12Z"
+      }
+    },
+    {
+      "event": "reviewed",
+      "state": "changes_requested",
+      "body": "Adversarial review, round 4, at c1427b4. Every input from rounds 1\u20133 prints NO PROOF. The comma change holds:\n- `(`, `[` and nested `f({ a: 1 }, x)` all resolve correctly.\n- Generics, object literals, and lines where the bracket opened earlier are all unsafe now.\n- Dropping `declare` and skipping files with `with (` both work.\n\nOne blocker remains, in `readSource`.\n\n## Blocker\n\n### `/*` inside a `//` comment or a string hides real braces from the depth count (`rename.ts`, `readSource`)\n\n`readSource` looks for `/*` with a plain `indexOf` before it tokenizes. A `/*` inside a line comment or a string starts a fake block comment. Everything up to the next `*/` is then dropped from the depth count, real braces included. Those lines go into `comments`, so they never get a role themselves. But the lines after them are judged at the wrong depth.\n\n```ts\n// /*\nexport function test() {\n// */\nconst setTimeout = (f: () => void) => f();       // \u2192 const queueMicrotask = \u2026   (counted as depth 0)\nreturn setTimeout(run);                          // \u2192 return queueMicrotask(run);\n// /*\n}\n// */\nexport const t = () => setTimeout(poll, 1000);   // \u2192 queueMicrotask(poll, 1000): the real global\n```\n\nThis is proven as `rename setTimeout \u2192 queueMicrotask`, which is round 3's #2 again. A string works the same way: `const s = \"/*\"; export function test() { const u = \"*/\";` hides the `{`, and `const v = \"/*\"; } const w = \"*/\";` hides the `}`. That's proven too.\n\nAs with the template attacks, the base file needs the odd shape first. But the fix is small.\n\n**Fix:** find block comments in the same left-to-right scan that already knows about strings and `//`. For example, give `tokenize` a \"starts inside a block comment\" flag, and have it return whether the line ends inside one. Then `/*` inside a string or after `//` is just text. A cruder but safe option: if any line has a `/*` or `*/` that isn't the first non-space token, treat no line as top level.\n\n## Non-blocking\n\n- Add both inputs above to `rename.test.ts`.\n\nOnce this is fixed, I expect to approve. I couldn't break the rest of the allowlist.\n",
+      "submitted_at": "2026-11-10T05:47:20Z",
+      "user": {
+        "login": "docent-reviewer-hartz89[bot]"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T05:48:19Z"
+      }
+    },
+    {
+      "event": "reviewed",
+      "state": "changes_requested",
+      "body": "Adversarial review, round 5, at 395f4a1. The single-scan `readSource` closes round 4's hole. All inputs from rounds 1\u20134 print NO PROOF.\n\nThe new scanner correctly ignores `/*` inside strings and `//` comments. It also ignores brackets inside strings and comments, refuses files with a regex or division, and refuses files that end unbalanced. One small gap remains.\n\n## Blocker\n\n### HTML-like comments hide braces in `.js` / `.cjs` script files (`rename.ts`, `readSource`)\n\nIn script code, which includes CommonJS, Annex B makes `<!--` anywhere, and `-->` at the start of a line, begin a single-line comment. `readSource` doesn't know this, so it counts braces that JavaScript ignores.\n\n```js\n// a.cjs: setTimeout \u2192 queueMicrotask everywhere\nfunction test() {\n<!-- }\nconst setTimeout = (f) => f();                     // counted as depth 0; really inside test()\nreturn setTimeout(run);\n}\n<!-- {\nmodule.exports = () => setTimeout(poll, 1000);     // the real global \u2192 queueMicrotask(poll, 1000)\n```\n\nThis is proven as `rename setTimeout \u2192 queueMicrotask` for both `a.cjs` and `a.js`. I checked with `vm.runInNewContext` that this parses as a script. At top level, `setTimeout` is the global, not the inner `const`. TS files and ES modules reject `<!--`, so only `.js`/`.cjs` are affected. As with the earlier cases, the base file needs this shape first.\n\n**Fix:** in `readSource`, treat `<!--` anywhere, and `-->` as the first non-space token of a line, as unreadable. Then no line counts as top level. That's one condition in the scanner's `else` branch.\n\n## Non-blocking\n\n- Add the input above to `rename.test.ts`.\n\nWith this fixed, I'd approve. I've tried the comma rule, `importStatement`, `licensed`, the template rule and the new scanner from several directions, and this is the last thing I found.\n",
+      "submitted_at": "2026-11-10T05:49:07Z",
+      "user": {
+        "login": "docent-reviewer-hartz89[bot]"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T05:49:49Z"
+      }
+    },
+    {
+      "event": "reviewed",
+      "state": "changes_requested",
+      "body": "Adversarial review, round 6, at 5bb59a2. The HTML-comment fix works, and all inputs from rounds 1\u20135 print NO PROOF. One more way to hide braces from `readSource` turned up, and it's in the same family.\n\n## Blocker\n\n### JS line terminators that git doesn't split on end a `//` comment early (`rename.ts`, `readSource`)\n\nJavaScript and TypeScript treat a lone CR (`\\r`), U+2028 and U+2029 as line terminators. Git and `splitLines` don't, so they keep one physical line. When `readSource` sees `//`, it skips the rest of the line. To the JS parser, though, the comment ends at the terminator, and whatever follows is code, braces included.\n\n```ts\n// a.ts: <SEP> is U+2028, U+2029 or a lone \\r; setTimeout \u2192 queueMicrotask everywhere\n// setup<SEP>export function test() {\nconst setTimeout = (f: () => void) => f();       // counted as depth 0; really inside test()\nreturn setTimeout(run);\n// end<SEP>}\nexport const t = () => setTimeout(poll, 1000);   // the real global \u2192 queueMicrotask(poll, 1000)\n```\n\nThis is proven as `rename setTimeout \u2192 queueMicrotask` for all three separators in a `.ts` file. I checked with `vm.runInNewContext` for U+2028 and `\\r`. The code parses, `test` is a real function (so the `{` is code), and the top-level `setTimeout` is the global. A reviewer's diff view would show these as comment lines. As before, the base file needs the shape first.\n\n**Fix:** make any `\\r`, U+2028 or U+2029 in a file's text disqualify it from every text-based proof. Put the check in `sidesOf` or `safeSides`, not just `readSource`. None of the detectors assume that git's line breaks are the language's line breaks. A broader, simpler rule would also work, and it matches what `tokenize` already does per line: in `readSource`, any character outside printable ASCII and tab makes the file unreadable.\n\n## Non-blocking\n\n- Add the three inputs as tests (for example, `\u2028` in a template string in the test file).\n\nWith this fixed, I'd approve.\n",
+      "submitted_at": "2026-11-10T05:50:45Z",
+      "user": {
+        "login": "docent-reviewer-hartz89[bot]"
+      }
+    },
+    {
+      "event": "committed",
+      "committer": {
+        "date": "2026-11-10T05:51:46Z"
+      }
+    },
+    {
+      "event": "reviewed",
+      "state": "approved",
+      "body": "Adversarial review, round 7, at 571a8b7. Approving.\n\nEvery input from rounds 1\u20136 now gets no proof. That's 33 inputs across six repro scripts, all run against this commit's detectors. The two fixes in this round are the right shape:\n- `sidesOf` refuses any text with `\\r`, U+2028 or U+2029. That covers every text-based detector at once, not just renames.\n- `readSource` refuses any character that isn't printable ASCII or tab, which matches `tokenize`.\n\nThis round I also re-checked the areas from earlier rounds against the final code, and nothing new turned up:\n- **Rename allowlist:** depth-0 definitions from a single-pass scanner, the comma rule, `importStatement`, and licensing through exported definitions with no `export *`.\n- **Template rule:** a backtick line with any of `' \" / \\ { } $` counts as open.\n- **P5 import prelude:** smuggling via `;` on an end line, block comments with trailing code, and `with` attributes.\n- **P6 barrels:** order, rebinding and shadowing.\n- **P7 lockfile registry matching.**\n- **P8:** gitattributes precedence, and base-only known patterns.\n- **Ledger:** totality and stale proofs.\n\nWhat's left is the accepted, documented set: lexical renames vs reflection and outside code, generated or vendored meaning location, and lockfiles not checked against manifests. One shared precondition behind several rounds' attacks is worth keeping in mind for the wiring PR. The base file had to contain an odd shape already, so a \"harmless\" earlier PR could plant one. The detectors now refuse all the shapes I found. But if new detectors are added later, they should reuse `sidesOf` and `readSource` rather than reading lines their own way.\n\nNon-blocking, for later: the denylist-to-allowlist switch in P9 was the turning point. If another detector grows position rules, start it as an allowlist.\n",
+      "submitted_at": "2026-11-10T05:52:25Z",
+      "user": {
+        "login": "docent-reviewer-hartz89[bot]"
+      }
+    },
+    {
+      "event": "merged",
+      "created_at": "2026-11-10T05:52:49Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "closed",
+      "created_at": "2026-11-10T05:52:49Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "head_ref_deleted",
+      "created_at": "2026-11-10T05:52:51Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "referenced",
+      "created_at": "2026-11-10T05:54:33Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "referenced",
+      "created_at": "2026-11-10T05:56:03Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    },
+    {
+      "event": "cross-referenced",
+      "created_at": "2026-11-10T05:56:13Z",
+      "actor": {
+        "login": "docent-builder-hartz89[bot]"
+      }
+    }
+  ],
+  "repos/hartz89/docent/pulls/42/comments?per_page=100&page=1": [],
+  "repos/hartz89/docent/pulls/42/files?per_page=100&page=1": [
+    {
+      "filename": "packages/core/SPEC.md"
+    },
+    {
+      "filename": "packages/core/src/changes.testing.ts"
+    },
+    {
+      "filename": "packages/core/src/coverage.ts"
+    },
+    {
+      "filename": "packages/core/src/detect.test.ts"
+    },
+    {
+      "filename": "packages/core/src/detect.ts"
+    },
+    {
+      "filename": "packages/core/src/gitattributes.ts"
+    },
+    {
+      "filename": "packages/core/src/index.ts"
+    },
+    {
+      "filename": "packages/core/src/ledger.test.ts"
+    },
+    {
+      "filename": "packages/core/src/ledger.ts"
+    },
+    {
+      "filename": "packages/core/src/proof.ts"
+    },
+    {
+      "filename": "packages/core/src/rename.test.ts"
+    },
+    {
+      "filename": "packages/core/src/rename.ts"
+    },
+    {
+      "filename": "packages/core/src/types.test.ts"
+    }
+  ]
+}
