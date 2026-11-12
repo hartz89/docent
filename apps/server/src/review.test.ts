@@ -83,6 +83,7 @@ const sourceFor =
           url: `https://github.com/acme/web/pull/7#pullrequestreview-${github.posted.length}`,
         };
       },
+      headFiles: async () => ({ entries: [], truncated: false, read: async function* () {} }),
     };
   };
 

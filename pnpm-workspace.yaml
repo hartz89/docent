@@ -9,3 +9,10 @@ minimumReleaseAge: 1440
 # Install scripts are off unless a package is listed here.
 onlyBuiltDependencies:
   - lefthook
+# Tree-sitter grammars ship a native Node binding built by an install script.
+# Docent only loads their prebuilt WASM files and queries, so the script never runs.
+ignoredBuiltDependencies:
+  - tree-sitter-go
+  - tree-sitter-javascript
+  - tree-sitter-python
+  - tree-sitter-typescript

@@ -13,6 +13,11 @@
     "@anthropic-ai/claude-agent-sdk": "0.3.318",
     "@docent/core": "workspace:*",
     "@hono/node-server": "2.1.6",
-    "hono": "4.13.16"
+    "hono": "4.13.16",
+    "tree-sitter-go": "0.25.0",
+    "tree-sitter-javascript": "0.25.0",
+    "tree-sitter-python": "0.25.0",
+    "tree-sitter-typescript": "0.23.2",
+    "web-tree-sitter": "0.27.1"
   }
 }
