@@ -149,14 +149,18 @@ export function CodeView({ path, side, cited, focus, changed, onStep }: Props) {
         )}
       </div>
       <div className="legend" aria-hidden="true">
-        <span>
-          <i className={`swatch ${changeClass}`} />
-          {side === 'new' ? 'Added in this PR' : 'Removed by this PR'}
-        </span>
-        <span>
-          <i className="swatch cited" />
-          Cited by this stop
-        </span>
+        {changed.size > 0 && (
+          <span>
+            <i className={`swatch ${changeClass}`} />
+            {side === 'new' ? 'Added in this PR' : 'Removed by this PR'}
+          </span>
+        )}
+        {cited.length > 0 && (
+          <span>
+            <i className="swatch cited" />
+            Cited by this stop
+          </span>
+        )}
         <span className="legend-keys">
           <kbd>←</kbd> <kbd>→</kbd> stops · <kbd>↑</kbd> <kbd>↓</kbd> read on
         </span>

@@ -118,6 +118,8 @@ async function serve(
       headInBaseRepo: true,
       dir: repo,
       readFile: async () => null,
+      open: async () => ({ kind: 'missing' }),
+      tree: async () => ({ entries: [], truncated: false }),
       currentHead: async () => head,
       postReview: async () => {
         throw new Error('not in this test');

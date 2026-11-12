@@ -433,6 +433,232 @@ code,
   margin-top: 6px;
 }
 
+/* ---------- The left pane: Route | Files ---------- */
+
+.pane-switch {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  gap: 2px;
+  margin: 0;
+  padding: 14px 14px 8px;
+  background: var(--panel);
+}
+
+.pane-switch button {
+  flex: 1;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  background: var(--ground);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 140ms var(--ease),
+    color 140ms var(--ease);
+}
+
+.pane-switch button:first-child {
+  border-radius: 8px 0 0 8px;
+}
+
+.pane-switch button:last-child {
+  border-radius: 0 8px 8px 0;
+}
+
+.pane-switch button[aria-selected="true"] {
+  background: var(--panel-raised);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.pane-count {
+  font-size: 11px;
+  color: var(--faint);
+  font-weight: 500;
+}
+
+.left-column .route {
+  padding-top: 14px;
+}
+
+.files {
+  padding: 6px 10px 28px;
+}
+
+.go-to-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  margin: 0 4px 10px;
+  padding: 0 8px 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--ground);
+  color: var(--faint);
+  cursor: text;
+}
+
+.go-to-file:focus-within {
+  border-color: var(--brass);
+}
+
+.go-to-file input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.go-to-file input::placeholder {
+  color: var(--faint);
+}
+
+.go-to-file input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tree-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 26px;
+  padding: 0 8px 0 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.75px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tree-node:disabled {
+  cursor: default;
+}
+
+.tree-node:hover:not(:disabled) {
+  background: var(--panel-raised);
+}
+
+.tree-node[aria-current="true"] {
+  background: var(--brass-tint);
+}
+
+.tree-twisty {
+  flex: none;
+  width: 12px;
+  color: var(--faint);
+  font-size: 9px;
+  text-align: center;
+}
+
+.tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-node.folder .tree-name,
+.tree-node.changed .tree-name {
+  color: var(--text);
+}
+
+.tree-node.unchanged .tree-name {
+  color: var(--muted);
+}
+
+.tree-node[aria-current="true"] .tree-name {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.tree-count,
+.tree-stat {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.tree-stat .added {
+  color: var(--added-mark);
+}
+
+.tree-stat .removed {
+  color: var(--removed-mark);
+}
+
+.tree-new {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--added-mark);
+}
+
+.route-dot {
+  flex: none;
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.route-dot.on {
+  background: var(--brass-fill);
+}
+
+.route-dot.off {
+  border: 1px solid var(--muted);
+}
+
+.tree-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 14px 8px 0;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.tree-key span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tree-cut {
+  margin-top: 10px;
+}
+
+.code-header .back-to-stop {
+  align-self: center;
+  margin: -6px 0;
+  padding: 3px 10px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
 /* ---------- Code view ---------- */
 
 .code-header {
@@ -784,6 +1010,21 @@ code,
   line-height: 1.55;
 }
 
+/* The guide's note under an author answer: close to the answer it's about. */
+.callout.correction {
+  margin-top: 10px;
+}
+
+.callout.correction .chips {
+  margin: 10px 0 0;
+}
+
+.correction-source {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
 .question {
   margin-top: 30px;
   padding-top: 22px;
@@ -981,14 +1222,16 @@ kbd {
   background: var(--panel);
 }
 
-.status-card h2 {
+.status-card h2,
+.tour-progress h2 {
   font-family: var(--serif);
   font-weight: 500;
   font-size: 24px;
   margin: 0 0 6px;
 }
 
-.status-card .lede {
+.status-card .lede,
+.tour-progress .lede {
   color: var(--muted);
   margin: 0 0 22px;
 }
@@ -1416,6 +1659,12 @@ kbd {
   position: absolute;
   top: 14px;
   right: 12px;
+  z-index: 2;
+}
+
+/* Leaves room for the close button beside the Route and Files tabs. */
+.route-drawer .pane-switch {
+  padding-right: 52px;
 }
 
 @keyframes drawer-in {
@@ -1656,5 +1905,46 @@ kbd {
     font-size: 13px;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
+  }
+}
+
+/* ---------- While the tour is written ---------- */
+
+/* The route's next row: the same size as a stop, so nothing moves when the stop arrives. */
+.upcoming-stop {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 12px;
+  padding: 9px 8px;
+}
+
+.upcoming-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--border-strong);
+  animation: pulse 1.4s var(--ease) infinite;
+}
+
+.upcoming-title {
+  display: block;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.35;
+  margin-top: 1px;
+}
+
+.waiting-note {
+  margin: 24px 0 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px dashed var(--border-strong);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .upcoming-dot {
+    animation: none;
   }
 }

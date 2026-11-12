@@ -70,7 +70,7 @@ for (const { width, height, codeMin, drawer } of widths) {
 
       if (!drawer) {
         await test.step('the route has its own column, and no drawer button', async () => {
-          await expect(page.getByRole('navigation', { name: 'The route' })).toBeVisible();
+          await expect(page.getByRole('navigation', { name: 'Route and files' })).toBeVisible();
           await expect(
             page.getByRole('button', { name: 'Open the route', exact: true }),
           ).toHaveCount(0);
@@ -87,7 +87,7 @@ for (const { width, height, codeMin, drawer } of widths) {
       const route = page.getByRole('dialog', { name: 'The route' });
 
       await test.step('the route opens as a drawer, focused on the current stop', async () => {
-        await expect(page.getByRole('navigation', { name: 'The route' })).toBeHidden();
+        await expect(page.getByRole('navigation', { name: 'Route and files' })).toBeHidden();
         const opener =
           width < 800
             ? routeButton
@@ -155,7 +155,7 @@ test('the layout switches exactly at its breakpoints, and a resize never strands
     await page.setViewportSize({ width: 1200, height: 800 });
     await page.goto(docent.url);
     await expect(page.locator('.narration-title')).toBeVisible();
-    const routeColumn = page.getByRole('navigation', { name: 'The route' });
+    const routeColumn = page.getByRole('navigation', { name: 'Route and files' });
     const routeButton = page.getByRole('button', { name: 'Open the route', exact: true });
     const stopBar = page.getByRole('navigation', { name: 'Stops' });
     const route = page.getByRole('dialog', { name: 'The route' });
