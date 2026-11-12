@@ -48,7 +48,7 @@ node scripts/as-agent.ts reviewer -- gh api --method POST /repos/hartz89/docent/
 node scripts/as-agent.ts builder -- gh api --method POST /repos/hartz89/docent/pulls/<n>/comments/<id>/replies --input <reply.json>
 ```
 
-The last two post a review with inline comments, and reply in a finding's thread (see [`pull-requests.md`](pull-requests.md)). They're the only `gh api` writes. The runner checks the JSON key by key before minting a token: a review may hold only `body`, `event` (`COMMENT`, `REQUEST_CHANGES` or `APPROVE`), `commit_id` and `comments`, and each comment only `path`, `line`, `side`, `start_line`, `start_side` and `body`. A reply is exactly `{"body": "..."}`. The runner pipes its own copy of the checked JSON to `gh`, so editing the file afterwards changes nothing.
+The last two post a review with inline comments, and reply in a finding's thread (see [`pull-requests.md`](pull-requests.md)). They're the only `gh api` writes. The runner checks the JSON key by key before minting a token: a review may hold only `body`, `event` (`COMMENT` or `REQUEST_CHANGES`, never `APPROVE`), `commit_id` and `comments`, and each comment only `path`, `line`, `side`, `start_line`, `start_side` and `body`. A reply is exactly `{"body": "..."}`. The runner pipes its own copy of the checked JSON to `gh`, so editing the file afterwards changes nothing.
 
 It finds the app's installation on this repo and mints a token scoped to that role's permissions. It runs the command with the token and the bot's git identity. It revokes the token when the command ends, or on Ctrl-C, kill or hangup. A `kill -9` can't be caught, so then the token lives until it expires, within the hour.
 
@@ -62,10 +62,10 @@ These guards keep honest mistakes from leaking the token:
 - **No reshaped output.** `gh --jq`/`--template` could print the token in a form the scrubber can't catch, so they're refused. So are `--web`/`--editor`.
 
 **Only a short list of commands can run this way.** Each role has an allowlist in the runner.
-- The builder can push a plain branch name (not `main`) without force, use most `gh pr` commands, squash-merge (`--squash`, optionally `--auto`, nothing else, so never `--admin`), create, view, list, comment on, edit and close issues, make read-only `gh api` calls, and reply to review comments in the exact form above.
-- The reviewer can read PRs, review, comment, make read-only `gh api` calls, and post a review with inline comments in the exact form above.
+- The builder can push a plain branch name (not `main`) without force, use most `gh pr` commands (`gh pr create` and `edit` only with a description of at most 350 visible words, from `--body-file` or `--body`; see "The description is the author handoff" in [`pull-requests.md`](pull-requests.md)), squash-merge (`--squash`, optionally `--auto`, nothing else, so never `--admin`), create, view, list, comment on, edit and close issues, make read-only `gh api` calls, and reply to review comments in the exact form above.
+- The reviewer can read PRs, review (`--comment` or `--request-changes`), comment, make read-only `gh api` calls, and post a review with inline comments in the exact form above.
 
-Anything else is refused before a token exists. Widening the list grants agents new powers, so it escalates to the maintainer. Whatever the list allows, the app's permissions above still cap it. Agents are only *forced* through the runner once settings also deny plain `gh` and `git push`, which comes after the apps work.
+Neither role can approve a PR: `gh pr review --approve` (or `-a`, in any spelling) and a review `event` of `APPROVE` are refused. Anything else is refused before a token exists. Widening the list grants agents new powers, so it escalates to the maintainer. Whatever the list allows, the app's permissions above still cap it. Agents are only *forced* through the runner once settings also deny plain `gh` and `git push`, which comes after the apps work.
 
 **Known gaps:**
 - **A race.** The repo config is checked just before the command runs, so an agent could change it in between.

@@ -99,7 +99,7 @@ It's what Docent itself reads, and often the only part a human reads. Make it wo
 - **Look here first:** the one or two places a reviewer should start.
 - **Known gaps,** in a collapsed `<details>` section.
 
-**Keep the visible part to about 300 words.** "Visible" means everything outside `<details>`. The maintainer reviews in Docent and on GitHub, and long descriptions cost the attention this process exists to save. Put detail and known gaps in collapsed `<details>` sections, or in a linked doc. Reviews posted on the PR already carry their own evidence, so the description gives the outcome in a line and doesn't repeat them.
+**Keep the visible part to about 300 words.** The runner refuses a `gh pr create` or `edit` whose description has more than 350 visible words. "Visible" means everything outside `<details>`. The maintainer reviews in Docent and on GitHub, and long descriptions cost the attention this process exists to save. Put detail and known gaps in collapsed `<details>` sections, or in a linked doc. Reviews posted on the PR already carry their own evidence, so the description gives the outcome in a line and doesn't repeat them.
 
 ## Dogfooding Docent
 
