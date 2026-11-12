@@ -21,6 +21,11 @@ export type AgentRequest = {
   signal?: AbortSignal;
   /** The most the session may spend. Default $2. */
   maxBudgetUsd?: number;
+  /**
+   * Called with the structured output written so far, each time more of it streams in. This is
+   * raw model text, cut off mid-way: parse and check it before any of it reaches a reader.
+   */
+  onOutput?: (jsonSoFar: string) => void;
 } & (
   | {
       /** Continue Docent's own earlier session, as the checker loop does with its problems. */
@@ -53,6 +58,17 @@ export type AgentReply = {
   cost: CostRecord;
   /** Tools the session tried and was refused, as the SDK reports them. */
   denials: string[];
+  /** Where the time went. Missing from recorded fixtures made before it existed. */
+  timing?: ModelTiming;
+};
+
+/** Milliseconds from the call's start. Null when the call never got that far. */
+export type ModelTiming = {
+  /** The first streamed token of the first model call, after the agent process started. */
+  firstTokenMs: number | null;
+  /** When the model began writing the structured output, after reading the code. */
+  outputStartMs: number | null;
+  totalMs: number;
 };
 
 export type AgentRunner = (request: AgentRequest) => Promise<AgentReply>;
@@ -107,6 +123,9 @@ export function readOnlyOptions(
     settingSources: [],
     maxTurns: request.keepIn !== undefined ? 1 : 60,
     maxBudgetUsd: request.maxBudgetUsd ?? 2,
+    // Token-by-token events, so the tour can show each stop as soon as it's written and checked.
+    // Output only: it changes nothing about what the session may do.
+    includePartialMessages: true,
     ...(request.resume ? { resume: request.resume } : {}),
     ...(request.fork
       ? { resume: request.fork, forkSession: true, persistSession: request.keepIn !== undefined }
@@ -161,6 +180,12 @@ async function run(request: AgentRequest, keptId?: string): Promise<AgentReply> 
     | { ok: false; failure: string; usage: Usage }
     | undefined;
   let denials: string[] = [];
+  let firstTokenMs: number | null = null;
+  let outputStartMs: number | null = null;
+  // The structured output streams in as the input of a StructuredOutput tool call. Its content
+  // block index is per API message, so it resets with each message.
+  let outputBlock: number | null = null;
+  let output = '';
   // Each API call's usage as its assistant frames report it, for when no result message arrives.
   // Input and cache tokens are exact there; output tokens are undercounted (see `costRecord`).
   const calls = new Map<string, Usage>();
@@ -201,13 +226,31 @@ async function run(request: AgentRequest, keptId?: string): Promise<AgentReply> 
         abortController,
       },
     })) {
-      if (message.type === 'assistant' && message.parent_tool_use_id === null) {
+      if (message.type === 'stream_event' && message.parent_tool_use_id === null) {
+        const event = message.event;
+        if (event.type === 'message_start') {
+          outputBlock = null;
+        } else if (event.type === 'content_block_start') {
+          if (event.content_block.type === 'tool_use' && event.content_block.name === STRUCTURED) {
+            outputStartMs ??= Date.now() - started;
+            outputBlock = event.index;
+            output = '';
+          }
+        } else if (event.type === 'content_block_delta') {
+          firstTokenMs ??= Date.now() - started;
+          if (event.index === outputBlock && event.delta.type === 'input_json_delta') {
+            output += event.delta.partial_json;
+            request.onOutput?.(output);
+          }
+        }
+      } else if (message.type === 'assistant' && message.parent_tool_use_id === null) {
         model = message.message.model || model;
         if (message.message.id && message.message.usage) {
           calls.set(message.message.id, message.message.usage as Usage);
         }
         for (const block of message.message.content) {
-          if (block.type === 'tool_use') {
+          // Handing back the output isn't reading the code, so it isn't reported as activity.
+          if (block.type === 'tool_use' && block.name !== STRUCTURED) {
             request.onActivity?.(describeTool(block.name, block.input, request.cwd));
           }
         }
@@ -254,8 +297,12 @@ async function run(request: AgentRequest, keptId?: string): Promise<AgentReply> 
     structured: ended.structured,
     cost,
     denials,
+    timing: { firstTokenMs, outputStartMs, totalMs: Date.now() - started },
   };
 }
+
+/** The tool Claude Code uses to hand back output that matches `outputFormat`. */
+const STRUCTURED = 'StructuredOutput';
 
 /** The result message's usage: this turn's API calls only, even when resuming a session. */
 type Usage = {

@@ -22,6 +22,8 @@ import {
 import { AgentError, type AgentRunner } from './agent.ts';
 import type { PrInfo, Workspace } from './github.ts';
 import type { RunLog } from './run-log.ts';
+import { type Span, type Timings, timings } from './timings.ts';
+import { StopScanner } from './tour-stream.ts';
 
 // ---- What the browser sees. Plain JSON, so the typed client keeps exact types. ----
 
@@ -50,10 +52,17 @@ export type TourOutcome = {
   createdAt: string;
   /** True when this came from the on-disk cache, so opening it cost nothing. */
   cached: boolean;
+  /** Where the time went, from opening the review. Empty for tours cached before it existed. */
+  timing: Span[];
 };
 
 export type TourProgress =
   | { step: 'planning'; detail: string | null }
+  /**
+   * The guide is writing the tour. `stops` are the ones finished so far that passed every check a
+   * single stop can pass on its own, in order. `writing` is how many it has begun.
+   */
+  | { step: 'writing'; stops: StopView[]; writing: number }
   | { step: 'checking'; attempt: number }
   | { step: 'retrying'; attempt: number; problems: number };
 
@@ -147,6 +156,8 @@ export type TourJob = {
   promptVersion?: TourPromptVersion;
   onProgress: (progress: TourProgress) => void;
   signal?: AbortSignal;
+  /** Where the job records its timing spans. The review passes its own, from when it opened. */
+  timings?: Timings;
   /** Where each attempt is recorded, with why the checker sent it back. */
   log?: RunLog;
 };
@@ -156,37 +167,62 @@ export const MAX_RETRIES = 2;
 
 export async function generateTour(job: TourJob): Promise<TourOutcome> {
   const { workspace, diff, runner, model, onProgress } = job;
+  const time = job.timings ?? timings();
   const costs: CostRecord[] = [];
+  let ended = time.span('Build the prompt');
   let prompt = TOUR_PROMPTS[job.promptVersion ?? TOUR_PROMPT_VERSION](workspace.pr, diff);
+  ended(`${prompt.length} chars`);
   let resume: string | undefined;
   // The best tour so far: the latest one that matched the schema. A later attempt that fails
-  // (bad JSON, a model error) never throws it away.
-  let best: Checked | undefined;
+  // (bad JSON, a model error) never throws it away. Once there is one, retries repair it:
+  // the guide sends back only the stops that change, so the rest stay exactly as written.
+  // Order problems need stops moved or removed, which a repair can't do: those get a whole tour.
+  let best: (Checked & { wire: WireTour }) | undefined;
   let attempts = 0;
+  const files = fileReader(workspace);
 
   while (attempts <= MAX_RETRIES) {
     attempts++;
+    const repairing = best !== undefined && !best.reorder;
     const started = Date.now();
     const attempt = (fields: Record<string, unknown>) =>
-      job.log?.event('tour.attempt', { attempt: attempts, ms: Date.now() - started, ...fields });
+      job.log?.event('tour.attempt', {
+        attempt: attempts,
+        mode: repairing ? 'repair' : 'whole',
+        ms: Date.now() - started,
+        ...fields,
+      });
     onProgress({
       step: 'planning',
-      detail: attempts === 1 ? 'Reading the changed files' : 'Fixing the problems found',
+      detail: best ? 'Fixing the problems found' : 'Reading the changed files',
     });
+    // Only the first tour streams. Anything later is checked as a whole before it's shown.
+    const stream =
+      attempts > 1
+        ? null
+        : streamStops(diff, files, onProgress, () => time.span('First stop shown')());
     let reply: Awaited<ReturnType<AgentRunner>>;
+    ended = time.span(`Attempt ${attempts}: ${repairing ? 'repair' : 'whole tour'}`);
     try {
       reply = await runner({
         job: 'tour',
         prompt,
         cwd: workspace.dir,
         model,
+        // One schema for whole tours and repairs: a different one would change the session's
+        // tools, and the resumed session would lose its prompt cache.
         schema: tourSchema,
         ...(resume ? { resume } : {}),
         onActivity: (detail) => onProgress({ step: 'planning', detail }),
+        ...(stream ? { onOutput: stream.push } : {}),
         ...(job.signal ? { signal: job.signal } : {}),
       });
+      await stream?.settled();
     } catch (error) {
+      // Nothing streamed may arrive after this: a late stop would hide the failure.
+      stream?.close();
       if (error instanceof AgentError) costs.push(error.cost);
+      ended(`failed: ${error instanceof Error ? error.message : String(error)}`);
       attempt({
         outcome: 'error',
         error: error instanceof Error ? error.message : String(error),
@@ -195,17 +231,26 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
       if (best) break;
       throw new TourError(error instanceof Error ? error.message : String(error), costs);
     }
+    stream?.close();
     costs.push(reply.cost);
     resume = reply.sessionId;
+    ended(modelNote(reply));
 
     onProgress({ step: 'checking', attempt: attempts });
-    const wire = parseWire(reply.structured ?? reply.text);
+    ended = time.span(`Attempt ${attempts}: check`);
+    const output = reply.structured ?? reply.text;
+    const parsed = parseWire(output);
+    const wire = best && repairing && parsed ? applyRepair(best.wire, parsed) : parsed;
     if (!wire) {
+      ended('did not match the schema');
       attempt({ outcome: 'bad_shape', costMicroUsd: reply.cost.costMicroUsd });
-      prompt = 'Your answer did not match the tour schema. Return the complete tour as JSON.';
+      prompt = repairing
+        ? 'Your answer did not match the tour schema. Send the repair as JSON in that shape.'
+        : 'Your answer did not match the tour schema. Return the complete tour as JSON.';
       continue;
     }
-    best = await check(wire, workspace, diff);
+    best = { ...(await check(wire, files, diff)), wire };
+    ended(best.problems.length ? best.problems.join(' | ') : 'passed');
     attempt({
       outcome: best.problems.length ? 'rejected' : 'passed',
       costMicroUsd: reply.cost.costMicroUsd,
@@ -213,7 +258,7 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
     });
     if (best.problems.length === 0 || attempts > MAX_RETRIES) break;
     onProgress({ step: 'retrying', attempt: attempts, problems: best.problems.length });
-    prompt = retryPrompt(best.problems);
+    prompt = best.reorder ? retryPrompt(best.problems) : repairPrompt(best.problems);
   }
 
   if (!best) throw new TourError('The guide never returned a tour in the expected shape.', costs);
@@ -225,75 +270,211 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
     attempts,
     createdAt: new Date().toISOString(),
     cached: false,
+    timing: time.spans(),
   };
 }
 
-type Checked = { view: TourView; problems: string[] };
+/** What a model call's time and money went on, for its timing span. */
+function modelNote(reply: Awaited<ReturnType<AgentRunner>>): string {
+  const t = reply.timing;
+  const secs = (ms: number | null | undefined) =>
+    ms === null || ms === undefined ? '-' : `${(ms / 1000).toFixed(1)}s`;
+  const { tokens } = reply.cost;
+  return [
+    `first token ${secs(t?.firstTokenMs)}`,
+    `output starts ${secs(t?.outputStartMs)}`,
+    `tokens: input ${tokens.input}, cache read ${tokens.cacheRead}, cache write ${tokens.cacheWrite}, output ${tokens.output}`,
+    `$${(reply.cost.costMicroUsd / 1e6).toFixed(3)}`,
+  ].join('; ');
+}
 
-/** Turns the guide's tour into core's Tour, and lists every rule it breaks, in words. */
-export async function check(wire: WireTour, workspace: Workspace, diff: Diff): Promise<Checked> {
-  const problems: string[] = [];
-  const files = new Map<string, string | null>();
-  const fileText = async (side: 'old' | 'new', path: string) => {
-    const key = `${side}:${path}`;
-    if (!files.has(key)) files.set(key, await workspace.readFile(side, path));
-    return files.get(key) ?? null;
+/**
+ * Follows the tour as the guide writes it. Each stop that closes goes through `checkStop`, the
+ * same check the finished tour gets, plus the order rule so far, and only then is reported. The
+ * first stop that fails freezes what's shown: later stops wait for the finished, fully checked
+ * tour, so the route never shows a gap. The count of stops begun keeps updating, so progress
+ * stays true. `close()` ends all reporting, once the call is over.
+ */
+function streamStops(
+  diff: Diff,
+  files: FileReader,
+  onProgress: (progress: TourProgress) => void,
+  onFirstStop: () => void,
+) {
+  const scanner = new StopScanner();
+  const shown: StopView[] = [];
+  let index = 0;
+  let rank = 0;
+  /** Whether new stops may still be shown. */
+  let accepting = true;
+  /** Whether anything may still be reported. */
+  let live = true;
+  let writing = 0;
+  let queue = Promise.resolve();
+  const report = () => {
+    if (live) onProgress({ step: 'writing', stops: [...shown], writing });
   };
 
+  const take = async (raw: unknown) => {
+    const position = index++;
+    if (!accepting) return;
+    let checked: Awaited<ReturnType<typeof checkStop>> | null = null;
+    let stopRank = -1;
+    try {
+      const stop = isWireStop(raw) ? raw : null;
+      checked = stop ? await checkStop(stop, position, files, diff) : null;
+      stopRank = stop ? STOP_KINDS.indexOf(stop.kind) : -1;
+    } catch {
+      // Anything unexpected turns the stop away. The queue must never reject: nothing awaits it
+      // until the call ends, and an unhandled rejection would take the server down.
+      checked = null;
+    }
+    const afterVerdict = shown.at(-1)?.kind === 'verdict_prompt';
+    if (!accepting) return;
+    if (!checked || checked.problems.length > 0 || stopRank < rank || afterVerdict) {
+      accepting = false;
+      return;
+    }
+    rank = stopRank;
+    shown.push(checked.view);
+    if (shown.length === 1) onFirstStop();
+    report();
+  };
+  /**
+   * Queues a step. The queue never rejects: nothing awaits it until the call ends, and an
+   * unhandled rejection would take the server down. A step that throws ends the stream.
+   */
+  const then = (step: () => unknown) => {
+    queue = queue
+      .then(async () => void (await step()))
+      .catch(() => {
+        accepting = false;
+        live = false;
+      });
+  };
+
+  return {
+    push: (json: string) => {
+      const found = scanner.push(json);
+      if (found === null) {
+        // The guide started its output over. What's shown stays; nothing more streams.
+        accepting = false;
+        return;
+      }
+      if (scanner.started !== writing) {
+        const started = scanner.started;
+        then(() => {
+          writing = Math.max(writing, started);
+          report();
+        });
+      }
+      for (const raw of found) then(() => take(raw));
+    },
+    /** Waits for the checks still running on stops that already streamed in. */
+    settled: () => queue,
+    close: () => {
+      accepting = false;
+      live = false;
+    },
+  };
+}
+
+/** `reorder`: some problems are about order, which only a whole new tour can fix. */
+type Checked = { view: TourView; problems: string[]; reorder: boolean };
+
+type FileReader = (side: 'old' | 'new', path: string) => Promise<string | null>;
+
+/** Reads each file once per tour, however many stops cite it. */
+function fileReader(workspace: Workspace): FileReader {
+  const files = new Map<string, Promise<string | null>>();
+  return (side, path) => {
+    const key = `${side}:${path}`;
+    let text = files.get(key);
+    if (!text) {
+      text = workspace.readFile(side, path);
+      files.set(key, text);
+    }
+    return text;
+  };
+}
+
+/**
+ * The checks one stop passes on its own: every citation lands inside a real file, and a
+ * core_change or edge stop cites something. `stop` is null when it can't be part of core's Tour.
+ * The streamed stops and the finished tour both go through this one function.
+ */
+async function checkStop(
+  stop: WireStop,
+  index: number,
+  fileText: FileReader,
+  diff: Diff,
+): Promise<{ stop: Stop | null; view: StopView; problems: string[] }> {
+  const problems: string[] = [];
+  const id = stopId(`stop-${index + 1}`);
+  const label = `Stop ${index + 1} ("${stop.title}")`;
+  const anchors: Anchor[] = [];
+  for (const cite of stop.citations) {
+    const side = cite.side === 'new' ? 'head' : 'base';
+    const where = `${cite.path} ${side} lines ${cite.startLine}-${cite.endLine}`;
+    const text = await fileText(cite.side, cite.path);
+    if (text === null) {
+      problems.push(`${label} cites ${where}, but that file doesn't exist at ${side}.`);
+      continue;
+    }
+    const commit = cite.side === 'new' ? diff.head : diff.base;
+    const anchor = anchorAt(
+      { commit, path: cite.path, text },
+      cite.startLine,
+      cite.endLine - cite.startLine + 1,
+    );
+    if (!anchor) {
+      const length = text.split(/\r?\n/).length;
+      problems.push(`${label} cites ${where}, outside the file (it has ${length} lines).`);
+      continue;
+    }
+    anchors.push(anchor);
+  }
+  const flagged = (stop.flags ?? []).filter((f) => f.note.trim());
+  const flags = [...new Set(flagged.map((f) => f.kind))];
+  const [first, ...rest] = anchors;
+  const base = { id, title: stop.title, body: stop.body, flags };
+  let core: Stop | null = null;
+  if (stop.kind === 'core_change' || stop.kind === 'edge') {
+    if (first) core = { ...base, kind: stop.kind, anchors: [first, ...rest] };
+    else problems.push(`${label} is a ${stop.kind} stop, so it must cite at least one range.`);
+  } else {
+    core = { ...base, kind: stop.kind, anchors };
+  }
+  const view: StopView = {
+    ...base,
+    kind: stop.kind,
+    flagNotes: flagged.map((f) => ({ flag: f.kind, note: f.note })),
+    anchors: anchors.flatMap((a) =>
+      a.state === 'current'
+        ? [
+            {
+              path: a.at.path,
+              side: a.at.commit === diff.head ? ('new' as const) : ('old' as const),
+              startLine: a.at.startLine,
+              endLine: a.at.startLine + a.lines.length - 1,
+            },
+          ]
+        : [],
+    ),
+  };
+  return { stop: core, view, problems };
+}
+
+/** Turns the guide's tour into core's Tour, and lists every rule it breaks, in words. */
+async function check(wire: WireTour, fileText: FileReader, diff: Diff): Promise<Checked> {
+  const problems: string[] = [];
   const stops: Stop[] = [];
   const views: StopView[] = [];
-  for (const [index, stop] of wire.stops.entries()) {
-    const id = stopId(`stop-${index + 1}`);
-    const label = `Stop ${index + 1} ("${stop.title}")`;
-    const anchors: Anchor[] = [];
-    for (const cite of stop.citations) {
-      const side = cite.side === 'new' ? 'head' : 'base';
-      const where = `${cite.path} ${side} lines ${cite.startLine}-${cite.endLine}`;
-      const text = await fileText(cite.side, cite.path);
-      if (text === null) {
-        problems.push(`${label} cites ${where}, but that file doesn't exist at ${side}.`);
-        continue;
-      }
-      const commit = cite.side === 'new' ? diff.head : diff.base;
-      const anchor = anchorAt(
-        { commit, path: cite.path, text },
-        cite.startLine,
-        cite.endLine - cite.startLine + 1,
-      );
-      if (!anchor) {
-        const length = text.split(/\r?\n/).length;
-        problems.push(`${label} cites ${where}, outside the file (it has ${length} lines).`);
-        continue;
-      }
-      anchors.push(anchor);
-    }
-    const flagged = (stop.flags ?? []).filter((f) => f.note.trim());
-    const flags = [...new Set(flagged.map((f) => f.kind))];
-    const [first, ...rest] = anchors;
-    const base = { id, title: stop.title, body: stop.body, flags };
-    if (stop.kind === 'core_change' || stop.kind === 'edge') {
-      if (first) stops.push({ ...base, kind: stop.kind, anchors: [first, ...rest] });
-      else problems.push(`${label} is a ${stop.kind} stop, so it must cite at least one range.`);
-    } else {
-      stops.push({ ...base, kind: stop.kind, anchors });
-    }
-    views.push({
-      ...base,
-      kind: stop.kind,
-      flagNotes: flagged.map((f) => ({ flag: f.kind, note: f.note })),
-      anchors: anchors.flatMap((a) =>
-        a.state === 'current'
-          ? [
-              {
-                path: a.at.path,
-                side: a.at.commit === diff.head ? ('new' as const) : ('old' as const),
-                startLine: a.at.startLine,
-                endLine: a.at.startLine + a.lines.length - 1,
-              },
-            ]
-          : [],
-      ),
-    });
+  for (const [index, wireStop] of wire.stops.entries()) {
+    const checked = await checkStop(wireStop, index, fileText, diff);
+    problems.push(...checked.problems);
+    if (checked.stop) stops.push(checked.stop);
+    views.push(checked.view);
   }
 
   const skips: Skip[] = [];
@@ -318,7 +499,8 @@ export async function check(wire: WireTour, workspace: Workspace, diff: Diff): P
 
   const tour: Tour = { review: reviewId('review'), head: diff.head, stops, skips };
   const label = (id: string) => `stop ${id.replace('stop-', '')}`;
-  for (const problem of checkStopOrder(tour)) {
+  const order = checkStopOrder(tour);
+  for (const problem of order) {
     problems.push(
       problem.kind === 'out_of_order'
         ? `${label(problem.stop)} is out of order. Kinds go: ${STOP_KINDS.join(', ')}.`
@@ -353,7 +535,7 @@ export async function check(wire: WireTour, workspace: Workspace, diff: Diff): P
     }
   }
 
-  return { view: { stops: views, skips: skipViews }, problems };
+  return { view: { stops: views, skips: skipViews }, problems, reorder: order.length > 0 };
 }
 
 const skipLabel = (skip: Skip) =>
@@ -385,38 +567,62 @@ function toRanges(lines: readonly LineRef[]): string[] {
   return out;
 }
 
-function parseWire(value: unknown): WireTour | null {
-  let data = value;
-  if (typeof data === 'string') {
-    const json = /\{[\s\S]*\}/.exec(data)?.[0];
-    try {
-      data = json ? JSON.parse(json) : null;
-    } catch {
-      return null;
-    }
+/** Structured output as is, or the JSON object inside a text answer. */
+function parseJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const json = /\{[\s\S]*\}/.exec(value)?.[0];
+  try {
+    return json ? JSON.parse(json) : null;
+  } catch {
+    return null;
   }
-  const tour = data as WireTour | null;
+}
+
+function parseWire(value: unknown): WireTour | null {
+  const tour = parseJson(value) as WireTour | null;
   if (!tour || !Array.isArray(tour.stops) || !Array.isArray(tour.skips)) return null;
-  const okStop = (s: WireStop) =>
+  return tour.stops.every(isWireStop) && tour.skips.every(isWireSkip) ? tour : null;
+}
+
+function isWireSkip(value: unknown): boolean {
+  const s = value as { target: unknown; reason: unknown } | null;
+  return (
+    typeof s === 'object' &&
+    s !== null &&
+    typeof s.target === 'string' &&
+    typeof s.reason === 'string'
+  );
+}
+
+/** The shape check for one stop: the right kinds and types. Says nothing about whether it's true. */
+function isWireStop(value: unknown): value is WireStop {
+  const s = value as WireStop | null;
+  return (
+    typeof s === 'object' &&
+    s !== null &&
     STOP_KINDS.includes(s.kind) &&
     typeof s.title === 'string' &&
     typeof s.body === 'string' &&
     (s.flags === undefined ||
       (Array.isArray(s.flags) &&
         s.flags.every(
-          (f) => (f.kind === 'mismatch' || f.kind === 'danger') && typeof f.note === 'string',
+          (f) =>
+            typeof f === 'object' &&
+            f !== null &&
+            (f.kind === 'mismatch' || f.kind === 'danger') &&
+            typeof f.note === 'string',
         ))) &&
     Array.isArray(s.citations) &&
     s.citations.every(
       (c) =>
+        typeof c === 'object' &&
+        c !== null &&
         typeof c.path === 'string' &&
         (c.side === 'new' || c.side === 'old') &&
         Number.isInteger(c.startLine) &&
         Number.isInteger(c.endLine),
-    );
-  const okSkip = (s: { target: unknown; reason: unknown }) =>
-    typeof s.target === 'string' && typeof s.reason === 'string';
-  return tour.stops.every(okStop) && tour.skips.every(okSkip) ? tour : null;
+    )
+  );
 }
 
 // ---- Prompts ----
@@ -547,10 +753,51 @@ function renderDiff(diff: Diff): string {
     .join('\n\n');
 }
 
+/** The checker's problems as a list. Each is one line, whatever titles or paths it quotes. */
+const problemList = (problems: readonly string[]) =>
+  problems.map((p) => `- ${p.replace(/\s+/g, ' ')}`).join('\n');
+
+/** For order problems, which only a whole tour can fix: stops have to move or go. */
 function retryPrompt(problems: readonly string[]): string {
   return `The tour checker found these problems:
 
-${problems.map((p) => `- ${p}`).join('\n')}
+${problemList(problems)}
 
 Fix them and return the complete corrected tour, every stop and skip, in the same JSON shape.`;
+}
+
+function repairPrompt(problems: readonly string[]): string {
+  return `The tour checker found these problems:
+
+${problemList(problems)}
+
+Fix them by sending back only what changes, in the same JSON shape:
+- "stops": only the stops you change or add, each one in full. A stop with the same title as an existing stop replaces it, so keep the title exactly as it was. A stop with a new title is added after the existing stops of its kind. Leave out every stop that stays the same.
+- "skips": the complete list of skips, including the ones that don't change.
+Change as little as you can: the reviewer may already be reading the stops. To give unexplained lines a home, add a citation to the stop that already explains that code, or skip them if they meet the skip rules.`;
+}
+
+/**
+ * Applies a repair to the tour it fixes. A repaired stop with an existing title replaces that stop
+ * in place; any other is new, and goes after the stops of its kind. Skips are replaced whole.
+ */
+function applyRepair(tour: WireTour, repair: WireTour): WireTour {
+  const stops = [...tour.stops];
+  const replaced = new Set<number>();
+  const added: WireStop[] = [];
+  for (const stop of repair.stops) {
+    const at = tour.stops.findIndex((s, i) => s.title === stop.title && !replaced.has(i));
+    if (at === -1) {
+      added.push(stop);
+    } else {
+      replaced.add(at);
+      stops[at] = stop;
+    }
+  }
+  for (const stop of added) {
+    const rank = STOP_KINDS.indexOf(stop.kind);
+    const later = stops.findIndex((s) => STOP_KINDS.indexOf(s.kind) > rank);
+    stops.splice(later === -1 ? stops.length : later, 0, stop);
+  }
+  return { stops, skips: repair.skips };
 }

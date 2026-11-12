@@ -65,7 +65,12 @@ describe('the run log', () => {
     });
     expect(res.status).toBe(200);
 
-    const written = await events(log);
+    const all = await events(log);
+    // The timing spans, which `docent review --prepare` also prints, ride along in order.
+    expect(all.filter((e) => e.kind === 'span').map((e) => e.name)).toEqual(
+      expect.arrayContaining(['Parse the diff', 'Build the prompt', 'Attempt 1: whole tour']),
+    );
+    const written = all.filter((e) => e.kind !== 'span');
     expect(written.map((e) => e.kind)).toEqual([
       'pr',
       'tour.cache',

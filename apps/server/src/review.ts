@@ -27,6 +27,7 @@ import {
 } from './github.ts';
 import { describeError, RunLog } from './run-log.ts';
 import { type BuiltIndex, buildIndex, type IndexLimits, type IndexStatus } from './symbols.ts';
+import { type Timings, timings } from './timings.ts';
 import {
   generateTour,
   type StopView,
@@ -37,11 +38,23 @@ import {
   type TourProgress,
 } from './tour.ts';
 
-export type StepId = 'reading' | 'planning' | 'checking';
+export type StepId = 'reading' | 'planning' | 'writing' | 'checking';
 export type Step = { id: StepId; label: string; status: 'done' | 'active' | 'pending' };
 
 export type TourState =
-  | { state: 'working'; steps: Step[]; detail: string | null; attempt: number }
+  | {
+      state: 'working';
+      steps: Step[];
+      detail: string | null;
+      attempt: number;
+      /**
+       * Stops already written and checked one by one, in order, so the reviewer can start reading.
+       * The finished tour still passes every check before it replaces them.
+       */
+      stops: StopView[];
+      /** How many stops the guide has begun writing, shown or not. */
+      writing: number;
+    }
   | ({ state: 'ready' } & TourOutcome)
   | { state: 'failed'; reason: string; costs: CostRecord[] };
 
@@ -159,9 +172,10 @@ const DEFAULT_FORK_BUDGET_USD = 2;
 const DEFAULT_QUESTION_TIMEOUT_MS = 180_000;
 
 const LABELS: Record<StepId, string> = {
-  reading: 'Reading the diff',
-  planning: 'Planning the tour',
-  checking: 'Checking citations',
+  reading: 'Fetching the pull request',
+  planning: 'Planning the route',
+  writing: 'Writing the stops',
+  checking: 'Checking the whole tour',
 };
 
 export class Review {
@@ -171,7 +185,9 @@ export class Review {
   #lookup: Promise<void> | null = null;
   /** Who answers. Turns to the guide for the rest of the review if a fork runs over budget. */
   #author: AuthorSession | null = null;
-  #tour: TourState = working('reading', null, 1);
+  #tour: TourState = working('reading', null, 1, []);
+  /** Where this review's time goes, from when it opened. */
+  #timings: Timings;
   #listeners = new Set<(tour: TourState) => void>();
   #posted: PostedReview | null = null;
   #posting = false;
@@ -193,6 +209,8 @@ export class Review {
   constructor(options: ReviewOptions) {
     this.#options = options;
     this.#log = options.log ?? RunLog.off();
+    // Spans also go to the run log, so `docent runs show` has the breakdown.
+    this.#timings = timings(this.#log);
     this.done = this.#start();
   }
 
@@ -616,12 +634,23 @@ Question: ${question}`,
 
   async #start(): Promise<void> {
     const started = Date.now();
+    const time = this.#timings;
+    // The source names each step as it starts; each one ends where the next begins.
+    let ended = (_note?: string) => {};
     try {
-      const workspace = await this.#options.source((detail) =>
-        this.#set(working('reading', detail, 1)),
-      );
+      const workspace = await this.#options.source((detail) => {
+        ended();
+        ended = time.span(detail);
+        this.#set(working('reading', detail, 1, []));
+      });
+      ended();
+      ended = time.span('Parse the diff');
       this.#workspace = workspace;
       this.#diff = parseUnifiedDiff(workspace.diffText, workspace.pr.base, workspace.pr.head);
+      const lines = this.#diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
+      const changed = lines.filter((l) => l.kind !== 'context').length;
+      ended(`${this.#diff.files.length} files, ${changed} changed lines`);
+      ended = time.span('Look up the cached tour');
       const { pr } = workspace;
       this.#log.event('pr', {
         repo: pr.repo,
@@ -656,16 +685,22 @@ Question: ${question}`,
       if (cacheFile && hit) {
         const outcome = JSON.parse(await readFile(cacheFile, 'utf8')) as TourOutcome;
         await lookup;
-        this.#tourReady({ ...outcome, cached: true }, tourStarted);
+        ended('hit');
+        this.#tourReady({ ...outcome, timing: outcome.timing ?? [], cached: true }, tourStarted);
         return;
       }
+      ended('missed');
 
       const outcome = await generateTour({
         workspace,
         diff: this.#diff,
         runner: this.#options.runner,
         model: this.#options.model,
-        onProgress: (progress) => this.#set(fromProgress(progress, this.#tour)),
+        // Progress only moves a tour that's still being written, never a ready or failed one.
+        onProgress: (progress) => {
+          if (this.#tour.state === 'working') this.#set(fromProgress(progress, this.#tour));
+        },
+        timings: time,
         log: this.#log,
       });
       if (cacheFile) {
@@ -766,8 +801,14 @@ ${unfence(question)}
 </question>`;
 }
 
-function working(active: StepId, detail: string | null, attempt: number): TourState {
-  const order: StepId[] = ['reading', 'planning', 'checking'];
+function working(
+  active: StepId,
+  detail: string | null,
+  attempt: number,
+  stops: StopView[],
+  writing = 0,
+): TourState {
+  const order: StepId[] = ['reading', 'planning', 'writing', 'checking'];
   const at = order.indexOf(active);
   return {
     state: 'working',
@@ -778,25 +819,43 @@ function working(active: StepId, detail: string | null, attempt: number): TourSt
     })),
     detail,
     attempt,
+    stops,
+    writing,
   };
 }
 
 function fromProgress(progress: TourProgress, previous: TourState): TourState {
-  const attempt = previous.state === 'working' ? previous.attempt : 1;
+  const was = previous.state === 'working' ? previous : null;
+  const attempt = was?.attempt ?? 1;
+  // Stops already shown stay shown until the finished tour replaces them.
+  const stops = was?.stops ?? [];
+  const writing = was?.writing ?? 0;
   switch (progress.step) {
-    case 'planning':
+    case 'planning': {
+      // A file read while the stops are being written doesn't send the steps backwards.
+      const step =
+        was?.steps.find((s) => s.status === 'active')?.id === 'writing' ? 'writing' : 'planning';
+      return working(step, progress.detail ?? was?.detail ?? null, attempt, stops, writing);
+    }
+    case 'writing':
       return working(
-        'planning',
-        progress.detail ?? (previous.state === 'working' ? previous.detail : null),
+        'writing',
+        progress.writing > progress.stops.length
+          ? `Writing stop ${progress.writing}`
+          : `${progress.stops.length} stop${progress.stops.length === 1 ? '' : 's'} written`,
         attempt,
+        progress.stops,
+        progress.writing,
       );
     case 'checking':
-      return working('checking', null, progress.attempt);
+      return working('checking', null, progress.attempt, stops, writing);
     case 'retrying':
       return working(
         'planning',
         `${progress.problems} problem${progress.problems === 1 ? '' : 's'} found, sending them back (retry ${progress.attempt} of 2)`,
         progress.attempt + 1,
+        stops,
+        writing,
       );
   }
 }

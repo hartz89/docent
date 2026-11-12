@@ -27,6 +27,8 @@ describe('the guide session is read-only', () => {
       settingSources: [],
       maxTurns: 60,
       maxBudgetUsd: 2,
+      // Streams the output token by token. It adds events; it grants nothing.
+      includePartialMessages: true,
     });
   });
 

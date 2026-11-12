@@ -117,6 +117,14 @@ const gappyTour = {
   ...goodTour,
   stops: stops([{ kind: 'core_change', title: 'x', body: 'y', citations: [cite('new', 2)] }]),
 };
+/**
+ * A repair, in the tour's own shape: only the stops that change. A stop with an existing title
+ * replaces that stop; one with a new title is added.
+ */
+const repairOf = (...changed: object[]) => ({
+  stops: changed.map((stop) => ({ flags: [], ...stop })),
+  skips: goodTour.skips,
+});
 
 /** Stands in for a turn that hit the budget cap: the runner throws, with the cost so far. */
 const BUDGET = Symbol('budget');
@@ -217,8 +225,15 @@ describe('GET /api/review', () => {
     expect(tour.costs.map((c) => c.costMicroUsd)).toEqual([1500]);
   });
 
-  test('sends the checker problems back to the guide, and keeps the fixed tour', async () => {
-    const { runner, requests } = scripted(gappyTour, goodTour);
+  test('sends the checker problems back, and the guide repairs only the stop that broke', async () => {
+    // Stop 2 ("x") comes back with the missing line cited; the other stops aren't resent.
+    const fixed = {
+      kind: 'core_change',
+      title: 'x',
+      body: 'y',
+      citations: [cite('new', 2), cite('old', 2)],
+    };
+    const { runner, requests } = scripted(gappyTour, repairOf(fixed));
     const { api } = await open(runner);
 
     const tour = ready((await snapshot(api)).tour);
@@ -226,12 +241,39 @@ describe('GET /api/review', () => {
     expect(tour.attempts).toBe(2);
     expect(tour.problems).toEqual([]);
     expect(requests[1]?.resume).toBe('session-1');
+    // The same schema, so the resumed session keeps its prompt cache.
+    expect(requests[1]?.schema).toBe(requests[0]?.schema);
     expect(requests[1]?.prompt).toContain('Unexplained: src/cors.ts base line 2 has no home');
+    expect(requests[1]?.prompt).toContain('sending back only what changes');
+    expect(tour.tour.stops.map((s) => s.title)).toEqual(['Why', 'x', 'Your call']);
+    expect(tour.tour.stops[1]?.anchors).toHaveLength(2);
     expect(tour.costs).toHaveLength(2);
   });
 
+  test('a repair can add a stop: it goes in kind order, before the verdict', async () => {
+    const extra = {
+      kind: 'edge',
+      title: 'The old wildcard',
+      body: 'It is gone.',
+      flags: [],
+      citations: [cite('old', 2)],
+    };
+    const { runner } = scripted(gappyTour, repairOf(extra));
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.stops.map((s) => [s.id, s.title])).toEqual([
+      ['stop-1', 'Why'],
+      ['stop-2', 'x'],
+      ['stop-3', 'The old wildcard'],
+      ['stop-4', 'Your call'],
+    ]);
+  });
+
   test('stops after two retries and shows what is still wrong', async () => {
-    const { runner, requests } = scripted(gappyTour, gappyTour, gappyTour, goodTour);
+    const { runner, requests } = scripted(gappyTour, repairOf(), repairOf(), goodTour);
     const { api } = await open(runner);
 
     const tour = ready((await snapshot(api)).tour);
@@ -325,6 +367,250 @@ describe('GET /api/review/events', () => {
     const events = text.split('\n').filter((line) => line.startsWith('data: '));
     expect(events).toHaveLength(1);
     expect(JSON.parse(events[0]?.slice(6) ?? '').state).toBe('ready');
+  });
+
+  test('sends each stop as soon as it is written and checked, before the tour is ready', async () => {
+    const guide = streaming([goodTour], { holdAfterStops: 1 });
+    const review = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: guide.runner,
+      locator: noAuthor,
+      model: 'claude-test',
+    });
+    const app = createApp({ origin, token, version: '0.0.0', review });
+    const api = hc<AppType>(origin, {
+      fetch: app.request,
+      headers: { Authorization: `Bearer ${token}` },
+    }).api;
+
+    const res = await api.review.events.$get();
+    const reader = (res.body as ReadableStream<Uint8Array>)
+      .pipeThrough(new TextDecoderStream())
+      .getReader();
+    const states: TourState[] = [];
+    let text = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += value;
+      const events = text.split('\n\n').filter((e) => e.startsWith('event: tour'));
+      states.splice(
+        0,
+        states.length,
+        ...events.map((e) => JSON.parse(e.split('data: ')[1] ?? '') as TourState),
+      );
+      // Stop 1 is on screen while the guide is still writing: now let it finish.
+      if (states.some((s) => s.state === 'working' && s.stops.length === 1)) guide.release();
+    }
+
+    const shown = states.flatMap((s) =>
+      s.state === 'working' ? [s.stops.map((x) => x.title)] : [],
+    );
+    expect(shown).toContainEqual(['Why']);
+    expect(shown).toContainEqual(['Why', 'The origin is reflected']);
+    expect(states.at(-1)?.state).toBe('ready');
+  });
+});
+
+/**
+ * The model boundary, writing its output a few characters at a time through `onOutput`, the way
+ * the SDK streams it. `holdAfterStops` pauses once that many stops are out, until `release()`.
+ */
+function streaming(
+  tours: unknown[],
+  options: { holdAfterStops?: number; failAfterStops?: number } = {},
+) {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let call = 0;
+  const runner: AgentRunner = async (request) => {
+    const structured = tours[call++] as { stops?: unknown[] };
+    const json = JSON.stringify(structured);
+    /** Where stop N's object closes in the output. */
+    const endOf = (n: number | undefined) => {
+      const stop = n === undefined ? undefined : structured.stops?.[n - 1];
+      return stop === undefined
+        ? Number.POSITIVE_INFINITY
+        : json.indexOf(JSON.stringify(stop)) + JSON.stringify(stop).length;
+    };
+    const holdAt = endOf(options.holdAfterStops);
+    const failAt = endOf(options.failAfterStops);
+    let holding = true;
+    for (let at = 7; at < json.length + 7; at += 7) {
+      request.onOutput?.(json.slice(0, Math.min(at, json.length)));
+      // No pause here: the stop's checks are still running when the call fails.
+      if (at >= failAt)
+        throw new AgentError(
+          'The agent stopped without an answer (error_max_budget_usd)',
+          cost('tour', 900),
+        );
+      await new Promise((resolve) => setImmediate(resolve));
+      if (holding && at >= holdAt) {
+        holding = false;
+        await held;
+      }
+    }
+    return { sessionId: 'session-1', text: '', structured, denials: [], cost: cost('tour', 1500) };
+  };
+  return { runner, release: () => release() };
+}
+
+describe('the tour, while it is written', () => {
+  /** Every state the review passes through, from opening to ready. */
+  const watch = async (runner: AgentRunner) => {
+    const review = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner,
+      locator: noAuthor,
+      model: 'claude-test',
+    });
+    const states: TourState[] = [];
+    review.subscribe((tour) => states.push(tour));
+    await review.done;
+    return states;
+  };
+  /** Each new set of stops on screen while the tour is written, in order. */
+  const titlesShown = (states: TourState[]) =>
+    states
+      .flatMap((s) =>
+        s.state === 'working' && s.stops.length ? [s.stops.map((x) => x.title)] : [],
+      )
+      .filter((titles, i, all) => i === 0 || titles.join('\n') !== all[i - 1]?.join('\n'));
+
+  test('shows stops in order as they pass their checks, and the finished tour last', async () => {
+    const states = await watch(streaming([goodTour]).runner);
+
+    expect(titlesShown(states)).toEqual([
+      ['Why'],
+      ['Why', 'The origin is reflected'],
+      ['Why', 'The origin is reflected', 'Your call'],
+    ]);
+    expect(ready(states.at(-1) as TourState).problems).toEqual([]);
+  });
+
+  test('never shows a stop that fails its own checks, or any stop after it', async () => {
+    const broken = {
+      ...goodTour,
+      stops: stops([
+        {
+          kind: 'core_change',
+          title: 'Bad lines',
+          body: 'b',
+          flags: [],
+          citations: [cite('new', 2, 90)],
+        },
+        { kind: 'edge', title: 'After it', body: 'd', flags: [], citations: [cite('old', 2)] },
+      ]),
+    };
+    const fixed = { ...goodTour.stops[1], title: 'Bad lines' };
+    const states = await watch(streaming([broken, repairOf(fixed)]).runner);
+
+    const everShown = new Set(titlesShown(states).flat());
+    expect(everShown).toEqual(new Set(['Why']));
+    expect(ready(states.at(-1) as TourState).tour.stops.map((s) => s.title)).toEqual([
+      'Why',
+      'Bad lines',
+      'After it',
+      'Your call',
+    ]);
+  });
+
+  test('never shows a stop out of kind order', async () => {
+    const backwards = {
+      ...goodTour,
+      stops: [goodTour.stops[1], goodTour.stops[0], goodTour.stops[2]],
+    };
+    const states = await watch(streaming([backwards, repairOf()]).runner);
+
+    expect(titlesShown(states)).toEqual([['The origin is reflected']]);
+  });
+
+  test('a guide that fails after the first stop leaves a failed tour, not one still writing', async () => {
+    const states = await watch(streaming([goodTour], { failAfterStops: 1 }).runner);
+
+    expect(states.at(-1)).toMatchObject({ state: 'failed', costs: [{ costMicroUsd: 900 }] });
+  });
+
+  test('after a stop is turned away, progress still counts the stops being written', async () => {
+    const broken = {
+      ...goodTour,
+      stops: stops([
+        {
+          kind: 'core_change',
+          title: 'Bad lines',
+          body: 'b',
+          flags: [],
+          citations: [cite('new', 2, 90)],
+        },
+        { kind: 'edge', title: 'After it', body: 'd', flags: [], citations: [cite('old', 2)] },
+      ]),
+    };
+    const states = await watch(streaming([broken, repairOf()]).runner);
+
+    const writing = states.flatMap((s) => (s.state === 'working' && s.detail ? [s.detail] : []));
+    expect(writing).toContain('Writing stop 4');
+    // The count the screen's route row shows, too.
+    expect(Math.max(...states.map((s) => (s.state === 'working' ? s.writing : 0)))).toBe(4);
+    expect(new Set(titlesShown(states).flat())).toEqual(new Set(['Why']));
+  });
+
+  test('a malformed stop mid-stream is turned away, and the server stays up', async () => {
+    const malformed = {
+      ...goodTour,
+      stops: [
+        { ...goodTour.stops[0], flags: [null], citations: [null] },
+        ...goodTour.stops.slice(1),
+      ],
+    };
+    // The runner's reply passes the schema, as the SDK's would; only the stream saw the bad stop.
+    const guide = streaming([malformed]);
+    const runner: AgentRunner = async (request) => ({
+      ...(await guide.runner(request)),
+      structured: goodTour,
+    });
+
+    const states = await watch(runner);
+
+    expect(titlesShown(states)).toEqual([]);
+    expect(ready(states.at(-1) as TourState).problems).toEqual([]);
+  });
+
+  test('stops already shown stay shown when a later attempt writes the tour again', async () => {
+    let call = 0;
+    const guide = streaming([goodTour, goodTour]);
+    // Both replies stream every stop. The first then comes back unreadable; the second is the
+    // tour. Only the first may reach the screen, or the shown stops would restart from none.
+    const runner: AgentRunner = async (request) => {
+      const reply = await guide.runner(request);
+      return call++ === 0 ? { ...reply, structured: 'not a tour' } : reply;
+    };
+
+    const states = await watch(runner);
+
+    const counts = states.flatMap((s) => (s.state === 'working' ? [s.stops.length] : []));
+    expect(counts.every((n, i) => i === 0 || n >= (counts[i - 1] ?? 0))).toBe(true);
+    expect(ready(states.at(-1) as TourState).attempts).toBe(2);
+  });
+
+  test('order problems get a whole new tour, since a repair can only replace or add stops', async () => {
+    const twoVerdicts = {
+      ...goodTour,
+      stops: [...goodTour.stops, { ...goodTour.stops[2], title: 'Another call' }],
+    };
+    const { runner, requests } = scripted(twoVerdicts, goodTour);
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(requests[1]?.prompt).toContain('return the complete corrected tour');
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.stops.map((s) => s.title)).toEqual([
+      'Why',
+      'The origin is reflected',
+      'Your call',
+    ]);
   });
 });
 

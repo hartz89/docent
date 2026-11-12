@@ -91,8 +91,12 @@ async function recordedHeadFiles(root: string): Promise<HeadFiles> {
   };
 }
 
-/** Replays the recorded replies for each job in order, repeating the last one. */
-export function fixtureRunner(dir: string): AgentRunner {
+/**
+ * Replays the recorded replies for each job in order, repeating the last one. With `paceMs`, a
+ * structured reply is written out 40 characters at a time, that many milliseconds apart, the way
+ * a live guide streams it, so the screen can be seen filling in.
+ */
+export function fixtureRunner(dir: string, options: { paceMs?: number } = {}): AgentRunner {
   let replies: RecordedReplies | undefined;
   const used: Record<RecordedJob, number> = { tour: 0, question: 0, answer_check: 0 };
   return async (request) => {
@@ -102,6 +106,13 @@ export function fixtureRunner(dir: string): AgentRunner {
     const list = replies[job] ?? [];
     const reply = list[Math.min(used[job]++, list.length - 1)];
     if (!reply) throw new Error(`The fixture has no recorded ${job} reply.`);
+    if (options.paceMs && reply.structured !== undefined && request.onOutput) {
+      const json = JSON.stringify(reply.structured);
+      for (let at = 40; at < json.length + 40; at += 40) {
+        await new Promise((resolve) => setTimeout(resolve, options.paceMs));
+        request.onOutput(json.slice(0, Math.min(at, json.length)));
+      }
+    }
     return reply;
   };
 }

@@ -53,6 +53,7 @@ Options:
   --prepare         Generate and cache the tour, print its cost, and exit (no browser)
   --record <dir>    Save the PR, files and guide replies as a fixture
   --fixture <dir>   Replay a recorded fixture: no GitHub or model calls
+  --replay-pace <ms>  With --fixture, write the tour out slowly, as a live guide would
   --no-run-log      Don't write this run to the run log (or set DOCENT_RUN_LOG=off)`;
 
 const { values, positionals } = parseArgs({
@@ -68,6 +69,7 @@ const { values, positionals } = parseArgs({
     prepare: { type: 'boolean', default: false },
     record: { type: 'string' },
     fixture: { type: 'string' },
+    'replay-pace': { type: 'string' },
     help: { type: 'boolean', short: 'h', default: false },
   },
 });
@@ -86,6 +88,12 @@ const forkBudgetUsd =
   values['fork-budget'] === undefined ? undefined : Number(values['fork-budget']);
 if (forkBudgetUsd !== undefined && !(Number.isFinite(forkBudgetUsd) && forkBudgetUsd >= 0)) {
   console.error(`--fork-budget takes a number of US dollars, like 0.50`);
+  process.exit(1);
+}
+
+const replayPaceMs = Number(values['replay-pace'] ?? 0);
+if (!(Number.isFinite(replayPaceMs) && replayPaceMs >= 0)) {
+  console.error('--replay-pace takes a number of milliseconds, like 80');
   process.exit(1);
 }
 
@@ -113,7 +121,7 @@ let runner: AgentRunner;
 let locator: SessionLocator;
 if (values.fixture) {
   source = fixtureSource(values.fixture);
-  runner = fixtureRunner(values.fixture);
+  runner = fixtureRunner(values.fixture, { paceMs: replayPaceMs });
   // Replies are replayed, so a replay trusts --session without looking for it on this machine.
   locator = fixedSession(
     values.session
@@ -184,6 +192,16 @@ async function serve(review: Review) {
 }
 
 /**
+ * Text that came from the guide or the PR, made safe for a terminal, on one line: control
+ * characters (escape sequences that move the cursor or rewrite lines, and newlines that could
+ * fake a line of Docent's own) and bidi overrides (which reorder how a line reads) become spaces.
+ */
+function printable(text: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point.
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ');
+}
+
+/**
  * Opens this launch's run log, unless it's turned off, and records how the run starts and ends.
  * Flags are logged as given; none of them holds a secret, and the log scrubs secrets anyway.
  */
@@ -228,15 +246,29 @@ function report(review: Review) {
           ? 'Tour loaded from cache: no model calls.'
           : `Tour ready in ${seconds}s: ${tour.tour.stops.length} stops, ${tour.attempts} attempt(s), $${cost.toFixed(4)} on ${tour.model}.`,
       );
-      if (tour.problems.length) console.log(`Unresolved checks:\n- ${tour.problems.join('\n- ')}`);
+      if (tour.problems.length) {
+        console.log(`Unresolved checks:\n- ${tour.problems.map((p) => printable(p)).join('\n- ')}`);
+      }
+      if (!tour.cached && tour.timing.length) {
+        const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`.padStart(7);
+        console.log('Where the time went (from opening the review):');
+        for (const span of tour.timing) {
+          const took = secs(span.endMs - span.startMs);
+          console.log(
+            printable(
+              `  ${secs(span.startMs)} ${took}  ${span.name}${span.note ? ` · ${span.note}` : ''}`,
+            ),
+          );
+        }
+      }
       const author = review.snapshot().author;
       if (author?.found) {
         console.log(`Questions go to the author's session ${author.session} (${author.via}).`);
       } else if (author) {
-        console.log(`Questions go to the guide: ${author.reason}.`);
+        console.log(`Questions go to the guide: ${printable(author.reason)}.`);
       }
     } else if (tour.state === 'failed') {
-      console.error(`Tour failed: ${tour.reason}`);
+      console.error(`Tour failed: ${printable(tour.reason)}`);
     }
   });
 }
