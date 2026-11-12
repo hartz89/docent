@@ -100,7 +100,7 @@ const ALLOWED: Record<Role, string[]> = {
     '                                (create needs --body-file or --body; a description stays under',
     `                                ${DESCRIPTION_WORDS} visible words, so put detail in <details>)`,
     'gh pr merge <number> --squash [--auto]',
-    'gh issue create|view|list|comment|edit|close ...',
+    'gh issue create|view|list|comment|edit|close ...   (edit keeps the description budget above)',
     'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
     'gh api --method POST /repos/hartz89/docent/pulls/<n>/comments/<id>/replies --input <file.json>',
     '                                (reply to a review comment; the file is exactly {"body": string})',
@@ -132,11 +132,12 @@ const ISSUE_SUBCOMMANDS = ['create', 'view', 'list', 'comment', 'edit', 'close']
 const INTERACTIVE = /^(--web|--editor)(=|$)|^-[A-Za-z]*[we]/;
 
 /**
- * gh pr review's --approve, in every spelling: --approve, --approve=..., and -a alone or bundled
- * with other short flags (-ca). Like INTERACTIVE, a glued short value containing an a (-bdata) is
- * refused too. Agents post reviews as comments; see "Reviews live on the PR" in pull-requests.md.
+ * gh pr review's --approve, in every spelling: --approve, --approve=..., and -a alone or after
+ * gh pr review's other value-less short flags (-ca, -rca). A glued value (-bdata) isn't an
+ * approval, as in gh. Agents post reviews as comments; see "Reviews live on the PR" in
+ * pull-requests.md.
  */
-const APPROVE = /^--approve(=|$)|^-[A-Za-z]*a/;
+const APPROVE = /^--approve(=|$)|^-[cr]*a/;
 
 type Allowed = {
   tool: 'gh' | 'git';
@@ -182,6 +183,8 @@ function allowed(role: Role, command: string[], cwd: string): Allowed {
     }
     const interactive = args.find((arg) => INTERACTIVE.test(arg));
     if (interactive) refuse(`${interactive} opens a browser or editor`);
+    // gh issue edit also edits a PR, given its number, so it gets the same description budget.
+    if (action === 'edit') checkDescription('edit', args, cwd, refuse);
     const writes = action !== 'view' && action !== 'list';
     return { tool: 'gh', args: ['issue', ...rest], extra: { issues: writes ? 'write' : 'read' } };
   }
@@ -274,12 +277,20 @@ function descriptions(args: string[], cwd: string, refuse: (reason: string) => n
 }
 
 /**
- * Words a reader sees: everything outside <details>...</details>, split on whitespace. A tag
- * written in code (`<details>`) shows as text and hides nothing, so code is defanged first.
+ * Words a reader sees: everything outside a closed <details>...</details>, split on whitespace.
+ * GitHub hides HTML comments, so they're dropped. A tag that GitHub shows as text (in code, or
+ * escaped as \<details>) hides nothing, so it's defanged first. <details open> shows its
+ * contents, so it hides nothing either.
  */
 export function visibleWords(text: string): number {
-  const defanged = text.replace(/```[\s\S]*?```|`[^`\n]*`/g, (code) => code.replaceAll('<', ' '));
-  const visible = defanged.replace(/<details[\s>][\s\S]*?<\/details>/gi, ' ');
+  const defanged = text
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`/g, (code) => code.replaceAll('<', ' '))
+    .replaceAll('\\<', ' ');
+  const visible = defanged.replace(
+    /<details(?![^>]*\bopen\b)(\s[^>]*)?>[\s\S]*?<\/details>/gi,
+    ' ',
+  );
   return visible.split(/\s+/).filter(Boolean).length;
 }
 
@@ -293,6 +304,9 @@ function checkDescription(
   cwd: string,
   refuse: (reason: string) => never,
 ): void {
+  // --recover reads a saved title and body from a failed run, past this check.
+  const recover = args.find((arg) => /^--recover(=|$)/.test(arg));
+  if (recover) refuse(`${recover} reads a description the runner can't check`);
   const found = descriptions(args, cwd, refuse);
   if (action === 'create' && found.length === 0) {
     refuse('gh pr create needs --body-file <path> (or --body), so the runner can check its length');

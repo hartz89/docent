@@ -479,8 +479,16 @@ describe('as-agent allowlist', () => {
     expect(calls).toEqual([]);
     expect(logs()[0]).toContain('--approve approves the PR, and agents never approve');
 
+    // The builder can't review at all, but hears the same reason first.
+    const builder = setup();
+    expect(await asAgent(['builder', '--', 'gh', 'pr', 'review', '3', '-ca'], builder.deps)).toBe(
+      1,
+    );
+    expect(builder.logs()[0]).toContain('-ca approves the PR, and agents never approve');
+
     const ok = setup({ config: { reviewer: { slug: 'docent-builder' } } });
-    const review = ['gh', 'pr', 'review', '3', '--comment', '--body-file', 'review.md'];
+    // A glued body value that happens to contain an "a" is a body, not an approval.
+    const review = ['gh', 'pr', 'review', '3', '--comment', '-bdata', '-Rhartz89/docent'];
     expect(await asAgent(['reviewer', '--', ...review], ok.deps)).toBe(0);
     expect(ok.ran()).toEqual([review.join(' ')]);
   });
@@ -867,6 +875,8 @@ describe('as-agent PR descriptions', () => {
     ['gh pr edit 3 --body=<long>', ['edit', '3', `--body=${words(400)}`]],
     ['gh pr create -dF <long file>', ['create', '-dF', '<file>']],
     ['gh pr create --body-file=<long file>', ['create', '--body-file=<file>']],
+    // gh issue edit resolves a PR number to the PR, so it can rewrite a PR description too.
+    ['gh issue edit 3 --body-file <long file>', ['<issue>', 'edit', '3', '--body-file', '<file>']],
     // gh would read "--body" as the title and send the file; the runner checks the file anyway.
     [
       'gh pr create --title --body --body-file <long file>',
@@ -875,14 +885,37 @@ describe('as-agent PR descriptions', () => {
   ])('refuses a long description however it is passed: %s', async (_, args) => {
     const { deps, calls, logs } = setup();
     const file = description(words(400));
-    const command = ['gh', 'pr', ...args.map((arg) => arg.replace('<file>', file))];
-    expect(await asAgent(['builder', '--', ...command], deps)).toBe(1);
+    const filled = args.map((arg) => arg.replace('<file>', file));
+    const command = filled[0] === '<issue>' ? ['issue', ...filled.slice(1)] : ['pr', ...filled];
+    expect(await asAgent(['builder', '--', 'gh', ...command], deps)).toBe(1);
     expect(calls).toEqual([]);
     expect(logs()[0]).toContain('400 visible words');
   });
 
   test.each([
+    ['open details', (w: string) => `<details open><summary>s</summary>\n\n${w}\n</details>`],
+    ['details tags in comments', (w: string) => `<!-- <details> -->\n${w}\n<!-- </details> -->`],
+    [
+      'details tags in a ~~~ fence',
+      (w: string) => `~~~\n<details>\n~~~\n${w}\n~~~\n</details>\n~~~`,
+    ],
+    ['escaped details tags', (w: string) => `\\<details>\n${w}\n\\</details>`],
+  ])('counts text that GitHub shows: %s', async (_, wrap) => {
+    const { deps, logs } = setup();
+    const file = description(wrap(words(400)));
+    expect(await asAgent(['builder', '--', 'gh', 'pr', 'create', '--body-file', file], deps)).toBe(
+      1,
+    );
+    expect(logs()[0]).toContain('over the limit of 350');
+  });
+
+  test.each([
     ['no description', ['create', '--title', 'x'], 'needs --body-file'],
+    [
+      'a recovered description',
+      ['create', '--body', 'x', '--recover', 'state.json'],
+      "can't check",
+    ],
     ['a description on stdin', ['create', '--body-file', '-'], 'needs a file path'],
   ])('refuses a create with %s, since it cannot check it', async (_, args, reason) => {
     const { deps, calls, logs } = setup();
@@ -941,7 +974,12 @@ describe('as-agent as a process', () => {
     const runner = join(import.meta.dirname, 'as-agent.ts');
     const child = spawn(process.execPath, ['--import', preload, runner, ...command], {
       cwd: repo,
-      env: { HOME: dir, PATH: '/usr/bin:/bin', DOCENT_BUILDER_APP_KEY: pem },
+      // Every role's key, so no role launched here can reach the real Keychain.
+      env: {
+        HOME: dir,
+        PATH: '/usr/bin:/bin',
+        ...Object.fromEntries(ROLES.map((role) => [keyEnvName(role), pem])),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
       // Under vitest's own 5s limit, so a hung runner is killed rather than left behind. SIGKILL,
       // because the runner catches SIGTERM and would wait on a hung revoke.
