@@ -19,6 +19,7 @@ import {
 } from 'react';
 import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
+import { FileTree } from './file-tree.tsx';
 import { Markdown } from './markdown.tsx';
 import type { Ready, Working } from './review-page.tsx';
 import { report } from './run-log.ts';
@@ -47,8 +48,11 @@ export function TourScreen({ snapshot, tour }: Props) {
   const writing = ready ? null : (tour as Working);
   const [index, setIndex] = useState(0);
   const [anchorIndex, setAnchorIndex] = useState(0);
-  // A file opened from the skip list or the overview, in place of the stop's citation.
+  // A file opened from the skip list, the overview or the file tree, in place of the stop's citation.
   const [viewing, setViewing] = useState<Viewing | null>(null);
+  // The left pane shows the route or the whole repo's files.
+  const [pane, setPane] = useState<'route' | 'files'>('route');
+  const goToFile = useRef<HTMLInputElement>(null);
   // A reviewer who opened the review while the tour was still being written is reading the PR's
   // description. Stops arriving don't take the code column away from it; moving does.
   const [overviewFirst, setOverviewFirst] = useState(tour.state !== 'ready');
@@ -166,8 +170,24 @@ export function TourScreen({ snapshot, tour }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [go, index]);
 
+  // ⌘P (Ctrl+P elsewhere) jumps to "Go to file", as in an editor.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'p' || !(event.metaKey || event.ctrlKey) || event.altKey) return;
+      event.preventDefault();
+      setPane('files');
+      requestAnimationFrame(() => goToFile.current?.focus());
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const diff = snapshot.diff as Diff;
   const changes = useMemo(() => changedLines(diff), [diff]);
+  const onRoute = useMemo(
+    () => new Set(stops.flatMap((s) => s.anchors.map((a) => a.path))),
+    [stops],
+  );
   if (!snapshot.pr) return null;
 
   const anchor = stop?.anchors[anchorIndex] ?? null;
@@ -187,16 +207,59 @@ export function TourScreen({ snapshot, tour }: Props) {
         posted={posted}
       />
       <div className="columns">
-        <nav className="column" aria-label="The route">
-          <Route
-            stops={stops}
-            index={index}
-            onSelect={go}
-            skips={skips}
-            onOpenSkip={(path) => setViewing({ path, side: sideFor(diff, path) })}
-            tour={ready}
-            writing={writing}
-          />
+        <nav className="column left-column" aria-label="Route and files">
+          <div className="pane-switch" role="tablist" aria-label="Left pane">
+            <button
+              type="button"
+              role="tab"
+              id="tab-route"
+              aria-selected={pane === 'route'}
+              aria-controls="pane-route"
+              onClick={() => setPane('route')}
+            >
+              Route <span className="pane-count">{stops.length} stops</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="tab-files"
+              aria-selected={pane === 'files'}
+              aria-controls="pane-files"
+              onClick={() => setPane('files')}
+            >
+              Files <span className="pane-count">{diff.files.length} changed</span>
+            </button>
+          </div>
+          <div
+            role="tabpanel"
+            id="pane-route"
+            aria-labelledby="tab-route"
+            hidden={pane !== 'route'}
+          >
+            <Route
+              stops={stops}
+              index={index}
+              onSelect={go}
+              skips={skips}
+              onOpenSkip={(path) => setViewing({ path, side: sideFor(diff, path) })}
+              tour={ready}
+              writing={writing}
+            />
+          </div>
+          <div
+            role="tabpanel"
+            id="pane-files"
+            aria-labelledby="tab-files"
+            hidden={pane !== 'files'}
+          >
+            <FileTree
+              diff={diff}
+              onRoute={onRoute}
+              selected={shown?.side === 'new' ? shown.path : null}
+              onOpen={(path) => setViewing({ path, side: 'new' })}
+              filterRef={goToFile}
+            />
+          </div>
         </nav>
         <section className="column code-column" aria-label="Code">
           {shown ? (
@@ -205,12 +268,24 @@ export function TourScreen({ snapshot, tour }: Props) {
                 <span className="code-path">{shown.path}</span>
                 <span className="code-range">
                   {viewing
-                    ? (viewing.label ?? 'opened from the route')
+                    ? (viewing.label ??
+                      (diff.files.some((f) => f.path === shown.path)
+                        ? 'changed in this PR'
+                        : 'not changed by this PR · read-only'))
                     : anchor
                       ? `lines ${anchor.startLine}–${anchor.endLine} · cited by this stop`
                       : ''}
                 </span>
                 <span className="code-side">{shown.side === 'new' ? 'head' : 'base'}</span>
+                {viewing && (
+                  <button
+                    type="button"
+                    className="secondary-button back-to-stop"
+                    onClick={() => setViewing(null)}
+                  >
+                    <span aria-hidden="true">←</span> Back to stop {index + 1}
+                  </button>
+                )}
               </div>
               <CodeView
                 path={shown.path}

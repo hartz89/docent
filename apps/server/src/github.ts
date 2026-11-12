@@ -44,6 +44,10 @@ export type Workspace = {
   dir: string;
   /** A file's text at the base or head commit, or null if it doesn't exist there. */
   readFile: (side: 'old' | 'new', path: string) => Promise<string | null>;
+  /** One file for the reviewer's code view: its text, or why it isn't shown. */
+  open: (side: 'old' | 'new', path: string) => Promise<RepoFile>;
+  /** Every file in the repo at head, for browsing. */
+  tree: () => Promise<RepoTree>;
   /** The PR's head commit right now, which moves when the author pushes. */
   currentHead: () => Promise<CommitSha>;
   /** Posts one review on this PR as the reviewer, and returns its link on GitHub. */
@@ -51,6 +55,31 @@ export type Workspace = {
   /** The files at head, for the symbol index: read from git's objects, never the working tree. */
   headFiles: () => Promise<HeadFiles>;
 };
+
+/** One path in the repo at head. Folders are implied by the paths under them. */
+export type TreeEntry = { path: string; kind: 'file' | 'symlink' | 'submodule' };
+export type RepoTree = { entries: TreeEntry[]; truncated: boolean };
+
+/** A file as the code view gets it. Only text is ever sent; the rest says why not. */
+export type RepoFile =
+  | { kind: 'text'; text: string }
+  | { kind: 'binary' }
+  | { kind: 'too_large'; bytes: number }
+  | { kind: 'symlink'; target: string }
+  | { kind: 'missing' };
+
+/** The code view shows text files up to this size. */
+export const MAX_FILE_BYTES = 2_000_000;
+/** The file tree lists at most this many paths. */
+export const MAX_TREE_ENTRIES = 50_000;
+
+/** Classifies text already in hand (fixtures and tests) the way the git reader does. */
+export function fileFromText(text: string | null): RepoFile {
+  if (text === null) return { kind: 'missing' };
+  const bytes = Buffer.byteLength(text);
+  if (bytes > MAX_FILE_BYTES) return { kind: 'too_large', bytes };
+  return text.includes('\0') ? { kind: 'binary' } : { kind: 'text', text };
+}
 
 /** GitHub turned the review down, or couldn't be reached. The message is fit to show. */
 export class GitHubRefusal extends Error {}
@@ -147,17 +176,6 @@ export function githubSource(url: string, cacheDir: string): PrSource {
     const dir = join(cacheDir, 'repos', `${ref.owner}__${ref.name}`, pr.head);
     await ensureCheckout(dir, repo, pr);
 
-    const show = async (sha: string, path: string) => {
-      if (!isSafeRepoPath(path)) return null;
-      try {
-        const { stdout } = await git(dir, ['show', `${sha}:${path}`], {
-          maxBuffer: 64 * 1024 * 1024,
-        });
-        return stdout;
-      } catch {
-        return null;
-      }
-    };
     const pull = `repos/${repo}/pulls/${pr.number}`;
     // The PR is on github.com; GH_HOST or a default Enterprise host must not redirect the write.
     const onGitHub = ['--hostname', 'github.com'];
@@ -167,7 +185,7 @@ export function githubSource(url: string, cacheDir: string): PrSource {
       commitMessages: commitPages.flat().map((c) => c.commit.message),
       headInBaseRepo: !view.isCrossRepository,
       dir,
-      readFile: (side, path) => show(side === 'new' ? pr.head : pr.base, path),
+      ...commitReader(dir, pr.base, pr.head),
       currentHead: async () =>
         commitSha((await ghForReview(['api', ...onGitHub, pull, '--jq', '.head.sha'])).trim()),
       postReview: async ({ commitId, event, body }) => {
@@ -212,6 +230,99 @@ async function ensureCheckout(dir: string, repo: string, pr: PrInfo): Promise<vo
   ]);
   await git(dir, ['checkout', '--quiet', '--detach', pr.head]);
   await writeFile(ready, `${new Date().toISOString()}\n`);
+}
+
+/**
+ * Reads files and the tree from git's objects at two pinned commits, never from the working tree.
+ * A symlink is only ever its link text, so nothing outside the repo can be reached. Paths match
+ * literally, and only regular files are read, after their size is checked.
+ */
+export function commitReader(
+  dir: string,
+  base: CommitSha,
+  head: CommitSha,
+  maxTreeEntries = MAX_TREE_ENTRIES,
+): Pick<Workspace, 'readFile' | 'open' | 'tree'> {
+  const blob = async (sha: CommitSha, path: string, maxBytes: number): Promise<RepoFile> => {
+    if (!isSafeRepoPath(path)) return { kind: 'missing' };
+    let entry: string;
+    try {
+      // `<mode> blob <oid> <size>\t<path>\0` for exactly this path, or nothing.
+      ({ stdout: entry } = await git(dir, [
+        '-c',
+        'core.precomposeunicode=false',
+        '--literal-pathspecs',
+        'ls-tree',
+        '-z',
+        '--long',
+        sha,
+        '--',
+        path,
+      ]));
+    } catch {
+      return { kind: 'missing' };
+    }
+    const match = /^(\d{6}) blob ([0-9a-f]{40,64}) +(\d+)\t([^\0]*)\0$/.exec(entry);
+    if (!match || match[4] !== path) return { kind: 'missing' };
+    const [, mode = '', oid = '', size = ''] = match;
+    const bytes = Number(size);
+    if (mode === '120000') {
+      if (bytes > 4096) return { kind: 'missing' };
+      const { stdout } = await git(dir, ['cat-file', 'blob', oid]);
+      return { kind: 'symlink', target: stdout };
+    }
+    if (mode !== '100644' && mode !== '100755') return { kind: 'missing' };
+    if (bytes > maxBytes) return { kind: 'too_large', bytes };
+    const { stdout } = await git(dir, ['cat-file', 'blob', oid], { maxBuffer: maxBytes + 1 });
+    return stdout.includes('\0') ? { kind: 'binary' } : { kind: 'text', text: stdout };
+  };
+  const at = (side: 'old' | 'new') => (side === 'new' ? head : base);
+  let listing: Promise<RepoTree> | null = null;
+  return {
+    // The guide's own reads may be bigger than what the browser is sent.
+    readFile: async (side, path) => {
+      const file = await blob(at(side), path, 64 * 1024 * 1024);
+      if (file.kind === 'text') return file.text;
+      return file.kind === 'symlink' ? file.target : null;
+    },
+    open: (side, path) => blob(at(side), path, MAX_FILE_BYTES),
+    tree: () => {
+      // A failed listing isn't kept, so the next request tries again.
+      listing ??= listTree(dir, head, maxTreeEntries).catch((error: unknown) => {
+        listing = null;
+        throw error;
+      });
+      return listing;
+    },
+  };
+}
+
+/** Every file, symlink and submodule at a commit, up to `max` of them. */
+async function listTree(dir: string, sha: CommitSha, max: number): Promise<RepoTree> {
+  let stdout: string;
+  let cut = false;
+  try {
+    ({ stdout } = await git(dir, ['ls-tree', '-r', '-z', '--full-tree', sha], {
+      maxBuffer: 16 * 1024 * 1024,
+    }));
+  } catch (error) {
+    // A listing too big to buffer is cut short: git is stopped, and what arrived is kept.
+    const failure = error as { code?: unknown; stdout?: unknown };
+    if (failure.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || typeof failure.stdout !== 'string')
+      throw error;
+    stdout = failure.stdout.slice(0, failure.stdout.lastIndexOf('\0') + 1);
+    cut = true;
+  }
+  const entries: TreeEntry[] = [];
+  for (const record of stdout.split('\0')) {
+    const tab = record.indexOf('\t');
+    if (tab === -1) continue;
+    if (entries.length === max) return { entries, truncated: true };
+    const mode = record.slice(0, 6);
+    const kind = mode === '160000' ? 'submodule' : mode === '120000' ? 'symlink' : 'file';
+    entries.push({ path: record.slice(tab + 1), kind });
+  }
+  return { entries, truncated: cut };
 }
 
 /**
@@ -332,7 +443,7 @@ function githubErrors(body: string | undefined): string[] {
   }
 }
 
-/** A relative path inside the repo: no absolute paths, no `..`, no NUL, no option-like names. */
+/** A relative path inside the repo: no absolute paths, no `.` or `..`, no NUL, no option-like names. */
 export function isSafeRepoPath(path: string): boolean {
   return (
     path.length > 0 &&
@@ -340,6 +451,6 @@ export function isSafeRepoPath(path: string): boolean {
     !path.startsWith('/') &&
     !path.startsWith('-') &&
     !path.includes('\0') &&
-    !path.split('/').some((part) => part === '..' || part === '')
+    !path.split('/').some((part) => part === '..' || part === '.' || part === '')
   );
 }

@@ -22,6 +22,8 @@ import {
   type PrInfo,
   type PrSource,
   REVIEW_EVENTS,
+  type RepoFile,
+  type RepoTree,
   type ReviewEvent,
   type Workspace,
 } from './github.ts';
@@ -236,6 +238,17 @@ export class Review {
     return () => this.#listeners.delete(listener);
   }
 
+  /** One file for the code view, read from the PR's base or head commit. */
+  async open(side: 'old' | 'new', path: string): Promise<RepoFile> {
+    return this.#workspace ? this.#workspace.open(side, path) : { kind: 'missing' };
+  }
+
+  /** The whole repo at head, or null until the PR has been read. */
+  async tree(): Promise<{ head: CommitSha; tree: RepoTree } | null> {
+    const workspace = this.#workspace;
+    return workspace ? { head: workspace.pr.head, tree: await workspace.tree() } : null;
+  }
+
   /**
    * Where `symbol` may be defined, ranked, from the index of the PR's head. Null until the PR
    * has been read.
@@ -276,10 +289,6 @@ export class Review {
       },
     );
     return this.#symbols;
-  }
-
-  async readFile(side: 'old' | 'new', path: string): Promise<string | null> {
-    return this.#workspace ? this.#workspace.readFile(side, path) : null;
   }
 
   /**

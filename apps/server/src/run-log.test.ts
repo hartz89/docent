@@ -112,7 +112,7 @@ describe('the run log', () => {
   test('records a server error with its stack, and answers with no detail', async () => {
     const broken: PrSource = async (onStep) => ({
       ...(await fixtureSource(fixture, () => {})(onStep)),
-      readFile: async () => {
+      open: async () => {
         throw new Error('disk on fire');
       },
     });

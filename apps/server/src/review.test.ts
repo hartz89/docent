@@ -15,7 +15,7 @@ import {
   type SessionLocator,
 } from './author-session.ts';
 import { fixtureRunner, recording } from './fixture.ts';
-import { GitHubRefusal, type PrSource, type ReviewPost } from './github.ts';
+import { fileFromText, GitHubRefusal, type PrSource, type ReviewPost } from './github.ts';
 import { Review, type ReviewOptions, type TourState, tourCacheName } from './review.ts';
 
 // A small PR: one behavior change in src/cors.ts, plus a lockfile bump.
@@ -77,6 +77,11 @@ const sourceFor =
       ],
       dir: '/nowhere',
       readFile: async (side, path) => (side === 'new' ? head : base)[path] ?? null,
+      open: async (side, path) => fileFromText((side === 'new' ? head : base)[path] ?? null),
+      tree: async () => ({
+        entries: Object.keys(head).map((path) => ({ path, kind: 'file' as const })),
+        truncated: false,
+      }),
       currentHead: async () => github.head,
       postReview: async (review) => {
         if (github.refusal) throw new GitHubRefusal(github.refusal);
