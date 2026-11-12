@@ -115,7 +115,8 @@ export async function checkAnswer(job: CheckJob): Promise<CheckOutcome> {
   if (!wire?.contradicted) return silent;
   const text = wire.correction.replace(/\s+/g, ' ').trim();
   if (!text || text.length > MAX_TEXT_CHARS) return silent;
-  const cites = await verifyCitations(wire.citations, job.workspace);
+  // A read that fails ends in silence too, so the check never rejects.
+  const cites = await verifyCitations(wire.citations, job.workspace).catch(() => null);
   return cites ? { correction: { text, cites, costs }, costs, result: 'corrected' } : silent;
 }
 

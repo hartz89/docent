@@ -242,12 +242,9 @@ export function createApp({
         // Review.ask logs the question and its outcome.
         try {
           // The request's signal aborts when the reviewer goes away, so a dropped question stops.
-          const answer = await review.ask(
-            stopId,
-            question,
-            c.req.raw.signal,
-            places.get(c.req.raw),
-          );
+          const place = places.get(c.req.raw);
+          if (!place) throw new Error('The question has no place in line.');
+          const answer = await review.ask(stopId, question, place, c.req.raw.signal);
           return c.json({ answer }, 200);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);

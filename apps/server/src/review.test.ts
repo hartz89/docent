@@ -297,6 +297,28 @@ describe('GET /api/review', () => {
     ]);
   });
 
+  test('a repair that names a stop that is not there is sent back, with the stops as they are', async () => {
+    const fixed = { ...goodTour.stops[1], flags: [] };
+    const { runner, requests } = scripted(
+      gappyTour,
+      repairOf({ ...fixed, replaces: 9 }),
+      repairOf({ ...fixed, replaces: 2 }),
+    );
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    // Every repair request lists the stops by number, since earlier repairs can renumber them.
+    expect(requests[1]?.prompt).toContain("The tour's stops now, by number:\n1. intent: Why\n2.");
+    expect(requests[2]?.prompt).toContain('The repair replaces stop 9, but there is no stop 9.');
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.stops.map((s) => s.title)).toEqual([
+      'Why',
+      'The origin is reflected',
+      'Your call',
+    ]);
+  });
+
   test('stops after two retries and shows what is still wrong', async () => {
     const { runner, requests } = scripted(gappyTour, repairOf(), repairOf(), goodTour);
     const { api } = await open(runner);
@@ -1287,6 +1309,27 @@ describe('POST /api/questions', () => {
     ]);
   });
 
+  test('a request refused before it is asked gives up its place in line', async () => {
+    const author = withAuthor({ hold: true });
+    const { app, api } = await open(author.runner, undefined, 'claude-test', authorFound);
+
+    const first = ask(api, 'First?');
+    const refused = [
+      await api.questions.$post({ json: { stopId: 'stop-2', question: ' ' } }),
+      await app.request(`${origin}/api/questions`, { method: 'POST', body: '{}' }),
+    ];
+    const next = ask(api, 'Next?');
+    await vi.waitFor(() => expect(author.forks).toHaveLength(1));
+    author.releases[0]?.();
+    await vi.waitFor(() => expect(author.forks).toHaveLength(2));
+    author.releases[1]?.();
+
+    expect(refused.map((r) => r.status)).toEqual([400, 401]);
+    expect((await first).status).toBe(200);
+    expect(await (await next).json()).toMatchObject({ answer: { source: 'author_session' } });
+    expect(author.forks.map(questionIn)).toEqual(['First?', 'Next?']);
+  });
+
   test('rejects an empty question', async () => {
     const { api } = await open(scripted(goodTour).runner);
 
@@ -1354,12 +1397,16 @@ describe('the answer check', () => {
         .trimEnd()
         .split('\n')
         .map((line) => JSON.parse(line) as Record<string, unknown>)
-        .filter((e) => e.kind === 'question');
-    await vi.waitFor(async () => expect(await logged()).toHaveLength(1));
-    expect((await logged())[0]).toMatchObject({
-      source: 'author_session',
-      check: 'corrected',
-      checkCostMicroUsd: 40,
+        .filter((e) => e.kind === 'question' || e.kind === 'question.check');
+    await vi.waitFor(async () => expect(await logged()).toHaveLength(2));
+    const [question, check] = await logged();
+    // The answer is logged when it goes out; the check, tied to it, when it's done.
+    expect(question).toMatchObject({ kind: 'question', source: 'author_session' });
+    expect(check).toMatchObject({
+      kind: 'question.check',
+      checkId: question?.checkId,
+      result: 'corrected',
+      costMicroUsd: 40,
       correction: 'The code sets `origin` from `reflect()`, not `*`.',
     });
   });

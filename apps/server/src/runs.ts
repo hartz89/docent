@@ -17,7 +17,7 @@ const usage = `Usage:
 export type Run = { id: string; events: RunEvent[]; badLines: number };
 
 /** Kinds whose `costMicroUsd` is money spent this run. Tour attempts are inside `tour.*`. */
-const COST_KINDS = new Set(['tour.ready', 'tour.failed', 'question']);
+const COST_KINDS = new Set(['tour.ready', 'tour.failed', 'question', 'question.check']);
 const ERROR_KINDS = new Set(['error', 'client.error']);
 
 /** Runs `docent runs …` against the runs folder. Returns the output and the exit code. */
@@ -121,7 +121,7 @@ function facts(run: Run) {
     mode: clean(str(start?.mode)) || '?',
     costMicroUsd: run.events
       .filter((e) => COST_KINDS.has(e.kind))
-      .reduce((sum, e) => sum + num(e.costMicroUsd) + num(e.checkCostMicroUsd), 0),
+      .reduce((sum, e) => sum + num(e.costMicroUsd), 0),
     errors: run.events.filter((e) => ERROR_KINDS.has(e.kind)).length,
     questions: run.events.filter((e) => e.kind === 'question' || e.kind === 'question.failed')
       .length,
@@ -252,10 +252,14 @@ export function summarize(run: Run): string {
           `     Cost ${usd(num(q.costMicroUsd))}${q.costIncomplete ? ' or more' : ''}, ${duration(num(q.ms))}`,
         );
         out.push(...block('A: ', str(q.answer)));
-        const check = CHECKS[str(q.check)];
+        const check = run.events.find(
+          (e) => e.kind === 'question.check' && q.checkId !== undefined && e.checkId === q.checkId,
+        );
         if (check) {
-          out.push(`     Check: ${check}, ${usd(num(q.checkCostMicroUsd))}`);
-          if (q.correction !== undefined) out.push(...block('C: ', str(q.correction)));
+          out.push(
+            `     Check: ${CHECKS[str(check.result)] ?? '?'}, ${usd(num(check.costMicroUsd))}`,
+          );
+          if (check.correction !== undefined) out.push(...block('C: ', str(check.correction)));
         }
       }
       out.push('');
@@ -309,7 +313,9 @@ function describe(e: RunEvent): string[] {
             ? `failed: ${clean(str(e.error))}`
             : e.outcome === 'bad_shape'
               ? "didn't match the tour schema"
-              : clean(str(e.outcome));
+              : e.outcome === 'bad_repair'
+                ? `repair refused: ${clean(str(e.problem))}`
+                : clean(str(e.outcome));
       return [
         `tour attempt ${num(e.attempt)}: ${what}, ${cost(e.costMicroUsd)}, ${duration(num(e.ms))}`,
         ...problems.map((p) => `- ${clean(String(p))}`),
@@ -330,6 +336,8 @@ function describe(e: RunEvent): string[] {
       return [
         `question at ${stopName(e)}: answered by ${e.source === 'author_session' ? "the author's session" : 'the guide'}, ${cost(e.costMicroUsd)}, ${duration(num(e.ms))}`,
       ];
+    case 'question.check':
+      return [`answer check: ${CHECKS[str(e.result)] ?? '?'}, ${cost(e.costMicroUsd)}`];
     case 'question.failed':
       return [
         `question at ${stopName(e)} not answered (${clean(str(e.outcome))}): ${clean(str(e.message))}`,

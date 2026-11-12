@@ -48,6 +48,7 @@ test('`docent runs show latest` reads a run top to bottom', async () => {
        +1m35s  moved to stop 2 (s2)
        +2m10s  moved to stop 3 (s3)
        +2m41s  question at stop 3 "The server serves any PR from a link": answered by the author's session, $0.2870, 18.4s
+       +2m49s  answer check: the code says otherwise, $0.0120
        +4m00s  question at stop 3 "The server serves any PR from a link": answered by the guide, $0.3410, 3m 16s
        +4m10s  web app error (api) POST /api/questions → 502: The author's session couldn't answer
        +4m11s  error in server (GET /api/file): EMFILE: too many open files

@@ -316,13 +316,13 @@ export class Review {
    * fork fails or times out, the guide answers from the code and says why the author didn't.
    * `signal` is the reviewer's request: when it aborts, the question is dropped, with no fallback.
    * Throws `Busy` when too many questions are already waiting for the author's session.
-   * `place` is the question's place in line (see `placeInLine`). Left out, it's taken now.
+   * `place` is the question's place in line, from `placeInLine`. `ask` gives it up when done.
    */
   async ask(
     stopId: string,
     question: string,
+    place: Place,
     signal?: AbortSignal,
-    place: Place = this.placeInLine(),
   ): Promise<AnswerView> {
     const started = Date.now();
     const stops = this.#tour.state === 'ready' ? this.#tour.tour.stops : [];
@@ -338,7 +338,7 @@ export class Review {
         forkBudgetUsd: this.#forkBudgetUsd(),
         ...this.#forkEstimateFields(),
       };
-      const answered = {
+      this.#log.event('question', {
         ...asked,
         source: answer.source,
         ...(answer.source === 'author_session'
@@ -350,17 +350,16 @@ export class Review {
         ms: Date.now() - started,
         askedAt: answer.askedAt,
         answer: answer.text,
-      };
-      // An author answer is logged once its check is done, with what the check found. The
-      // answer has already gone to the reviewer by then; `ms` is still when it went.
-      const check = answer.source === 'author_session' ? this.#checks.get(answer.checkId) : null;
-      if (!check) this.#log.event('question', answered);
-      else {
-        void check.then(({ result, costs, correction }) =>
-          this.#log.event('question', {
-            ...answered,
-            check: result,
-            checkCostMicroUsd: totalMicroUsd(costs),
+        ...(answer.source === 'author_session' ? { checkId: answer.checkId } : {}),
+      });
+      // The check finishes on its own, after the answer has gone out. Checks never reject.
+      if (answer.source === 'author_session') {
+        const { checkId } = answer;
+        void this.#checks.get(checkId)?.then(({ result, costs, correction }) =>
+          this.#log.event('question.check', {
+            checkId,
+            result,
+            costMicroUsd: totalMicroUsd(costs),
             ...(correction ? { correction: correction.text } : {}),
           }),
         );
@@ -635,6 +634,11 @@ Question: ${question}`,
    * Turns a session too big to prime within budget over to the guide. Priming is the one
    * expensive call, and each call has its own cap, so that's what is checked. Questions after it
    * read the primed cache and cost far less.
+   *
+   * It checks the estimate's midpoint, on purpose. A priming whose high end is over the cap can
+   * still run, and if it does trip the cap, the guide answers for the rest of the review. Checking
+   * the high end instead would refuse sessions that measured well under the cap: the 263k-token
+   * one cost ~$1.87 to prime, but its high end is $2.15, over the default $2.
    */
   #withinBudget(author: AuthorSession): AuthorSession {
     if (!author.found || author.contextTokens === null) return author;
