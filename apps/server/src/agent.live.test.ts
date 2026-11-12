@@ -7,7 +7,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { describe, expect, test } from 'vitest';
-import { sdkRunner } from './agent.ts';
+import { readOnlyOptions, sdkRunner } from './agent.ts';
 import { localSessions } from './author-session.ts';
 
 const CANARY = 'CANARY-7f3a9c';
@@ -125,6 +125,63 @@ describe.skipIf(!process.env.DOCENT_LIVE)('live: a question forks the author ses
     expect(await readdir(checkout)).toEqual(['retry.ts']);
     // Priced from this turn's usage only, not total_cost_usd, which includes the parent's cost.
     expect(reply.cost.costMicroUsd).toBeGreaterThan(0);
+  }, 180_000);
+
+  test('questions forked from a kept, primed copy read its cache', async () => {
+    // Forks of the original each write the whole session to the cache again, because Claude
+    // Code caches only up to the newest message. Forks of one primed copy share a cached
+    // prefix (docs/research/2026-11-11-cheaper-questions.md).
+    const model = process.env.DOCENT_LIVE_MODEL ?? 'claude-haiku-5-5';
+    const checkout = await mkdtemp(join(tmpdir(), 'docent-live-primed-'));
+    await writeFile(join(checkout, 'retry.ts'), 'export const MAX_RETRIES = 7;\n');
+    let author = '';
+    for await (const message of query({
+      prompt: `I just wrote retry.ts with MAX_RETRIES = 7, because our vendor ${REASON}'s gateway recovers within 7 attempts. Reply with just "Noted."`,
+      options: { ...readOnlyOptions({ cwd: checkout, model }), maxTurns: 1 },
+    })) {
+      if (message.type === 'result') author = message.session_id;
+    }
+    const transcript = await transcriptOf(author);
+    const before = await readFile(transcript);
+    const kept = await mkdtemp(join(tmpdir(), 'docent-live-kept-'));
+
+    const primer = await sdkRunner({
+      job: 'question',
+      model,
+      cwd: checkout,
+      fork: author,
+      keepIn: kept,
+      prompt: 'Reply with just: Ready.',
+    });
+    const primed = join(kept, `${primer.sessionId}.jsonl`);
+    expect(existsSync(primed), 'the primed copy was not kept').toBe(true);
+    await expect(
+      transcriptOf(primer.sessionId),
+      'the primed copy stayed in projects',
+    ).rejects.toThrow();
+    expect(await readFile(transcript), 'priming wrote to the author transcript').toEqual(before);
+
+    const asked = [];
+    for (const prompt of [
+      'Why is MAX_RETRIES 7? One sentence.',
+      'What is MAX_RETRIES? One sentence.',
+    ]) {
+      asked.push(await sdkRunner({ job: 'question', model, cwd: checkout, fork: primed, prompt }));
+    }
+    console.log(
+      'primer:',
+      primer.cost.tokens,
+      'questions:',
+      asked.map((a) => a.cost.tokens),
+    );
+    expect(asked[0]?.text).toContain(REASON);
+    const { cacheRead, cacheWrite } = primer.cost.tokens;
+    for (const question of asked) {
+      expect(question.cost.tokens.cacheRead).toBeGreaterThanOrEqual(cacheRead + cacheWrite / 2);
+    }
+    expect(await readdir(kept), 'a question fork left a transcript').toEqual([
+      `${primer.sessionId}.jsonl`,
+    ]);
   }, 180_000);
 });
 

@@ -8,5 +8,9 @@
   },
   "scripts": {
     "check:fixtures": "node src/check-fixtures.ts"
+  },
+  "dependencies": {
+    "@docent/core": "workspace:*",
+    "@docent/server": "workspace:*"
   }
 }

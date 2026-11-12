@@ -1,5 +1,8 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { test as base } from '@playwright/test';
@@ -12,16 +15,18 @@ type Docent = {
 /**
  * Starts a built entry point (`apps/server/dist/*.js`) and reads the startup URL it prints, the
  * same way a user would. `output` holds every line it has printed so far. Stop it with the
- * returned function, which kills that process by PID.
+ * returned function, which kills that process by PID. Each launch gets its own empty data
+ * folder, `dataDir`, so run logs land there and never in the real one.
  */
 export async function launch(
   entry: string,
   args: readonly string[] = [],
-): Promise<{ url: string; output: string[]; stop: () => Promise<void> }> {
+): Promise<{ url: string; output: string[]; dataDir: string; stop: () => Promise<void> }> {
   const script = fileURLToPath(new URL(`../apps/server/dist/${entry}`, import.meta.url));
+  const dataDir = mkdtempSync(join(tmpdir(), 'docent-e2e-'));
   const child: ChildProcess = spawn(process.execPath, [script, ...args], {
     stdio: ['ignore', 'pipe', 'inherit'],
-    env: { ...process.env, CI: '1' },
+    env: { ...process.env, CI: '1', DOCENT_DATA_DIR: dataDir, DOCENT_RUN_LOG: '' },
   });
   const output: string[] = [];
   const url = await new Promise<string>((resolve, reject) => {
@@ -36,6 +41,7 @@ export async function launch(
   return {
     url,
     output,
+    dataDir,
     stop: async () => {
       child.kill();
       await once(child, 'exit');
