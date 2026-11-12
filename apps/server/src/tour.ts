@@ -319,6 +319,18 @@ function streamStops(
     if (shown.length === 1) onFirstStop();
     report();
   };
+  /**
+   * Queues a step. The queue never rejects: nothing awaits it until the call ends, and an
+   * unhandled rejection would take the server down. A step that throws ends the stream.
+   */
+  const then = (step: () => unknown) => {
+    queue = queue
+      .then(async () => void (await step()))
+      .catch(() => {
+        accepting = false;
+        live = false;
+      });
+  };
 
   return {
     push: (json: string) => {
@@ -330,12 +342,12 @@ function streamStops(
       }
       if (scanner.started !== writing) {
         const started = scanner.started;
-        queue = queue.then(() => {
+        then(() => {
           writing = Math.max(writing, started);
           report();
         });
       }
-      for (const raw of found) queue = queue.then(() => take(raw));
+      for (const raw of found) then(() => take(raw));
     },
     /** Waits for the checks still running on stops that already streamed in. */
     settled: () => queue,

@@ -577,19 +577,12 @@ describe('the tour, while it is written', () => {
 
   test('stops already shown stay shown when a later attempt writes the tour again', async () => {
     let call = 0;
-    const guide = streaming([goodTour]);
-    // The first reply streams every stop, then comes back unreadable; the second is the tour.
+    const guide = streaming([goodTour, goodTour]);
+    // Both replies stream every stop. The first then comes back unreadable; the second is the
+    // tour. Only the first may reach the screen, or the shown stops would restart from none.
     const runner: AgentRunner = async (request) => {
-      const reply = call++ === 0 ? await guide.runner(request) : null;
-      return reply
-        ? { ...reply, structured: 'not a tour' }
-        : {
-            sessionId: 'session-1',
-            text: '',
-            structured: goodTour,
-            denials: [],
-            cost: cost('tour', 1500),
-          };
+      const reply = await guide.runner(request);
+      return call++ === 0 ? { ...reply, structured: 'not a tour' } : reply;
     };
 
     const states = await watch(runner);
