@@ -80,6 +80,7 @@ const ALLOWED: Record<Role, string[]> = {
     'git push [-u] origin <branch>   (a plain branch name: not main, HEAD or refs/...; no flags but -u)',
     'gh pr create|view|checks|diff|comment|edit ...',
     'gh pr merge <number> --squash [--auto]',
+    'gh issue create|view|list|comment|edit|close ...',
     'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
     'Never with gh --jq/-q or --template/-t, or --web/--editor.',
   ],
@@ -95,7 +96,21 @@ const PR_SUBCOMMANDS: Record<Role, string[]> = {
   reviewer: ['view', 'diff', 'checks', 'review', 'comment'],
 };
 
-type Allowed = { tool: 'gh' | 'git'; args: string[] };
+const ISSUE_SUBCOMMANDS = ['create', 'view', 'list', 'comment', 'edit', 'close'];
+
+/**
+ * --web and --editor, including -w or -e bundled with other short flags (-wl), which gh also
+ * accepts. A glued short value that happens to contain w or e (-bweb) is refused too: write it as
+ * a separate flag and value.
+ */
+const INTERACTIVE = /^(--web|--editor)(=|$)|^-[A-Za-z]*[we]/;
+
+type Allowed = {
+  tool: 'gh' | 'git';
+  args: string[];
+  /** Permissions this command needs beyond the role's base set. */
+  extra?: Record<string, 'read' | 'write'>;
+};
 
 /** Returns the exact command to run, or throws why it's refused. */
 function allowed(role: Role, command: string[]): Allowed {
@@ -116,13 +131,27 @@ function allowed(role: Role, command: string[]): Allowed {
   }
   if (program === 'gh' && sub === 'api') {
     checkGhApi(rest, refuse);
-    return { tool: 'gh', args: ['api', ...rest] };
+    // Reading issues needs issues: read. Requested only for those calls, so other commands keep
+    // working on an app without the permission.
+    const issues =
+      role === 'builder' && rest.some((arg) => /^\/?repos\/[^/]+\/[^/]+\/issues\b/.test(arg));
+    return { tool: 'gh', args: ['api', ...rest], ...(issues ? { extra: { issues: 'read' } } : {}) };
+  }
+  if (program === 'gh' && sub === 'issue' && role === 'builder') {
+    const [action, ...args] = rest;
+    if (!action || !ISSUE_SUBCOMMANDS.includes(action)) {
+      refuse(`"gh issue ${action ?? ''}" isn't allowed for the ${role}`);
+    }
+    const interactive = args.find((arg) => INTERACTIVE.test(arg));
+    if (interactive) refuse(`${interactive} opens a browser or editor`);
+    const writes = action !== 'view' && action !== 'list';
+    return { tool: 'gh', args: ['issue', ...rest], extra: { issues: writes ? 'write' : 'read' } };
   }
   if (program === 'gh' && sub === 'pr') {
     const [action, ...args] = rest;
     if (args.some((arg) => arg.startsWith('--admin'))) refuse('--admin bypasses branch protection');
     // A browser or editor would run outside the scrubber, with the token in its env.
-    const interactive = args.find((arg) => /^(--web|--editor)(=|$)|^-[we]$/.test(arg));
+    const interactive = args.find((arg) => INTERACTIVE.test(arg));
     if (interactive && ['create', 'edit', 'comment', 'review'].includes(action ?? '')) {
       refuse(`${interactive} opens a browser or editor`);
     }
@@ -473,7 +502,7 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
   };
   try {
     const { role, command } = parseArgs(argv);
-    const { tool, args } = allowed(role, command);
+    const { tool, args, extra } = allowed(role, command);
     const file = findTool(tool, deps);
     const base = baseEnv(deps.env);
     checkLocalGitConfig(findTool('git', deps), deps.cwd);
@@ -505,7 +534,10 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
       path: `/app/installations/${installation.id}/access_tokens`,
       auth: `Bearer ${jwt}`,
       hint: `Check that the key belongs to the ${role} app and that it has these permissions.`,
-      body: { repositories: [REPO.split('/')[1]], permissions: TOKEN_PERMISSIONS[role] },
+      body: {
+        repositories: [REPO.split('/')[1]],
+        permissions: { ...TOKEN_PERMISSIONS[role], ...extra },
+      },
     });
     const basicAuth = Buffer.from(`x-access-token:${token}`).toString('base64');
     secrets.push(token, basicAuth);

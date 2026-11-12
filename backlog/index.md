@@ -1,6 +1,6 @@
 # Backlog
 
-Ranked. The top unclaimed item is next. Each item states the outcome it buys. Before starting work on an item, add your branch name to it.
+Ranked. The top unclaimed item is next. Each item states the outcome it buys. Before starting work on an item, add your branch name to it. Open issues with the `backlog` label are backlog work too; see [`agent-identities.md`](../docs/process/agent-identities.md) for how agents triage and label them.
 
 Version one is the brief's loop: open a PR, take the tour, ask a question, leave feedback, send the batch ([`docs/brief.md`](../docs/brief.md), "V1 scope"). Items that complete that loop rank first. After them come the items that make it trustworthy and cheap to keep using. Dev-environment work is ranked alongside product work, by what it unblocks.
 
