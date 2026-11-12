@@ -40,6 +40,9 @@ const usage = `Usage: docent review <github-pr-url> [options]
 
 Options:
   --model <id>      Model for the guide (default: $DOCENT_MODEL or ${DEFAULT_MODEL})
+  --question-model <id>  Model for the author's session when it answers a question
+                    (default: the guide's model). claude-haiku-5-5 costs cents a question on
+                    a long session, but is less often sure of the author's reasons
   --session <id>    The author's Claude Code session, to answer questions. By default it's
                     found from the Claude-Session link in the PR, if it's on this machine
                     and worked on this PR's branch in this repo
@@ -56,6 +59,7 @@ const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     model: { type: 'string' },
+    'question-model': { type: 'string' },
     session: { type: 'string' },
     'fork-budget': { type: 'string' },
     'no-open': { type: 'boolean', default: false },
@@ -134,6 +138,7 @@ const review = new Review({
   runner,
   locator,
   model,
+  ...(values['question-model'] ? { questionModel: values['question-model'] } : {}),
   log,
   ...(forkBudgetUsd !== undefined ? { forkBudgetUsd } : {}),
   // Fixtures and recordings always run the job, since a cached tour would skip it. Preparing
@@ -169,10 +174,11 @@ async function serve(review: Review) {
   if (log.path) console.log(`This run is logged to ${log.path} (see: docent runs).`);
   report(review);
 
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+    // Closing the review deletes its primed copy of the author's session.
     process.once(signal, () => {
       endReason = `stopped (${signal})`;
-      void server.close().then(() => process.exit(0));
+      void Promise.allSettled([server.close(), review.close()]).then(() => process.exit(0));
     });
   }
 }

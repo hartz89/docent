@@ -2,10 +2,10 @@
 // answer that knows why the change was built the way it was.
 import { createReadStream, existsSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { type SessionId, sessionId } from '@docent/core';
+import { claudeProjectsDir } from './agent.ts';
 import { git } from './github.ts';
 
 /** The author's session, or why questions go to the guide instead. */
@@ -66,7 +66,7 @@ export function localSessions(
     repoOf?: (dir: string) => Promise<string | null>;
   } = {},
 ): SessionLocator {
-  const projectsDir = options.projectsDir ?? join(homedir(), '.claude', 'projects');
+  const projectsDir = options.projectsDir ?? claudeProjectsDir();
   const repoOf = options.repoOf ?? originRepo;
   return async (handoff) => {
     const transcripts = await listTranscripts(projectsDir);

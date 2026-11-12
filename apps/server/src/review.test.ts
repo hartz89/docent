@@ -1,4 +1,5 @@
-import { mkdtemp } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type CostRecord, commitSha, type Job, type MicroUsd, sessionId } from '@docent/core';
@@ -13,6 +14,7 @@ import {
   MAX_WAITING,
   type SessionLocator,
 } from './author-session.ts';
+import { fixtureRunner, recording } from './fixture.ts';
 import { GitHubRefusal, type PrSource, type ReviewPost } from './github.ts';
 import { Review, type ReviewOptions, type TourState, tourCacheName } from './review.ts';
 
@@ -159,7 +161,7 @@ async function open(
   cacheDir?: string,
   model = 'claude-test',
   locator: SessionLocator = noAuthor,
-  extra: Pick<ReviewOptions, 'forkBudgetUsd' | 'questionTimeoutMs'> = {},
+  extra: Pick<ReviewOptions, 'forkBudgetUsd' | 'questionTimeoutMs' | 'questionModel'> = {},
   github = fakeGitHub(),
 ) {
   const review = new Review({
@@ -375,11 +377,14 @@ const authorFound = fixedSession(authorSession());
  * The scripted runner, plus the author's session. A fork answers with the author's reasoning, or
  * fails: `agent` like a session that couldn't be resumed, `budget` like one that hit the cap,
  * `crash` with no cost reported. `hold` keeps each fork waiting until released or aborted.
+ * The fork that primes the session (the one kept on disk) is recorded apart, and succeeds
+ * unless `failPrimer` says otherwise.
  */
 function withAuthor(
   options: {
     fail?: 'agent' | 'budget' | 'crash';
     hold?: boolean;
+    failPrimer?: 'budget' | 'agent';
     /** The answer check's structured reply, or the error it throws. Default: no contradiction. */
     check?: unknown;
     /** Keeps the answer check waiting until this settles. */
@@ -388,6 +393,7 @@ function withAuthor(
 ) {
   const guide = scripted(goodTour);
   const forks: AgentRequest[] = [];
+  const primers: AgentRequest[] = [];
   const checks: AgentRequest[] = [];
   const releases: (() => void)[] = [];
   const runner: AgentRunner = async (request) => {
@@ -405,6 +411,26 @@ function withAuthor(
       };
     }
     if (!request.fork) return guide.runner(request);
+    if (request.keepIn !== undefined) {
+      primers.push(request);
+      if (options.failPrimer && primers.length === 1) {
+        const subtype =
+          options.failPrimer === 'budget' ? 'error_max_budget_usd' : 'error_during_execution';
+        throw new AgentError(
+          `The agent stopped without an answer (${subtype})`,
+          cost('question', 400),
+        );
+      }
+      // As the real runner does: the kept fork's transcript lands in `keepIn`.
+      await writeFile(join(request.keepIn, `primed-${primers.length}.jsonl`), '{}\n');
+      return {
+        sessionId: `primed-${primers.length}`,
+        text: 'Ready.',
+        structured: undefined,
+        denials: [],
+        cost: cost('question', 300),
+      };
+    }
     forks.push(request);
     if (options.hold) {
       await new Promise<void>((resolve, reject) => {
@@ -428,7 +454,7 @@ function withAuthor(
       cost: cost('question', 2500),
     };
   };
-  return { runner, forks, checks, releases, guide: guide.requests };
+  return { runner, forks, primers, checks, releases, guide: guide.requests };
 }
 
 const NO_CONTRADICTION = { contradicted: false, claim: '', correction: '', citations: [] };
@@ -475,13 +501,21 @@ describe('POST /api/questions', () => {
         text: 'We reflect the origin because the dashboard sends credentials.',
         checkId: expect.any(String),
         askedAt: 'h'.repeat(40),
-        costs: [cost('question', 2500)],
+        // The first question also pays for priming the session.
+        costs: [cost('question', 300), cost('question', 2500)],
         costIncomplete: false,
       },
     });
+    const [primer] = author.primers;
+    expect(primer).toMatchObject({ job: 'question', fork: AUTHOR, cwd: '/nowhere' });
     const [fork] = author.forks;
-    expect(fork).toMatchObject({ job: 'question', fork: AUTHOR, cwd: '/nowhere' });
+    expect(fork).toMatchObject({
+      job: 'question',
+      fork: join(primer?.keepIn ?? '', 'primed-1.jsonl'),
+      cwd: '/nowhere',
+    });
     expect(fork?.resume).toBeUndefined();
+    expect(fork?.keepIn).toBeUndefined();
     expect(fork?.prompt).toContain('read-only copy of your session');
     expect(fork?.prompt).toContain('You worked in /Users/someone/web before');
     expect(fork?.prompt).toContain('src/cors.ts (head) lines 2-2:\n  const origin = reflect();');
@@ -554,7 +588,7 @@ describe('POST /api/questions', () => {
         source: 'guide',
         whyNotAuthor:
           "The author's session couldn't answer: The agent stopped without an answer (error_during_execution)",
-        costs: [{ costMicroUsd: 700 }, { costMicroUsd: 1500 }],
+        costs: [{ costMicroUsd: 300 }, { costMicroUsd: 700 }, { costMicroUsd: 1500 }],
         costIncomplete: false,
       },
     });
@@ -569,7 +603,11 @@ describe('POST /api/questions', () => {
     );
 
     expect(await (await ask(api)).json()).toMatchObject({
-      answer: { source: 'guide', costs: [{ costMicroUsd: 1500 }], costIncomplete: true },
+      answer: {
+        source: 'guide',
+        costs: [{ costMicroUsd: 300 }, { costMicroUsd: 1500 }],
+        costIncomplete: true,
+      },
     });
   });
 
@@ -591,9 +629,179 @@ describe('POST /api/questions', () => {
       answer: {
         source: 'guide',
         whyNotAuthor:
-          "The author's session is too big to ask within budget (about $3.20 a question; the budget is $1.00)",
+          "The author's session is too big to ask within budget (about $3.20 for the first question; the budget is $1.00)",
       },
     });
+  });
+
+  test('a cheaper question model answers for the author, and sets the estimate', async () => {
+    // Too big for Opus within $1 (about $3.20), but about $0.40 on Haiku at its long-prompt price.
+    const author = withAuthor();
+    const { api } = await open(
+      author.runner,
+      undefined,
+      'claude-opus-5-5',
+      fixedSession(authorSession(400_000)),
+      { forkBudgetUsd: 1, questionModel: 'claude-haiku-5-5' },
+    );
+
+    const res = await ask(api);
+
+    expect(await res.json()).toMatchObject({ answer: { source: 'author_session' } });
+    expect([...author.primers, ...author.forks].map((f) => f.model)).toEqual([
+      'claude-haiku-5-5',
+      'claude-haiku-5-5',
+    ]);
+  });
+
+  test('when a cheaper fork fails, the guide still answers on its own model', async () => {
+    const author = withAuthor({ fail: 'agent' });
+    const { api } = await open(author.runner, undefined, 'claude-opus-5-5', authorFound, {
+      questionModel: 'claude-haiku-5-5',
+    });
+
+    await ask(api);
+
+    expect(author.forks.map((f) => f.model)).toEqual(['claude-haiku-5-5']);
+    expect(author.guide.filter((r) => r.job === 'question').map((r) => r.model)).toEqual([
+      'claude-opus-5-5',
+    ]);
+  });
+
+  test('the session is primed once; every later question forks the primed copy', async () => {
+    // Forks of one primed copy share its cached history, so later questions read the cache
+    // instead of writing the whole session again.
+    const author = withAuthor();
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound);
+
+    await ask(api, 'First?');
+    const second = await ask(api, 'Second?');
+
+    expect(author.primers).toHaveLength(1);
+    expect(author.primers[0]?.prompt).toContain('Reply with just: Ready.');
+    const primed = join(author.primers[0]?.keepIn ?? '', 'primed-1.jsonl');
+    expect(author.forks.map((f) => [f.fork, questionIn(f)])).toEqual([
+      [primed, 'First?'],
+      [primed, 'Second?'],
+    ]);
+    // Only the first question pays for the primer.
+    expect(await second.json()).toMatchObject({ answer: { costs: [{ costMicroUsd: 2500 }] } });
+  });
+
+  test('a primer that runs over budget turns questions over to the guide', async () => {
+    const author = withAuthor({ failPrimer: 'budget' });
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound);
+
+    const res = await ask(api);
+
+    expect(author.forks).toEqual([]);
+    expect(await res.json()).toMatchObject({
+      answer: {
+        source: 'guide',
+        whyNotAuthor: "The author's session ran over its budget",
+        costs: [{ costMicroUsd: 400 }, { costMicroUsd: 1500 }],
+      },
+    });
+  });
+
+  test('questions that arrive together still prime the session once', async () => {
+    const author = withAuthor();
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound);
+
+    await Promise.all([ask(api, 'First?'), ask(api, 'Second?'), ask(api, 'Third?')]);
+
+    expect(author.primers).toHaveLength(1);
+    expect(author.forks).toHaveLength(3);
+  });
+
+  test('a primer that fails for another reason is tried again on the next question', async () => {
+    const author = withAuthor({ failPrimer: 'agent' });
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound);
+
+    const first = await ask(api, 'First?');
+    const second = await ask(api, 'Second?');
+
+    expect(await first.json()).toMatchObject({ answer: { source: 'guide' } });
+    expect(await second.json()).toMatchObject({ answer: { source: 'author_session' } });
+    expect(author.primers).toHaveLength(2);
+  });
+
+  test('the fork budget caps the primer and each question on its own', async () => {
+    // The estimate prices the primer, the expensive call. A first question left only what the
+    // primer didn't spend would run out on a big session.
+    const author = withAuthor();
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound, {
+      forkBudgetUsd: 1,
+    });
+
+    await ask(api, 'First?');
+    await ask(api, 'Second?');
+
+    expect([...author.primers, ...author.forks].map((f) => f.maxBudgetUsd)).toEqual([1, 1, 1]);
+  });
+
+  test('a primed folder that has gone missing is made again', async () => {
+    const author = withAuthor();
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound);
+    await ask(api, 'First?');
+    await rm(author.primers[0]?.keepIn ?? '', { recursive: true });
+
+    const res = await ask(api, 'Second?');
+
+    expect(await res.json()).toMatchObject({ answer: { source: 'author_session' } });
+    expect(author.primers).toHaveLength(2);
+    expect(author.primers[1]?.keepIn).not.toBe(author.primers[0]?.keepIn);
+  });
+
+  test('closing the review stops a primer still running, then deletes its folder', async () => {
+    const author = withAuthor();
+    let stopped = false;
+    let kept = '';
+    // A primer that runs until it's aborted, then takes a while to clean up, as sdkRunner does.
+    const runner: AgentRunner = async (request) => {
+      if (request.keepIn === undefined) return author.runner(request);
+      kept = request.keepIn;
+      started = true;
+      await new Promise<void>((resolve) => {
+        request.signal?.addEventListener('abort', () => resolve());
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      stopped = true;
+      throw new AgentError('The agent stopped without an answer (aborted)', cost('question', 50));
+    };
+    const { review, api } = await open(runner, undefined, 'claude-test', authorFound);
+    let started = false;
+    const asked = ask(api);
+    await vi.waitFor(() => expect(started).toBe(true));
+
+    await review.close();
+
+    expect(stopped).toBe(true);
+    expect(await (await asked).json()).toMatchObject({ answer: { source: 'guide' } });
+    expect(author.forks).toEqual([]);
+    expect(existsSync(kept)).toBe(false);
+  });
+
+  test('a question asked as the review closes starts no primer', async () => {
+    const author = withAuthor();
+    const { review, api } = await open(author.runner, undefined, 'claude-test', authorFound);
+
+    const asked = ask(api);
+    await review.close();
+
+    expect(await (await asked).json()).toMatchObject({ answer: { source: 'guide' } });
+    expect(author.primers).toEqual([]);
+  });
+
+  test('closing the review deletes the primed copy of the session', async () => {
+    const author = withAuthor();
+    const { review, api } = await open(author.runner, undefined, 'claude-test', authorFound);
+    await ask(api);
+    const kept = author.primers[0]?.keepIn ?? '';
+
+    await review.close();
+
+    expect(existsSync(kept)).toBe(false);
   });
 
   test('a fork that runs over budget is not paid for again in this review', async () => {
@@ -637,19 +845,15 @@ describe('POST /api/questions', () => {
     // The first fork takes 100 ms; the second waits until it's aborted.
     const runner: AgentRunner = async (request) => {
       if (!request.fork) return guide.runner(request);
+      const reply = { structured: undefined, denials: [], cost: cost('question', 2500) };
+      if (request.keepIn !== undefined) return { ...reply, sessionId: 'primed', text: 'Ready.' };
       forks.push(request);
       if (forks.length === 1) await new Promise((resolve) => setTimeout(resolve, 100));
       else
         await new Promise((_, reject) =>
           request.signal?.addEventListener('abort', () => reject(new Error('aborted'))),
         );
-      return {
-        sessionId: 'fork',
-        text: 'Because.',
-        structured: undefined,
-        denials: [],
-        cost: cost('question', 2500),
-      };
+      return { ...reply, sessionId: 'fork', text: 'Because.' };
     };
     const { api } = await open(runner, undefined, 'claude-test', authorFound, {
       questionTimeoutMs: 150,
@@ -1031,5 +1235,36 @@ describe('POST /api/review/submit', () => {
       403,
     );
     expect(github.posted).toEqual([]);
+  });
+});
+
+describe('recorded reviews', () => {
+  test('a recording skips the primer, and a replay primes for free', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'docent-rec-'));
+    const author = withAuthor();
+    const recorder = recording(dir, sourceFor(fakeGitHub()), author.runner);
+    const { review, api } = await open(recorder.runner, undefined, 'claude-test', authorFound);
+    const body = await (await ask(api)).json();
+    // The answer check runs after the answer and is recorded too: let it finish writing.
+    const checkId = 'answer' in body && 'checkId' in body.answer ? body.answer.checkId : '';
+    expect(review.answerCheck(checkId)).toBeDefined();
+    await review.answerCheck(checkId);
+
+    const replayed = await fixtureRunner(dir)({
+      job: 'question',
+      prompt: 'Reply with just: Ready.',
+      cwd: '/nowhere',
+      model: 'claude-test',
+      fork: AUTHOR,
+      keepIn: '/nowhere',
+    });
+
+    expect(author.primers).toHaveLength(1);
+    // Recorded: the tour and the author's answer, not the primer.
+    const replies = JSON.parse(await readFile(join(dir, 'replies.json'), 'utf8'));
+    expect(replies.question.map((r: AgentReply) => r.text)).toEqual([
+      'We reflect the origin because the dashboard sends credentials.',
+    ]);
+    expect(replayed).toMatchObject({ text: 'Ready.', cost: { costMicroUsd: 0 } });
   });
 });
