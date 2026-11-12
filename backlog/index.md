@@ -19,7 +19,7 @@ An open `backlog` issue that isn't listed here yet ranks below this list until s
 9. [#70](https://github.com/hartz89/docent/issues/70) Inline code references in stop prose
 10. [#71](https://github.com/hartz89/docent/issues/71) Explorer: jump to definition in the UI, and find references
 11. [#72](https://github.com/hartz89/docent/issues/72) The code map
-12. [#73](https://github.com/hartz89/docent/issues/73) Questions: threads survive a reload, and the run log records the check
+12. [#73](https://github.com/hartz89/docent/issues/73) Questions and run log: threads survive a reload, and a tighter log
 13. [#74](https://github.com/hartz89/docent/issues/74) Author side: sturdier session finding
 14. [#75](https://github.com/hartz89/docent/issues/75) Launcher follow-ups
 15. [#76](https://github.com/hartz89/docent/issues/76) "Take a tour in Docent" links for any repo
@@ -31,7 +31,8 @@ An open `backlog` issue that isn't listed here yet ranks below this list until s
 21. [#82](https://github.com/hartz89/docent/issues/82) Trust ledger: propose the autonomy rule
 22. [#83](https://github.com/hartz89/docent/issues/83) Expand CI, and fix the known flaky tests
 23. [#84](https://github.com/hartz89/docent/issues/84) An independent reviewer that posts a required status check
-24. [#85](https://github.com/hartz89/docent/issues/85) First scheduled maintenance agents
+24. [#88](https://github.com/hartz89/docent/issues/88) Runner and tier-gate follow-ups
+25. [#85](https://github.com/hartz89/docent/issues/85) First scheduled maintenance agents
 
 ## After v1
 
@@ -41,6 +42,5 @@ Not ranked yet. From the brief's roadmap and "later" notes, roughly in this orde
 - **Practice mode:** planted bugs for reviewers to find, using the eval fixtures. Other engagement ideas: predict which files a PR touches, and a small, satisfying finish for a thorough review.
 - **Multiple reviewers** on the same snapshot.
 - **A canonical cloud session,** where vendors support it.
-- **Learning on a threshold,** then scheduled in CI for teams.
 - **More themes:** popular editor themes (license-checked) and VS Code theme files.
 - **Language packs** for the deep features beyond the first languages.
