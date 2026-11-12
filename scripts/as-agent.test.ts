@@ -254,7 +254,7 @@ describe('as-agent', () => {
 
   test.each([
     [['config', 'http.proxy', 'http://evil:8080'], 'http.proxy'],
-    [['config', 'include.path', '/tmp/x'], 'include.path'],
+    [['config', 'include.path', 'missing-include'], 'include.path'],
     [['config', 'alias.push', '!evil'], 'alias.push'],
     [['config', 'core.sshCommand', 'evil'], 'core.sshcommand'],
     [['remote', 'add', 'origin', 'https://github.com/someone/else.git'], 'origin must be'],
