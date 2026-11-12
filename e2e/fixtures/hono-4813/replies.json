@@ -169,6 +169,82 @@
         "latencyMs": 6862
       },
       "denials": []
+    },
+    {
+      "sessionId": "9eeb7af3-22c4-4026-9b75-50de080ceddc",
+      "text": "With credentials on, a request with no `Origin` header still gets `Access-Control-Allow-Origin: *`, because the wildcard branch keeps returning `'*'` (line 81).",
+      "cost": {
+        "job": "question",
+        "model": "claude-opus-5-5",
+        "tokens": {
+          "input": 4,
+          "output": 451,
+          "cacheRead": 6625,
+          "cacheWrite": 2539
+        },
+        "costMicroUsd": 30673,
+        "latencyMs": 6862
+      },
+      "denials": []
+    }
+  ],
+  "answer_check": [
+    {
+      "sessionId": "0c0ffee0-0000-4000-8000-000000000001",
+      "text": "{\"contradicted\": false, \"claim\": \"\", \"correction\": \"\", \"citations\": []}",
+      "structured": {
+        "contradicted": false,
+        "claim": "",
+        "correction": "",
+        "citations": []
+      },
+      "cost": {
+        "job": "answer_check",
+        "model": "claude-haiku-5-5",
+        "tokens": {
+          "input": 12,
+          "output": 180,
+          "cacheRead": 9800,
+          "cacheWrite": 0
+        },
+        "costMicroUsd": 289,
+        "latencyMs": 4100
+      },
+      "denials": []
+    },
+    {
+      "sessionId": "0c0ffee0-0000-4000-8000-000000000002",
+      "text": "{\"contradicted\": true, \"claim\": \"With credentials on, a request with no `Origin` header still gets `Access-Control-Allow-Origin: *`\", \"correction\": \"The code returns `origin || null` when credentials are on, so a request with no `Origin` header gets `null` and no `Access-Control-Allow-Origin` header is set.\", \"citations\": [{\"path\": \"src/middleware/cors/index.ts\", \"startLine\": 80, \"endLine\": 82}, {\"path\": \"src/middleware/cors/index.ts\", \"startLine\": 109, \"endLine\": 112}]}",
+      "structured": {
+        "contradicted": true,
+        "claim": "With credentials on, a request with no `Origin` header still gets `Access-Control-Allow-Origin: *`",
+        "correction": "The code returns `origin || null` when credentials are on, so a request with no `Origin` header gets `null` and no `Access-Control-Allow-Origin` header is set.",
+        "citations": [
+          {
+            "path": "src/middleware/cors/index.ts",
+            "startLine": 80,
+            "endLine": 82
+          },
+          {
+            "path": "src/middleware/cors/index.ts",
+            "startLine": 109,
+            "endLine": 112
+          }
+        ]
+      },
+      "cost": {
+        "job": "answer_check",
+        "model": "claude-haiku-5-5",
+        "tokens": {
+          "input": 12,
+          "output": 180,
+          "cacheRead": 9800,
+          "cacheWrite": 0
+        },
+        "costMicroUsd": 289,
+        "latencyMs": 4100
+      },
+      "denials": []
     }
   ]
 }

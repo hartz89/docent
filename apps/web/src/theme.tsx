@@ -2,6 +2,7 @@
 // bar; that choice is remembered per browser. The inline script in index.html applies the same
 // rule before the first paint, so the page never flashes the wrong theme. Keep the two in step.
 import { useSyncExternalStore } from 'react';
+import { report } from './run-log.ts';
 
 type Theme = 'light' | 'dark';
 type Choice = Theme | 'system';
@@ -28,10 +29,17 @@ function systemTheme(): Theme {
   return systemLight.matches ? 'light' : 'dark';
 }
 
+let reported = '';
+
 function apply() {
   state = { choice, system: systemTheme() };
-  document.documentElement.dataset.theme = choice === 'system' ? state.system : choice;
+  const theme = choice === 'system' ? state.system : choice;
+  document.documentElement.dataset.theme = theme;
   for (const listener of listeners) listener();
+  if (`${theme}/${choice}` !== reported) {
+    reported = `${theme}/${choice}`;
+    report({ kind: 'ui.theme', theme, choice });
+  }
 }
 
 function choose(next: Choice) {
