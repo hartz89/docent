@@ -1,11 +1,12 @@
 // One review: opens the PR, generates (or loads) its tour, and answers questions about it, from
 // the author's own session when it can. The server routes read from here; the model, GitHub and
 // the author's session sit behind injected boundaries.
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
+  type Candidate,
   type CommitSha,
   type CostRecord,
   type Diff,
@@ -23,10 +24,13 @@ import {
   type ReviewEvent,
   type Workspace,
 } from './github.ts';
+import { describeError, RunLog } from './run-log.ts';
+import { type BuiltIndex, buildIndex, type IndexLimits, type IndexStatus } from './symbols.ts';
 import {
   generateTour,
   type StopView,
   TOUR_PROMPT_VERSION,
+  TOUR_PROMPTS,
   TourError,
   type TourOutcome,
   type TourProgress,
@@ -131,7 +135,17 @@ export type ReviewOptions = {
   questionTimeoutMs?: number;
   /** The model that checks author answers against the code. Default `DEFAULT_CHECK_MODEL`. */
   checkModel?: string;
+  /** Caps on the symbol index. Default `INDEX_LIMITS`. */
+  indexLimits?: IndexLimits;
+  /** How long a failed index build is remembered before one is tried again. Default 30 s. */
+  indexRetryMs?: number;
+  /** Where this run's events go: the tour, each question, the submit. Default: nowhere. */
+  log?: RunLog;
 };
+
+/** A jump returns at most this many candidates; `truncated` says when there were more. */
+export const MAX_CANDIDATES = 50;
+const INDEX_RETRY_MS = 30_000;
 
 const DEFAULT_FORK_BUDGET_USD = 2;
 const DEFAULT_QUESTION_TIMEOUT_MS = 180_000;
@@ -155,10 +169,16 @@ export class Review {
   #posting = false;
   /** Checks of author answers, by check id. Each settles, never rejects. */
   #checks = new Map<string, Promise<CheckOutcome>>();
+  /** The symbol index, built on first use. A review is bound to one head, so this is per head. */
+  #symbols: Promise<BuiltIndex> | null = null;
+  /** What a question to the author's session was estimated to cost, when it was estimated. */
+  #forkEstimateUsd: number | null = null;
+  #log: RunLog;
   readonly done: Promise<void>;
 
   constructor(options: ReviewOptions) {
     this.#options = options;
+    this.#log = options.log ?? RunLog.off();
     this.done = this.#start();
   }
 
@@ -184,6 +204,48 @@ export class Review {
     return () => this.#listeners.delete(listener);
   }
 
+  /**
+   * Where `symbol` may be defined, ranked, from the index of the PR's head. Null until the PR
+   * has been read.
+   */
+  async definitions(
+    symbol: string,
+    from?: { path: string; line?: number },
+  ): Promise<{ candidates: Candidate[]; truncated: boolean; index: IndexStatus } | null> {
+    const built = await this.#symbolIndex();
+    if (!built) return null;
+    return { ...built.index.definitions(symbol, from, MAX_CANDIDATES), index: built.status };
+  }
+
+  /** The repo file an import specifier names, or a null path when it doesn't resolve. */
+  async resolveImport(
+    from: string,
+    spec: string,
+  ): Promise<{ path: string | null; index: IndexStatus } | null> {
+    const built = await this.#symbolIndex();
+    if (!built) return null;
+    return { path: built.index.resolveImport(from, spec), index: built.status };
+  }
+
+  #symbolIndex(): Promise<BuiltIndex> | null {
+    const workspace = this.#workspace;
+    if (!workspace) return null;
+    // Concurrent first requests share one build. A failed one is kept for a while, so a failure
+    // that always happens doesn't cost a whole new build on every click, then retried.
+    this.#symbols ??= buildIndex(workspace.headFiles, this.#options.indexLimits).catch(
+      (error: unknown) => {
+        console.error(`Docent couldn't index the repository: ${String(error)}`);
+        this.#log.error('symbol index', error);
+        const failed = this.#symbols;
+        setTimeout(() => {
+          if (this.#symbols === failed) this.#symbols = null;
+        }, this.#options.indexRetryMs ?? INDEX_RETRY_MS).unref();
+        throw error;
+      },
+    );
+    return this.#symbols;
+  }
+
   async readFile(side: 'old' | 'new', path: string): Promise<string | null> {
     return this.#workspace ? this.#workspace.readFile(side, path) : null;
   }
@@ -196,6 +258,46 @@ export class Review {
    * Throws `Busy` when too many questions are already waiting for the author's session.
    */
   async ask(stopId: string, question: string, signal?: AbortSignal): Promise<AnswerView> {
+    const started = Date.now();
+    const stops = this.#tour.state === 'ready' ? this.#tour.tour.stops : [];
+    const at = stops.findIndex((s) => s.id === stopId);
+    const asked = {
+      stopId,
+      ...(at >= 0 ? { stop: at + 1, stopTitle: stops[at]?.title } : {}),
+      question,
+    };
+    try {
+      const answer = await this.#answer(stopId, question, signal);
+      const fork = {
+        forkBudgetUsd: this.#forkBudgetUsd(),
+        ...(this.#forkEstimateUsd !== null ? { forkEstimateUsd: this.#forkEstimateUsd } : {}),
+      };
+      this.#log.event('question', {
+        ...asked,
+        source: answer.source,
+        ...(answer.source === 'author_session'
+          ? { session: answer.session }
+          : { whyNotAuthor: answer.whyNotAuthor }),
+        ...fork,
+        costMicroUsd: totalMicroUsd(answer.costs),
+        costIncomplete: answer.costIncomplete,
+        ms: Date.now() - started,
+        askedAt: answer.askedAt,
+        answer: answer.text,
+      });
+      return answer;
+    } catch (error) {
+      this.#log.event('question.failed', {
+        ...asked,
+        outcome: error instanceof Busy ? 'busy' : signal?.aborted ? 'dropped' : 'error',
+        ...describeError(error),
+        ms: Date.now() - started,
+      });
+      throw error;
+    }
+  }
+
+  async #answer(stopId: string, question: string, signal?: AbortSignal): Promise<AnswerView> {
     const workspace = this.#workspace;
     const tour = this.#tour;
     if (!workspace || tour.state !== 'ready') throw new Error('The tour is not ready yet.');
@@ -340,6 +442,14 @@ Question: ${question}`,
       )
       .then((author) => {
         this.#author = this.#withinBudget(author);
+        const found = this.#author;
+        this.#log.event('author', {
+          found: found.found,
+          ...(found.found ? { session: found.id, via: found.via } : { reason: found.reason }),
+          ...(author.found ? { contextTokens: author.contextTokens } : {}),
+          ...(this.#forkEstimateUsd !== null ? { forkEstimateUsd: this.#forkEstimateUsd } : {}),
+          forkBudgetUsd: this.#forkBudgetUsd(),
+        });
       });
     return this.#lookup;
   }
@@ -353,6 +463,7 @@ Question: ${question}`,
     if (!author.found || author.contextTokens === null) return author;
     const budget = this.#forkBudgetUsd();
     const estimate = forkCostEstimateUsd(this.#options.model, author.contextTokens);
+    this.#forkEstimateUsd = estimate;
     if (estimate === null || estimate <= budget) return author;
     return {
       found: false,
@@ -367,6 +478,23 @@ Question: ${question}`,
    * `commit_id` keeps the review on the commit the tour covered either way.
    */
   async submit(verdict: Verdict): Promise<PostedReview> {
+    const what = { event: verdict.event, summaryChars: verdict.body.length, comments: 0 };
+    try {
+      const posted = await this.#submit(verdict);
+      this.#log.event('review.submit', { ...what, outcome: 'posted', url: posted.url });
+      return posted;
+    } catch (error) {
+      this.#log.event('review.submit', {
+        ...what,
+        outcome: 'refused',
+        reason: error instanceof SubmitRefused ? error.reason : 'error',
+        ...describeError(error),
+      });
+      throw error;
+    }
+  }
+
+  async #submit(verdict: Verdict): Promise<PostedReview> {
     const workspace = this.#workspace;
     if (!workspace || this.#tour.state !== 'ready') {
       throw new SubmitRefused('not_ready', 'The tour is not ready yet.');
@@ -403,12 +531,25 @@ Question: ${question}`,
   }
 
   async #start(): Promise<void> {
+    const started = Date.now();
     try {
       const workspace = await this.#options.source((detail) =>
         this.#set(working('reading', detail, 1)),
       );
       this.#workspace = workspace;
       this.#diff = parseUnifiedDiff(workspace.diffText, workspace.pr.base, workspace.pr.head);
+      const { pr } = workspace;
+      this.#log.event('pr', {
+        repo: pr.repo,
+        number: pr.number,
+        url: pr.url,
+        title: pr.title,
+        author: pr.author,
+        head: pr.head,
+        base: pr.base,
+        files: this.#diff.files.length,
+        ms: Date.now() - started,
+      });
       // Settled before the tour is ready, so the screen knows who will answer questions.
       const lookup = this.#findAuthor(workspace);
 
@@ -417,13 +558,21 @@ Question: ${question}`,
             this.#options.cacheDir,
             'tours',
             workspace.pr.repo.replace('/', '__'),
-            tourCacheName(workspace.pr, this.#options.model),
+            tourCacheName(
+              workspace.pr,
+              this.#options.model,
+              TOUR_PROMPTS[TOUR_PROMPT_VERSION](workspace.pr, this.#diff),
+            ),
           )
         : null;
-      if (cacheFile && existsSync(cacheFile)) {
+      // The tour's own time starts here, after the PR is loaded.
+      const tourStarted = Date.now();
+      const hit = cacheFile !== null && existsSync(cacheFile);
+      this.#log.event('tour.cache', cacheFile ? { hit } : { hit: false, reason: 'cache off' });
+      if (cacheFile && hit) {
         const outcome = JSON.parse(await readFile(cacheFile, 'utf8')) as TourOutcome;
         await lookup;
-        this.#set({ state: 'ready', ...outcome, cached: true });
+        this.#tourReady({ ...outcome, cached: true }, tourStarted);
         return;
       }
 
@@ -433,20 +582,42 @@ Question: ${question}`,
         runner: this.#options.runner,
         model: this.#options.model,
         onProgress: (progress) => this.#set(fromProgress(progress, this.#tour)),
+        log: this.#log,
       });
       if (cacheFile) {
         await mkdir(dirname(cacheFile), { recursive: true });
         await writeFile(cacheFile, JSON.stringify(outcome, null, 2));
       }
       await lookup;
-      this.#set({ state: 'ready', ...outcome });
+      this.#tourReady(outcome, tourStarted);
     } catch (error) {
+      const costs = error instanceof TourError ? error.costs : [];
+      this.#log.event('tour.failed', {
+        ...describeError(error),
+        costMicroUsd: totalMicroUsd(costs),
+        ms: Date.now() - started,
+      });
       this.#set({
         state: 'failed',
         reason: error instanceof Error ? error.message : String(error),
-        costs: error instanceof TourError ? error.costs : [],
+        costs,
       });
     }
+  }
+
+  #tourReady(outcome: TourOutcome, started: number) {
+    this.#log.event('tour.ready', {
+      cached: outcome.cached,
+      stops: outcome.tour.stops.length,
+      skips: outcome.tour.skips.length,
+      attempts: outcome.attempts,
+      problems: outcome.problems,
+      model: outcome.model,
+      // A cached tour cost nothing this run.
+      costMicroUsd: outcome.cached ? 0 : totalMicroUsd(outcome.costs),
+      ms: Date.now() - started,
+    });
+    this.#set({ state: 'ready', ...outcome });
   }
 }
 
@@ -468,6 +639,8 @@ ${stop.body}
 
 ${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
 }
+const totalMicroUsd = (costs: readonly CostRecord[]) =>
+  costs.reduce((sum, c) => sum + c.costMicroUsd, 0);
 
 /** A queued question found the author's session turned over to the guide while it waited. */
 class TurnedOver extends Error {}
@@ -544,9 +717,17 @@ function fromProgress(progress: TourProgress, previous: TourState): TourState {
 
 /**
  * The cached tour's file name. A tour depends on the exact diff (base and head), the model and
- * the prompt, so all four are in the key; changing any of them writes a fresh tour.
+ * the prompt, so all of them are in the key; changing any of them writes a fresh tour. The prompt
+ * goes in as a fingerprint of the exact text sent, not just its version number: editing an
+ * unshipped prompt, or the PR's title or description, must not serve a tour written from the old
+ * text.
  */
-export function tourCacheName(pr: { base: string; head: string }, model: string): string {
+export function tourCacheName(
+  pr: { base: string; head: string },
+  model: string,
+  prompt: string,
+): string {
   const safeModel = model.replace(/[^\w.-]/g, '_');
-  return `${pr.base.slice(0, 12)}-${pr.head}-${safeModel}-p${TOUR_PROMPT_VERSION}.json`;
+  const fingerprint = createHash('sha256').update(prompt).digest('hex').slice(0, 12);
+  return `${pr.base.slice(0, 12)}-${pr.head}-${safeModel}-p${TOUR_PROMPT_VERSION}-${fingerprint}.json`;
 }

@@ -1,3 +1,5 @@
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, launch, test } from './fixtures.ts';
 
@@ -74,4 +76,33 @@ test("the guide stays quiet on a sound answer, and notes what the code does when
   } finally {
     await docent.stop();
   }
+});
+
+test('the run log records the question, its answer, and who answered', async ({ page }) => {
+  const docent = await launch('cli.js', ['review', '--fixture', fixture]);
+  try {
+    await page.goto(docent.url);
+    await page.getByLabel('Your question').fill('What does it return with no Origin header?');
+    await page.getByRole('button', { name: 'Ask the guide' }).click();
+    await expect(page.locator('.exchange-answer')).toContainText('It returns null.');
+  } finally {
+    await docent.stop();
+  }
+
+  const runs = join(docent.dataDir, 'runs');
+  const [file, ...others] = await readdir(runs);
+  expect(others).toEqual([]);
+  const events = (await readFile(join(runs, file ?? ''), 'utf8'))
+    .trimEnd()
+    .split('\n')
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  expect(events.find((e) => e.kind === 'question')).toMatchObject({
+    question: 'What does it return with no Origin header?',
+    source: 'guide',
+    whyNotAuthor: 'This recorded review names no author session',
+    answer: expect.stringContaining('It returns `null`.'),
+  });
+  // The page reported where the reader was, and the run closed cleanly.
+  expect(events.some((e) => e.kind === 'ui.stop')).toBe(true);
+  expect(events.at(-1)).toMatchObject({ kind: 'run.end', reason: 'stopped (SIGTERM)' });
 });

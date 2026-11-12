@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { createAdaptorServer } from '@hono/node-server';
 import { createApp } from './app.ts';
 import type { Review } from './review.ts';
+import type { RunLog } from './run-log.ts';
 
 export type { CostRecord } from '@docent/core';
 export type { CorrectionView } from './answer-check.ts';
@@ -22,13 +23,15 @@ export type { AnchorView, SkipView, StopView, TourOutcome, TourView } from './to
 
 // Resolves from both src/ and dist/, which sit at the same depth.
 const packageJson = new URL('../package.json', import.meta.url);
-const { version } = JSON.parse(readFileSync(packageJson, 'utf8')) as { version: string };
+export const { version } = JSON.parse(readFileSync(packageJson, 'utf8')) as { version: string };
 
 export type StartOptions = {
   /** Folder holding the built web app. Leave it out in dev, where Vite serves the app. */
   webRoot?: string;
   /** The review to serve, when started by `docent review`. */
   review?: Review;
+  /** This run's log. The per-launch token is scrubbed from it. */
+  log?: RunLog;
 };
 
 export type RunningServer = {
@@ -42,8 +45,9 @@ export type RunningServer = {
  * Starts the local server on 127.0.0.1 and a free port picked by the OS,
  * so parallel worktrees never fight over a port.
  */
-export async function startServer({ webRoot, review }: StartOptions): Promise<RunningServer> {
+export async function startServer({ webRoot, review, log }: StartOptions): Promise<RunningServer> {
   const token = randomBytes(32).toString('base64url');
+  log?.addSecret(token);
 
   // The app needs the origin, and the origin needs the port, which we only
   // know after listening. Requests can't arrive before `app` is set below.
@@ -62,6 +66,7 @@ export async function startServer({ webRoot, review }: StartOptions): Promise<Ru
     version,
     ...(webRoot ? { webRoot } : {}),
     ...(review ? { review } : {}),
+    ...(log ? { log } : {}),
   });
 
   return {

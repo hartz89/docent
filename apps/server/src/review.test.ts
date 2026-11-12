@@ -14,7 +14,7 @@ import {
   type SessionLocator,
 } from './author-session.ts';
 import { GitHubRefusal, type PrSource, type ReviewPost } from './github.ts';
-import { Review, type ReviewOptions, type TourState } from './review.ts';
+import { Review, type ReviewOptions, type TourState, tourCacheName } from './review.ts';
 
 // A small PR: one behavior change in src/cors.ts, plus a lockfile bump.
 const head: Record<string, string> = {
@@ -83,6 +83,7 @@ const sourceFor =
           url: `https://github.com/acme/web/pull/7#pullrequestreview-${github.posted.length}`,
         };
       },
+      headFiles: async () => ({ entries: [], truncated: false, read: async function* () {} }),
     };
   };
 
@@ -885,6 +886,17 @@ describe('the answer check', () => {
     const res = await api['answer-checks'][':id'].$get({ param: { id: 'nope' } });
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe('the tour cache key', () => {
+  const pr = { base: 'a'.repeat(40), head: 'b'.repeat(40) };
+
+  test('the same diff, model and prompt reuse a tour; a changed prompt text writes a new one', () => {
+    const key = tourCacheName(pr, 'claude-opus-5-5', 'prompt text');
+    expect(tourCacheName(pr, 'claude-opus-5-5', 'prompt text')).toBe(key);
+    // An edited prompt, or an edited PR description inside it, must not serve the old tour.
+    expect(tourCacheName(pr, 'claude-opus-5-5', 'prompt text, edited')).not.toBe(key);
   });
 });
 

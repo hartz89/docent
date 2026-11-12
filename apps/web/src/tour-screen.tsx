@@ -21,6 +21,7 @@ import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
 import { Markdown } from './markdown.tsx';
 import type { Ready } from './review-page.tsx';
+import { report } from './run-log.ts';
 import { ThemeToggle } from './theme.tsx';
 import { postedLabel, VerdictForm } from './verdict.tsx';
 
@@ -112,6 +113,9 @@ export function TourScreen({ snapshot, tour }: Props) {
     [anchorIndex, anchorCount],
   );
   const stopId = stop?.id;
+  useEffect(() => {
+    if (stopId) report({ kind: 'ui.stop', stop: index + 1, stopId });
+  }, [stopId, index]);
   useLayoutEffect(() => {
     if (guide.current && stopId) guide.current.scrollTop = scrollByStop.current.get(stopId) ?? 0;
   }, [stopId]);

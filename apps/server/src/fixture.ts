@@ -2,11 +2,12 @@
 // saves one from a real run; `--fixture` replays it with no GitHub or model calls. A review
 // submitted in fixture mode is printed, never posted.
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, sep } from 'node:path';
 import type { Job } from '@docent/core';
 import type { AgentReply, AgentRunner } from './agent.ts';
 import { isSafeRepoPath, type PrInfo, type PrSource, type ReviewPost } from './github.ts';
+import type { HeadFile, HeadFiles } from './head-files.ts';
 
 type RecordedJob = 'tour' | 'question' | 'answer_check';
 type RecordedReplies = Partial<Record<RecordedJob, AgentReply[]>>;
@@ -44,7 +45,30 @@ export function fixtureSource(dir: string, record: ReviewRecorder = printReview)
         record(review);
         return { url: `${pr.url}#pullrequestreview-0` };
       },
+      headFiles: () => recordedHeadFiles(join(dir, 'files', 'head')),
     };
+  };
+}
+
+/** The recorded head files, from disk: a fixture is trusted test data, not a PR's code. */
+async function recordedHeadFiles(root: string): Promise<HeadFiles> {
+  const entries: HeadFile[] = [];
+  const found = existsSync(root)
+    ? await readdir(root, { recursive: true, withFileTypes: true })
+    : [];
+  for (const entry of found) {
+    if (!entry.isFile()) continue;
+    const path = relative(root, join(entry.parentPath, entry.name)).split(sep).join('/');
+    entries.push({ path, bytes: (await stat(join(root, path))).size });
+  }
+  return {
+    entries,
+    truncated: false,
+    read: async function* (paths) {
+      for (const path of paths) {
+        yield { path, text: await readFile(join(root, path), 'utf8').catch(() => null) };
+      }
+    },
   };
 }
 
