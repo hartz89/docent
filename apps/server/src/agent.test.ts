@@ -6,7 +6,8 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   costRecord,
   discardTranscript,
-  forkCostEstimateUsd,
+  forkCostEstimate,
+  formatUsdRange,
   keepTranscript,
   readOnlyOptions,
   sdkRunner,
@@ -129,10 +130,22 @@ describe('costRecord', () => {
     );
   });
 
-  test('estimates a fork of a long session on Haiku at the long-prompt rate', () => {
-    // 400k tokens written to a 1-hour cache: 2x the $0.50 long-prompt input price.
-    expect(forkCostEstimateUsd('claude-haiku-5-5', 400_000)).toBeCloseTo(0.4);
-    expect(forkCostEstimateUsd('claude-haiku-5-5', 50_000)).toBeCloseTo(0.01);
+  test('estimates priming and questions within what was measured', () => {
+    // docs/research/2026-11-11-cheaper-questions.md, a 263k-token session.
+    const opus = forkCostEstimate('claude-opus-5-5', 263_000);
+    expect(formatUsdRange(opus?.primeUsd ?? { low: 0, high: 0 })).toBe('$1.78–2.15'); // ~$1.87
+    expect(opus?.questionUsd.low).toBeLessThanOrEqual(0.15); // $0.15–0.22 measured
+    expect(opus?.questionUsd.high).toBeGreaterThanOrEqual(0.22);
+    // Haiku at its long-prompt rate: $0.23 to prime, $0.03 a question.
+    const haiku = forkCostEstimate('claude-haiku-5-5', 263_000);
+    expect(haiku?.primeUsd.low).toBeLessThanOrEqual(0.23);
+    expect(haiku?.primeUsd.high).toBeGreaterThanOrEqual(0.23);
+    expect(haiku?.questionUsd.low).toBeLessThanOrEqual(0.03);
+    // A 47k-token session on Opus: $0.16 measured to prime.
+    const small = forkCostEstimate('claude-opus-5-5', 47_000);
+    expect(small?.primeUsd.low).toBeLessThanOrEqual(0.16);
+    expect(small?.primeUsd.high).toBeGreaterThanOrEqual(0.16);
+    expect(forkCostEstimate('gpt-something', 47_000)).toBeNull();
   });
 });
 

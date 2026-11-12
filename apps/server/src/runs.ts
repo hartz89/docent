@@ -121,11 +121,40 @@ function facts(run: Run) {
     mode: clean(str(start?.mode)) || '?',
     costMicroUsd: run.events
       .filter((e) => COST_KINDS.has(e.kind))
-      .reduce((sum, e) => sum + num(e.costMicroUsd), 0),
+      .reduce((sum, e) => sum + num(e.costMicroUsd) + num(e.checkCostMicroUsd), 0),
     errors: run.events.filter((e) => ERROR_KINDS.has(e.kind)).length,
     questions: run.events.filter((e) => e.kind === 'question' || e.kind === 'question.failed')
       .length,
   };
+}
+
+/** What the answer check found, in words. */
+const CHECKS: Record<string, string> = {
+  corrected: 'the code says otherwise',
+  silent: 'nothing to add',
+  failed: "couldn't run",
+};
+
+/** A [low, high] range in USD from the log, or null. */
+function usdRange(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length !== 2) return null;
+  const [low, high] = value.map((v) => num(v).toFixed(2));
+  return low === high ? `$${low}` : `$${low}–${high}`;
+}
+
+/** The fork's estimate and budget, when the author's session was in the running. */
+function forkEstimate(q: RunEvent): string | null {
+  const budget = `budget $${num(q.forkBudgetUsd).toFixed(2)}`;
+  const prime = usdRange(q.forkPrimeUsd);
+  if (prime) {
+    const each = usdRange(q.forkQuestionUsd);
+    return `Fork estimated ${prime} to prime${each ? `, then ${each} a question` : ''}; ${budget}.`;
+  }
+  // Runs logged before priming had one figure: a whole-session write per question.
+  if (typeof q.forkEstimateUsd === 'number') {
+    return `Fork estimated $${q.forkEstimateUsd.toFixed(2)}, ${budget}.`;
+  }
+  return null;
 }
 
 // ---- The list ----
@@ -217,15 +246,17 @@ export function summarize(run: Run): string {
             ? `     Answered by the author's session ${clean(str(q.session))}`
             : `     Answered by the guide, because: ${clean(str(q.whyNotAuthor))}`,
         );
-        // The fork's estimate and budget, when the author's session was in the running.
-        const fork =
-          typeof q.forkEstimateUsd === 'number'
-            ? `Fork estimated $${q.forkEstimateUsd.toFixed(2)}, budget $${num(q.forkBudgetUsd).toFixed(2)}. `
-            : '';
+        const fork = forkEstimate(q);
+        if (fork) out.push(`     ${fork}`);
         out.push(
-          `     ${fork}Cost ${usd(num(q.costMicroUsd))}${q.costIncomplete ? ' or more' : ''}, ${duration(num(q.ms))}`,
+          `     Cost ${usd(num(q.costMicroUsd))}${q.costIncomplete ? ' or more' : ''}, ${duration(num(q.ms))}`,
         );
         out.push(...block('A: ', str(q.answer)));
+        const check = CHECKS[str(q.check)];
+        if (check) {
+          out.push(`     Check: ${check}, ${usd(num(q.checkCostMicroUsd))}`);
+          if (q.correction !== undefined) out.push(...block('C: ', str(q.correction)));
+        }
       }
       out.push('');
     });

@@ -80,6 +80,12 @@ export class TourError extends Error {
 type WireCitation = { path: string; side: 'old' | 'new'; startLine: number; endLine: number };
 type WireFlag = { kind: StopFlag; note: string };
 type WireStop = {
+  /**
+   * In a repair, the number of the existing stop this one replaces (1 for the first), or 0 for a
+   * new stop. Always 0 in a whole tour. Stops are matched by number, never by title, since a
+   * repair may retitle a stop. Missing counts as 0.
+   */
+  replaces?: number;
   kind: StopKind;
   title: string;
   body: string;
@@ -98,8 +104,14 @@ export const tourSchema = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['kind', 'title', 'body', 'flags', 'citations'],
+        required: ['replaces', 'kind', 'title', 'body', 'flags', 'citations'],
         properties: {
+          replaces: {
+            type: 'integer',
+            minimum: 0,
+            description:
+              'Repairs only: the number of the existing stop this replaces, or 0 for a new stop. Always 0 in a whole tour.',
+          },
           kind: { type: 'string', enum: [...STOP_KINDS] },
           title: { type: 'string' },
           body: { type: 'string' },
@@ -500,11 +512,14 @@ async function check(wire: WireTour, fileText: FileReader, diff: Diff): Promise<
   const tour: Tour = { review: reviewId('review'), head: diff.head, stops, skips };
   const label = (id: string) => `stop ${id.replace('stop-', '')}`;
   const order = checkStopOrder(tour);
+  const verdicts = wire.stops.filter((s) => s.kind === 'verdict_prompt').length;
   for (const problem of order) {
     problems.push(
       problem.kind === 'out_of_order'
         ? `${label(problem.stop)} is out of order. Kinds go: ${STOP_KINDS.join(', ')}.`
-        : 'The tour must end with exactly one verdict_prompt stop.',
+        : verdicts === 0
+          ? 'The tour has no verdict_prompt stop. It must end with exactly one.'
+          : 'The tour must end with exactly one verdict_prompt stop.',
     );
   }
   const coverage = checkCoverage(diff, tour);
@@ -535,7 +550,9 @@ async function check(wire: WireTour, fileText: FileReader, diff: Diff): Promise<
     }
   }
 
-  return { view: { stops: views, skips: skipViews }, problems, reorder: order.length > 0 };
+  // A missing verdict is one stop to add, which a repair can do. Moving or removing stops can't.
+  const reorder = order.some((p) => p.kind === 'out_of_order') || verdicts > 1;
+  return { view: { stops: views, skips: skipViews }, problems, reorder };
 }
 
 const skipLabel = (skip: Skip) =>
@@ -600,6 +617,7 @@ function isWireStop(value: unknown): value is WireStop {
   return (
     typeof s === 'object' &&
     s !== null &&
+    (s.replaces === undefined || (Number.isInteger(s.replaces) && s.replaces >= 0)) &&
     STOP_KINDS.includes(s.kind) &&
     typeof s.title === 'string' &&
     typeof s.body === 'string' &&
@@ -772,27 +790,23 @@ function repairPrompt(problems: readonly string[]): string {
 ${problemList(problems)}
 
 Fix them by sending back only what changes, in the same JSON shape:
-- "stops": only the stops you change or add, each one in full. A stop with the same title as an existing stop replaces it, so keep the title exactly as it was. A stop with a new title is added after the existing stops of its kind. Leave out every stop that stays the same.
+- "stops": only the stops you change or add, each one in full. To change a stop, set "replaces" to its number (Stop 2 is 2); you may change its title. For a new stop, set "replaces" to 0: it is added after the existing stops of its kind. Leave out every stop that stays the same.
 - "skips": the complete list of skips, including the ones that don't change.
 Change as little as you can: the reviewer may already be reading the stops. To give unexplained lines a home, add a citation to the stop that already explains that code, or skip them if they meet the skip rules.`;
 }
 
 /**
- * Applies a repair to the tour it fixes. A repaired stop with an existing title replaces that stop
- * in place; any other is new, and goes after the stops of its kind. Skips are replaced whole.
+ * Applies a repair to the tour it fixes. A repaired stop that names an existing stop's number
+ * replaces it in place, whatever its title; any other is new, and goes after the stops of its
+ * kind. Skips are replaced whole.
  */
 function applyRepair(tour: WireTour, repair: WireTour): WireTour {
   const stops = [...tour.stops];
-  const replaced = new Set<number>();
   const added: WireStop[] = [];
   for (const stop of repair.stops) {
-    const at = tour.stops.findIndex((s, i) => s.title === stop.title && !replaced.has(i));
-    if (at === -1) {
-      added.push(stop);
-    } else {
-      replaced.add(at);
-      stops[at] = stop;
-    }
+    const at = (stop.replaces ?? 0) - 1;
+    if (at >= 0 && at < tour.stops.length) stops[at] = stop;
+    else added.push(stop);
   }
   for (const stop of added) {
     const rank = STOP_KINDS.indexOf(stop.kind);

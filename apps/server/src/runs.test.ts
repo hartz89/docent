@@ -28,7 +28,7 @@ test('`docent runs show latest` reads a run top to bottom', async () => {
     Started:   2026-11-12 14:03:00 UTC, lasted 12m 04s
     Docent:    0.0.0, review mode, model claude-opus-5-5
     Flags:     --fork-budget 0.5
-    Cost:      $1.4880 (tour $0.8600, 2 questions $0.6280)
+    Cost:      $1.5000 (tour $0.8600, 2 questions $0.6400)
     Errors:    2
 
     Timeline
@@ -58,14 +58,18 @@ test('`docent runs show latest` reads a run top to bottom', async () => {
       1. stop 3 "The server serves any PR from a link", at +2m41s
          Q: Why does serve() accept any PR URL, not just ones on this repo?
          Answered by the author's session 7e2cfb5b-77c5-46af-9de2-27ca9a1c1f85
-         Fork estimated $0.31, budget $0.50. Cost $0.2870, 18.4s
+         Fork estimated $0.29–0.36 to prime, then $0.02–0.05 a question; budget $0.50.
+         Cost $0.2870, 18.4s
          A: Because the launcher is meant for any repo you can read with gh.
           │ The URL is parsed by \`parsePrUrl\` in apps/server/src/github.ts:60, which only accepts github.com pull URLs.
+         Check: the code says otherwise, $0.0120
+         C: The code also accepts pull URLs on GitHub Enterprise hosts (apps/server/src/github.ts:62).
 
       2. stop 3 "The server serves any PR from a link", at +4m00s
          Q: What happens if two tabs open the same link?
          Answered by the guide, because: The author's session took longer than 180 seconds
-         Fork estimated $0.31, budget $0.50. Cost $0.3410, 3m 16s
+         Fork estimated $0.31, budget $0.50.
+         Cost $0.3410, 3m 16s
          A: Each tab gets the same review: apps/server/src/serve.ts:40 keeps one Review per PR.
 
     Errors
@@ -83,7 +87,7 @@ test('`docent runs` lists runs with their PR, length, cost and errors', () => {
   expect(code).toBe(0);
   expect(out.split('\n').slice(0, 2)).toEqual([
     'Started (UTC)     PR                 Mode    Took     Cost     Qs  Errors  Id',
-    '2026-11-12 14:03  hartz89/docent#52  review  12m 04s  $1.4880  2   2       2026-11-12T14-03-00.000Z-hartz89-docent-52',
+    '2026-11-12 14:03  hartz89/docent#52  review  12m 04s  $1.5000  2   2       2026-11-12T14-03-00.000Z-hartz89-docent-52',
   ]);
 });
 
