@@ -4,34 +4,32 @@
 
 ## What this does, and what it doesn't
 
-**`as-agent` gives attribution and separation of duties, for agents that are well-behaved but fallible.** Agent work shows up as the app's bot, not as the maintainer. GitHub then treats the maintainer as a separate person, so he can approve an agent's PR. The runner also stops honest mistakes, like a force push or an admin merge.
+**`as-agent` gives attribution and separation of duties, for agents that are well-behaved but fallible.** Agent work shows up as the app's bot, not as the maintainer. The builder and the reviewer are separate identities, so a review shows up as a different actor from the PR's author. The runner also stops honest mistakes, like a force push or an admin merge.
 
 **It does not contain a misbehaving agent.** An agent runs as the same macOS user as the runner. So it can read the app key from the Keychain, or edit the runner itself.
 
 **Real enforcement is on GitHub's side.** Three things hold even if an agent gets the raw token:
 - **the app's permissions**, which limit what any token can do;
-- **CODEOWNERS**, which makes tier-2 paths wait for the maintainer;
-- **the ruleset**, which makes `main` move only through reviewed PRs with green CI.
+- **the ruleset**, which makes `main` move only through PRs with green CI.
 
-**Containment is an open decision for the maintainer.** It needs OS-level separation: a separate macOS user or sandbox that holds the keys and runs the runner. It also needs the maintainer's own admin `gh` login out of agents' reach. The ruleset lets admins bypass it, so today that login is a master key for any agent that can run `gh`.
+Our own agents are trusted, so there are no code owners. Only a rare escalated PR waits for the maintainer (see "Escalation" in [`pull-requests.md`](pull-requests.md)). The app permissions are the ceiling, and only the maintainer can change them.
+
+**Containment is an open decision for the maintainer.** It needs OS-level separation: a separate macOS user or sandbox that holds the keys and runs the runner. It also needs the maintainer's own admin `gh` login out of agents' reach. Nobody can bypass the ruleset, but an admin can edit or delete it, so today that login is a master key for any agent that can run `gh`.
 
 | Role       | App does                                          | Permissions on hartz89/docent                                                         |
 | ---------- | ------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `builder`  | Pushes branches, opens and merges PRs  | Contents: write. Pull requests: write. Checks: read. Metadata: read. |
 | `reviewer` | Posts reviews (the future AI reviewer) | Pull requests: write. Contents: read. Metadata: read.                |
 
-The builder has no Workflows permission on purpose. Changes to CI are the maintainer's, so GitHub rejects a builder push that touches `.github/workflows/`.
+The builder has no Workflows permission on purpose, so GitHub rejects a builder push that touches `.github/workflows/`. That's the one change the maintainer has to push themselves, and it comes from the app's permissions, not from a review rule.
 
 ## How tiers become mechanical
 
-Two files turn the tiers in [`pull-requests.md`](pull-requests.md) into GitHub rules:
+[`.github/rulesets/main.json`](../../.github/rulesets/main.json) protects `main`: every change goes through a squash-merged PR, and CI's `check` job must pass. It requires no approvals and no code owners. The rest is practice, set out in "The merge gate" in [`pull-requests.md`](pull-requests.md): the agent review is posted before auto-merge is queued, and an escalated PR isn't queued until the maintainer approves it. A GitHub-enforced agent gate (a required status check from an independent reviewer) is follow-up work.
 
-- [`.github/CODEOWNERS`](../../.github/CODEOWNERS) lists the tier-2 paths, owned by the maintainer.
-- [`.github/rulesets/main.json`](../../.github/rulesets/main.json) protects `main`: every change goes through a PR, CI's `check` job must pass, and code-owner review is required. No other approvals are required.
+The JSON is the repo's record of the live ruleset. Editing it changes nothing until the maintainer applies it (see the end of this page).
 
-So a PR that touches no tier-2 path merges on green CI. A PR that touches one waits for the maintainer's approval.
-
-**Agents queue, GitHub merges.** After the review is posted, an agent queues every PR with `gh pr merge <number> --squash --auto`. GitHub lands it the moment those rules are met. For a tier-2 PR, the maintainer's only action is approving it on GitHub. This needs the repo's "Allow auto-merge" setting on (`gh repo edit hartz89/docent --enable-auto-merge`). Bot approvals are never relied on, because they don't reliably count toward required approvals. The repository admin role can bypass the ruleset, so the maintainer is never locked out.
+**Agents queue, GitHub merges.** After the review is posted, an agent queues the PR with `gh pr merge <number> --squash --auto`. GitHub lands it the moment those rules are met. This needs the repo's "Allow auto-merge" setting on (`gh repo edit hartz89/docent --enable-auto-merge`). The ruleset has no bypass, for anyone. The maintainer is never locked out, because an admin can always edit the ruleset.
 
 ## Using it
 
@@ -59,7 +57,7 @@ These guards keep honest mistakes from leaking the token:
 - The builder can push a plain branch name (not `main`) without force, use most `gh pr` commands, squash-merge (`--squash`, optionally `--auto`, nothing else, so never `--admin`), and make read-only `gh api` calls.
 - The reviewer can read PRs, review, comment, and make read-only `gh api` calls.
 
-Anything else is refused before a token exists. `scripts/` is code-owned, so widening the list needs the maintainer's approval. Agents are only *forced* through the runner once settings also deny plain `gh` and `git push`, which comes after the apps work.
+Anything else is refused before a token exists. Widening the list grants agents new powers, so it escalates to the maintainer. Whatever the list allows, the app's permissions above still cap it. Agents are only *forced* through the runner once settings also deny plain `gh` and `git push`, which comes after the apps work.
 
 **Known gaps:**
 - **A race.** The repo config is checked just before the command runs, so an agent could change it in between.
