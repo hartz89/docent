@@ -91,6 +91,8 @@ It's what Docent itself reads, and often the only part a human reads. Make it wo
 - **Look here first:** the one or two places a reviewer should start.
 - **Known gaps.**
 
+**Keep the visible part to about 300 words.** The maintainer reviews in Docent and on GitHub, and long descriptions cost the attention this process exists to save. Put detail and known gaps in collapsed `<details>` sections, or in a linked doc. Reviews posted on the PR already carry their own evidence, so the description gives the outcome in a line and doesn't repeat them.
+
 ## Dogfooding Docent
 
 Every escalated PR gets a Docent tour, prepared ahead of time. The steps are in [`worktrees.md`](worktrees.md), under "Prepare a Docent tour". Each of these reviews is also a chance to find out where the tour falls short.
