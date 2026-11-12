@@ -900,6 +900,7 @@ describe('as-agent PR descriptions', () => {
       (w: string) => `~~~\n<details>\n~~~\n${w}\n~~~\n</details>\n~~~`,
     ],
     ['escaped details tags', (w: string) => `\\<details>\n${w}\n\\</details>`],
+    ['comment markers written as code', (w: string) => `Start with \`<!--\`.\n${w}\nEnd: \`-->\``],
   ])('counts text that GitHub shows: %s', async (_, wrap) => {
     const { deps, logs } = setup();
     const file = description(wrap(words(400)));

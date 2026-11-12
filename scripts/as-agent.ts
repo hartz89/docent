@@ -283,10 +283,11 @@ function descriptions(args: string[], cwd: string, refuse: (reason: string) => n
  * contents, so it hides nothing either.
  */
 export function visibleWords(text: string): number {
+  // Code first, so a `<!--` written as code doesn't start a comment.
   const defanged = text
-    .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`/g, (code) => code.replaceAll('<', ' '))
-    .replaceAll('\\<', ' ');
+    .replaceAll('\\<', ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ');
   const visible = defanged.replace(
     /<details(?![^>]*\bopen\b)(\s[^>]*)?>[\s\S]*?<\/details>/gi,
     ' ',
