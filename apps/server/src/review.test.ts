@@ -1243,8 +1243,12 @@ describe('recorded reviews', () => {
     const dir = await mkdtemp(join(tmpdir(), 'docent-rec-'));
     const author = withAuthor();
     const recorder = recording(dir, sourceFor(fakeGitHub()), author.runner);
-    const { api } = await open(recorder.runner, undefined, 'claude-test', authorFound);
-    await ask(api);
+    const { review, api } = await open(recorder.runner, undefined, 'claude-test', authorFound);
+    const body = await (await ask(api)).json();
+    // The answer check runs after the answer and is recorded too: let it finish writing.
+    const checkId = 'answer' in body && 'checkId' in body.answer ? body.answer.checkId : '';
+    expect(review.answerCheck(checkId)).toBeDefined();
+    await review.answerCheck(checkId);
 
     const replayed = await fixtureRunner(dir)({
       job: 'question',
