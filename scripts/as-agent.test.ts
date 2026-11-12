@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { asAgent, type Deps } from './as-agent.ts';
+import { asAgent, type Deps, keyEnvName, ROLES } from './as-agent.ts';
 
 const NOW = 1_800_000_000;
 const TOKEN = 'ghs_faketoken0123456789';
@@ -21,6 +21,12 @@ const REAL_GIT =
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 const KEY_ENV = Buffer.from(pem).toString('base64');
+/** Every role's key variable, so no role's test can fall through to the Keychain. */
+const KEYS = Object.fromEntries(ROLES.map((role) => [keyEnvName(role), KEY_ENV]));
+/** Tests never read the real Keychain: a test that needs it stubs this hook itself. */
+const noKeychain = (service: string): never => {
+  throw new Error(`a test reached the real Keychain for ${service}; stub deps.keychain`);
+};
 
 const filled = {
   builder: { slug: 'docent-builder' },
@@ -112,9 +118,7 @@ function setup(
     env: {
       HOME: process.env.HOME,
       PATH: `/caller/controlled/bin:${process.env.PATH}`,
-      DOCENT_BUILDER_APP_KEY: KEY_ENV,
-      // Without it, the reviewer tests fall back to the Keychain: the real key locally, none in CI.
-      DOCENT_REVIEWER_APP_KEY: KEY_ENV,
+      ...KEYS,
       GIT_TRACE: '1',
       GIT_CURL_VERBOSE: '1',
       GH_DEBUG: 'api',
@@ -127,6 +131,7 @@ function setup(
     // The fakes live in a user-owned temp dir; one test below checks the real ownership rule.
     trustTool: () => true,
     now: () => NOW,
+    keychain: noKeychain,
   };
   // A clean repo by default, so the tests don't depend on how this checkout is configured.
   deps.cwd = opts.cwd ?? CLEAN_REPO;
@@ -254,14 +259,15 @@ describe('as-agent', () => {
 
   test.each([
     [['config', 'http.proxy', 'http://evil:8080'], 'http.proxy'],
-    [['config', 'include.path', '/tmp/x'], 'include.path'],
+    // A path that can't exist: an include of a real file would list that file's keys instead.
+    [['config', 'include.path', '<dir>/never-created'], 'include.path'],
     [['config', 'alias.push', '!evil'], 'alias.push'],
     [['config', 'core.sshCommand', 'evil'], 'core.sshcommand'],
     [['remote', 'add', 'origin', 'https://github.com/someone/else.git'], 'origin must be'],
   ])('refuses a repo whose git config sets %j', async (gitArgs, message) => {
     const repo = join(dir, 'repo');
     execFileSync(REAL_GIT, ['init', '-q', repo]);
-    execFileSync(REAL_GIT, ['-C', repo, ...gitArgs]);
+    execFileSync(REAL_GIT, ['-C', repo, ...gitArgs.map((arg) => arg.replace('<dir>', dir))]);
     const { deps, calls, logs } = setup({ cwd: repo });
     expect(await asAgent(['builder', '--', ...VIEW], deps)).toBe(1);
     expect(calls).toEqual([]);
@@ -351,6 +357,30 @@ describe('as-agent', () => {
     expect(logs()[0]).toContain('docs/process/agent-identities.md');
   });
 
+  test('reads the key from the Keychain when no key variable is set', async () => {
+    const { deps } = setup();
+    delete deps.env[keyEnvName('builder')];
+    const asked: string[] = [];
+    deps.keychain = (service) => {
+      asked.push(service);
+      return KEY_ENV;
+    };
+    expect(await asAgent(['builder', '--', ...VIEW], deps)).toBe(0);
+    expect(asked).toEqual(['docent-builder-app-key']);
+  });
+
+  test('says where to put the key when neither the env nor the Keychain has it', async () => {
+    const { deps, calls, logs } = setup();
+    delete deps.env[keyEnvName('builder')];
+    deps.keychain = () => undefined;
+    expect(await asAgent(['builder', '--', ...VIEW], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain(
+      `no private key for the builder app: set ${keyEnvName('builder')}, or store it in the ` +
+        'macOS Keychain as "docent-builder-app-key"',
+    );
+  });
+
   test('shows usage for a bad role or a missing --', async () => {
     const { deps, logs } = setup();
     expect(await asAgent(['admin', '--', ...VIEW], deps)).toBe(1);
@@ -422,6 +452,14 @@ describe('as-agent allowlist', () => {
     ['builder', 'gh issue comment 4 -e'],
     ['builder', 'gh issue view 4 --json body --jq .body'],
     ['reviewer', 'gh issue create --title x'],
+    // Agents never approve, in any spelling, as either role.
+    ['reviewer', 'gh pr review 3 --approve'],
+    ['reviewer', 'gh pr review 3 --approve=true'],
+    ['reviewer', 'gh pr review 3 -a'],
+    ['reviewer', 'gh pr review 3 -ab lgtm'],
+    ['reviewer', 'gh pr review 3 --comment -cab x'],
+    ['builder', 'gh pr review 3 --approve'],
+    ['builder', 'gh pr review 3 -a'],
     // gh accepts -w bundled with other short flags, so -wl opens a browser too.
     ['builder', 'gh issue create --title x -wl bug'],
     ['builder', 'gh pr create --title x -wl bug'],
@@ -435,9 +473,29 @@ describe('as-agent allowlist', () => {
     expect(logs().join('\n')).toContain(`The ${role} may run:`);
   });
 
+  test('refuses to approve a PR, and says to post a comment instead', async () => {
+    const { deps, calls, logs } = setup({ config: { reviewer: { slug: 'docent-builder' } } });
+    expect(await asAgent(['reviewer', '--', 'gh', 'pr', 'review', '3', '--approve'], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain('--approve approves the PR, and agents never approve');
+
+    // The builder can't review at all, but hears the same reason first.
+    const builder = setup();
+    expect(await asAgent(['builder', '--', 'gh', 'pr', 'review', '3', '-ca'], builder.deps)).toBe(
+      1,
+    );
+    expect(builder.logs()[0]).toContain('-ca approves the PR, and agents never approve');
+
+    const ok = setup({ config: { reviewer: { slug: 'docent-builder' } } });
+    // A glued body value that happens to contain an "a" is a body, not an approval.
+    const review = ['gh', 'pr', 'review', '3', '--comment', '-bdata', '-Rhartz89/docent'];
+    expect(await asAgent(['reviewer', '--', ...review], ok.deps)).toBe(0);
+    expect(ok.ran()).toEqual([review.join(' ')]);
+  });
+
   const allowed: [string, string][] = [
     ['git push origin feat/x', 'git push origin refs/heads/feat/x:refs/heads/feat/x'],
-    ['gh pr create --title x --body-file body.md', 'gh pr create --title x --body-file body.md'],
+    ['gh pr create --title x --body short', 'gh pr create --title x --body short'],
     ['gh pr merge 3 --squash', 'gh pr merge 3 --squash'],
     ['gh pr merge 3 --squash --auto', 'gh pr merge 3 --squash --auto'],
     [
@@ -559,6 +617,7 @@ describe('as-agent review and reply forms', () => {
     ['a missing event', { body: 'x' }, 'needs "event"'],
     ['a pending event', { ...review, event: 'PENDING' }, 'bad "event"'],
     ['a lowercase event', { ...review, event: 'comment' }, 'bad "event"'],
+    ['an approval: agents never approve', { ...review, event: 'APPROVE' }, 'bad "event"'],
     ['a short commit_id', { ...review, commit_id: 'abc' }, 'bad "commit_id"'],
     ['a non-string body', { ...review, body: 1 }, 'bad "body"'],
     ['comments that are not a list', { ...review, comments: {} }, 'bad "comments"'],
@@ -774,6 +833,99 @@ describe('as-agent review and reply forms', () => {
   });
 });
 
+describe('as-agent PR descriptions', () => {
+  const words = (n: number) => Array.from({ length: n }, (_, i) => `w${i}`).join(' ');
+  /** Writes a description file and returns its path. */
+  function description(text: string): string {
+    const path = join(dir, 'body.md');
+    writeFileSync(path, text);
+    return path;
+  }
+
+  test('refuses a description over the budget, and says to move detail into <details>', async () => {
+    const { deps, calls, logs } = setup();
+    const file = description(`## Intent\n\n${words(349)}\n`);
+    const command = ['gh', 'pr', 'create', '--title', 'x', '--body-file', file];
+    expect(await asAgent(['builder', '--', ...command], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain('has 351 visible words, over the limit of 350');
+    expect(logs()[0]).toContain('about 300 visible words');
+    expect(logs()[0]).toContain('collapsed <details> sections');
+  });
+
+  test('counts only what sits outside <details>', async () => {
+    const { deps, ran } = setup();
+    const hidden = `<details>\n<summary>Known gaps</summary>\n\n${words(2000)}\n</details>`;
+    const file = description(`${words(300)}\n\n${hidden}\n\n${words(40)}`);
+    const command = ['gh', 'pr', 'create', '--title', 'x', '--body-file', file];
+    expect(await asAgent(['builder', '--', ...command], deps)).toBe(0);
+    expect(ran()).toEqual([command.join(' ')]);
+  });
+
+  test('counts a <details> tag written as code, since it hides nothing', async () => {
+    const { deps, logs } = setup();
+    const file = description(`Put gaps in \`<details>\`.\n\n${words(400)}\n\n\`</details>\``);
+    const command = ['gh', 'pr', 'create', '--body-file', file];
+    expect(await asAgent(['builder', '--', ...command], deps)).toBe(1);
+    expect(logs()[0]).toContain('over the limit of 350');
+  });
+
+  test.each([
+    ['gh pr edit 3 --body <long>', ['edit', '3', '--body', words(400)]],
+    ['gh pr edit 3 --body=<long>', ['edit', '3', `--body=${words(400)}`]],
+    ['gh pr create -dF <long file>', ['create', '-dF', '<file>']],
+    ['gh pr create --body-file=<long file>', ['create', '--body-file=<file>']],
+    // gh issue edit resolves a PR number to the PR, so it can rewrite a PR description too.
+    ['gh issue edit 3 --body-file <long file>', ['<issue>', 'edit', '3', '--body-file', '<file>']],
+    // gh would read "--body" as the title and send the file; the runner checks the file anyway.
+    [
+      'gh pr create --title --body --body-file <long file>',
+      ['create', '--title', '--body', '--body-file', '<file>'],
+    ],
+  ])('refuses a long description however it is passed: %s', async (_, args) => {
+    const { deps, calls, logs } = setup();
+    const file = description(words(400));
+    const filled = args.map((arg) => arg.replace('<file>', file));
+    const command = filled[0] === '<issue>' ? ['issue', ...filled.slice(1)] : ['pr', ...filled];
+    expect(await asAgent(['builder', '--', 'gh', ...command], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain('400 visible words');
+  });
+
+  test.each([
+    ['open details', (w: string) => `<details open><summary>s</summary>\n\n${w}\n</details>`],
+    ['details tags in comments', (w: string) => `<!-- <details> -->\n${w}\n<!-- </details> -->`],
+    [
+      'details tags in a ~~~ fence',
+      (w: string) => `~~~\n<details>\n~~~\n${w}\n~~~\n</details>\n~~~`,
+    ],
+    ['escaped details tags', (w: string) => `\\<details>\n${w}\n\\</details>`],
+    ['comment markers written as code', (w: string) => `Start with \`<!--\`.\n${w}\nEnd: \`-->\``],
+  ])('counts text that GitHub shows: %s', async (_, wrap) => {
+    const { deps, logs } = setup();
+    const file = description(wrap(words(400)));
+    expect(await asAgent(['builder', '--', 'gh', 'pr', 'create', '--body-file', file], deps)).toBe(
+      1,
+    );
+    expect(logs()[0]).toContain('over the limit of 350');
+  });
+
+  test.each([
+    ['no description', ['create', '--title', 'x'], 'needs --body-file'],
+    [
+      'a recovered description',
+      ['create', '--body', 'x', '--recover', 'state.json'],
+      "can't check",
+    ],
+    ['a description on stdin', ['create', '--body-file', '-'], 'needs a file path'],
+  ])('refuses a create with %s, since it cannot check it', async (_, args, reason) => {
+    const { deps, calls, logs } = setup();
+    expect(await asAgent(['builder', '--', 'gh', 'pr', ...args], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain(reason);
+  });
+});
+
 describe('as-agent as a process', () => {
   /**
    * The real runner, launched the way agents launch it, with nothing real behind it. The key is
@@ -823,7 +975,12 @@ describe('as-agent as a process', () => {
     const runner = join(import.meta.dirname, 'as-agent.ts');
     const child = spawn(process.execPath, ['--import', preload, runner, ...command], {
       cwd: repo,
-      env: { HOME: dir, PATH: '/usr/bin:/bin', DOCENT_BUILDER_APP_KEY: pem },
+      // Every role's key, so no role launched here can reach the real Keychain.
+      env: {
+        HOME: dir,
+        PATH: '/usr/bin:/bin',
+        ...Object.fromEntries(ROLES.map((role) => [keyEnvName(role), pem])),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
       // Under vitest's own 5s limit, so a hung runner is killed rather than left behind. SIGKILL,
       // because the runner catches SIGTERM and would wait on a hung revoke.
