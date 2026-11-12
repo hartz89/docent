@@ -21,6 +21,7 @@ import {
 } from '@docent/core';
 import { AgentError, type AgentRunner } from './agent.ts';
 import type { PrInfo, Workspace } from './github.ts';
+import type { RunLog } from './run-log.ts';
 
 // ---- What the browser sees. Plain JSON, so the typed client keeps exact types. ----
 
@@ -146,6 +147,8 @@ export type TourJob = {
   promptVersion?: TourPromptVersion;
   onProgress: (progress: TourProgress) => void;
   signal?: AbortSignal;
+  /** Where each attempt is recorded, with why the checker sent it back. */
+  log?: RunLog;
 };
 
 /** The checker loop: one attempt, then up to this many retries with the problems fed back. */
@@ -163,6 +166,9 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
 
   while (attempts <= MAX_RETRIES) {
     attempts++;
+    const started = Date.now();
+    const attempt = (fields: Record<string, unknown>) =>
+      job.log?.event('tour.attempt', { attempt: attempts, ms: Date.now() - started, ...fields });
     onProgress({
       step: 'planning',
       detail: attempts === 1 ? 'Reading the changed files' : 'Fixing the problems found',
@@ -181,6 +187,11 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
       });
     } catch (error) {
       if (error instanceof AgentError) costs.push(error.cost);
+      attempt({
+        outcome: 'error',
+        error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof AgentError ? { costMicroUsd: error.cost.costMicroUsd } : {}),
+      });
       if (best) break;
       throw new TourError(error instanceof Error ? error.message : String(error), costs);
     }
@@ -190,10 +201,16 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
     onProgress({ step: 'checking', attempt: attempts });
     const wire = parseWire(reply.structured ?? reply.text);
     if (!wire) {
+      attempt({ outcome: 'bad_shape', costMicroUsd: reply.cost.costMicroUsd });
       prompt = 'Your answer did not match the tour schema. Return the complete tour as JSON.';
       continue;
     }
     best = await check(wire, workspace, diff);
+    attempt({
+      outcome: best.problems.length ? 'rejected' : 'passed',
+      costMicroUsd: reply.cost.costMicroUsd,
+      problems: best.problems,
+    });
     if (best.problems.length === 0 || attempts > MAX_RETRIES) break;
     onProgress({ step: 'retrying', attempt: attempts, problems: best.problems.length });
     prompt = retryPrompt(best.problems);
