@@ -1,7 +1,7 @@
 {"ts":"2026-11-12T14:03:00.000Z","kind":"run.start","version":"0.0.0","mode":"review","pr":"https://github.com/hartz89/docent/pull/52","model":"claude-opus-5-5","flags":{"fork-budget":"0.5"},"node":"v24.14.1","platform":"darwin"}
 {"ts":"2026-11-12T14:03:02.100Z","kind":"pr","repo":"hartz89/docent","number":52,"url":"https://github.com/hartz89/docent/pull/52","title":"Launcher: open a tour from a link (docent serve)","author":"app/docent-builder","head":"1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b","base":"0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e","files":9,"ms":2100}
 {"ts":"2026-11-12T14:03:02.100Z","kind":"tour.cache","hit":false}
-{"ts":"2026-11-12T14:03:02.400Z","kind":"author","found":true,"session":"7e2cfb5b-77c5-46af-9de2-27ca9a1c1f85","via":"the Claude-Session link in the PR","contextTokens":180000,"forkEstimateUsd":0.31,"forkBudgetUsd":0.5}
+{"ts":"2026-11-12T14:03:02.400Z","kind":"author","found":true,"session":"7e2cfb5b-77c5-46af-9de2-27ca9a1c1f85","via":"the session link in the PR","contextTokens":180000,"forkEstimateUsd":0.31,"forkBudgetUsd":0.5}
 {"ts":"2026-11-12T14:03:48.000Z","kind":"tour.attempt","attempt":1,"ms":45900,"outcome":"rejected","costMicroUsd":612000,"problems":["Stop 3 cites apps/server/src/serve.ts lines 80-95, outside the file (it has 71 lines).","apps/server/src/cli.ts#4be1a2c0 is neither in a stop nor skipped."]}
 {"ts":"2026-11-12T14:04:11.500Z","kind":"tour.attempt","attempt":2,"ms":23500,"outcome":"passed","costMicroUsd":248000,"problems":[]}
 {"ts":"2026-11-12T14:04:11.600Z","kind":"tour.ready","cached":false,"stops":8,"skips":2,"attempts":2,"problems":[],"model":"claude-opus-5-5","costMicroUsd":860000,"ms":69500}

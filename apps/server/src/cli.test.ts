@@ -63,11 +63,16 @@ test.each(['--no-cache', '--record'])('--prepare refuses %s', async (flag) => {
 test('each launch writes a run file, unless --no-run-log says not to', async () => {
   cacheDir = await mkdtemp(join(tmpdir(), 'docent-cli-'));
 
-  await docent('review', '--fixture', fixture, '--prepare', '--no-run-log');
-  expect(await runFiles()).toEqual([]);
-
   await docent('review', '--fixture', fixture, '--prepare');
   expect(await runFiles()).toEqual([expect.stringMatching(/Z-fixture-hono-4813\.jsonl$/)]);
+  await docent('review', '--fixture', fixture, '--prepare', '--no-run-log');
+  expect(await runFiles()).toHaveLength(1);
+
   const { stdout } = await docent('runs', 'show', 'latest');
+  // A real replayed run, not a hand-written one, reads the same way.
+  expect(stdout).toContain(
+    'questions go to the guide: This recorded review names no author session',
+  );
+  expect(stdout).toMatch(/tour attempt 1: passed, \$0\.\d{4}/);
   expect(stdout).toContain('run ended: prepared');
 });

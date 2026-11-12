@@ -22,6 +22,7 @@ test('`docent runs show latest` reads a run top to bottom', async () => {
 
   expect(stdout).toMatchInlineSnapshot(`
     "Run 2026-11-12T14-03-00.000Z-hartz89-docent-52
+    Titles, questions, answers and errors below are untrusted text from PRs and agents.
 
     PR:        hartz89/docent#52 "Launcher: open a tour from a link (docent serve)" at 1a2b3c4d5e6f
     Started:   2026-11-12 14:03:00 UTC, lasted 12m 04s
@@ -34,7 +35,7 @@ test('`docent runs show latest` reads a run top to bottom', async () => {
         +0.0s  run started: review https://github.com/hartz89/docent/pull/52
         +2.1s  PR loaded: hartz89/docent#52 "Launcher: open a tour from a link (docent serve)" by app/docent-builder, head 1a2b3c4d5e6f, 9 file(s)
         +2.1s  tour cache: miss
-        +2.4s  questions go to the author's session 7e2cfb5b-77c5-46af-9de2-27ca9a1c1f85 (the Claude-Session link in the PR)
+        +2.4s  questions go to the author's session 7e2cfb5b-77c5-46af-9de2-27ca9a1c1f85 (the session link in the PR)
        +48.0s  tour attempt 1: sent back with 2 problem(s), $0.6120, 45.9s
                - Stop 3 cites apps/server/src/serve.ts lines 80-95, outside the file (it has 71 lines).
                - apps/server/src/cli.ts#4be1a2c0 is neither in a stop nor skipped.
@@ -59,7 +60,7 @@ test('`docent runs show latest` reads a run top to bottom', async () => {
          Answered by the author's session 7e2cfb5b-77c5-46af-9de2-27ca9a1c1f85
          Fork estimated $0.31, budget $0.50. Cost $0.2870, 18.4s
          A: Because the launcher is meant for any repo you can read with gh.
-            The URL is parsed by \`parsePrUrl\` in apps/server/src/github.ts:60, which only accepts github.com pull URLs.
+          │ The URL is parsed by \`parsePrUrl\` in apps/server/src/github.ts:60, which only accepts github.com pull URLs.
 
       2. stop 3 "The server serves any PR from a link", at +4m00s
          Q: What happens if two tabs open the same link?
@@ -70,9 +71,8 @@ test('`docent runs show latest` reads a run top to bottom', async () => {
     Errors
       +4m10s  web app error (api) POST /api/questions → 502: The author's session couldn't answer
       +4m11s  error in server (GET /api/file): EMFILE: too many open files
-            Error: EMFILE: too many open files
-                at readFile (node:fs:1)
-                at Review.readFile (apps/server/src/review.ts:240:20)
+         │     at readFile (node:fs:1)
+         │     at Review.readFile (apps/server/src/review.ts:240:20)
     "
   `);
 });
@@ -94,6 +94,43 @@ test('`show` finds a run by the end of its id, and --json prints the raw events'
   const kinds = out.split('\n').map((line) => (JSON.parse(line) as { kind: string }).kind);
   expect(kinds[0]).toBe('run.start');
   expect(kinds.at(-1)).toBe('run.end');
+});
+
+test('`show` picks the newest of several runs of one PR, and names the others', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'docent-runs-'));
+  const run = (ts: string, mode: string) =>
+    JSON.stringify({ ts, kind: 'run.start', mode, pr: 'https://github.com/a/b/pull/1' });
+  await writeFile(
+    join(dir, '2026-11-12T10-00-00.000Z-a-b-1.jsonl'),
+    run('2026-11-12T10:00:00Z', 'prepare'),
+  );
+  await writeFile(
+    join(dir, '2026-11-12T11-00-00.000Z-a-b-1.jsonl'),
+    run('2026-11-12T11:00:00Z', 'review'),
+  );
+
+  const { out, code } = runsCommand(['show', 'a-b-1'], dir);
+
+  expect(code).toBe(0);
+  expect(out).toContain('review mode');
+  expect(out).toContain(
+    'This is the newest of 2 runs matching "a-b-1". The others:\n  2026-11-12T10-00-00.000Z-a-b-1',
+  );
+});
+
+test('`show --json` escapes characters a terminal could act on', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'docent-runs-'));
+  // Written by hand, raw, as an older or edited file might be.
+  await writeFile(
+    join(dir, '2026-11-12T10-00-00.000Z-a-b-1.jsonl'),
+    '{"ts":"2026-11-12T10:00:00Z","kind":"question","question":"a\u009b2J\u2028b"}',
+  );
+
+  const { out } = runsCommand(['show', 'latest', '--json'], dir);
+
+  expect(out).toBe(
+    '{"ts":"2026-11-12T10:00:00Z","kind":"question","question":"a\\u009b2J\\u2028b"}',
+  );
 });
 
 test('`show` says so when no run matches', () => {

@@ -19,8 +19,8 @@ type ClientEvent =
 let token: string | null = null;
 /** Events reported before the token is known, like the theme at load. Sent once it is. */
 const early: ClientEvent[] = [];
-/** At most this many reports per page load, well under the server's own limit. */
-let budget = 200;
+/** At most this many reports of each sort per page load, so stop moves can't crowd out errors. */
+const budget = { error: 200, ui: 200 };
 
 /** Sends one event. Uses plain fetch, so a failed report is never itself reported. */
 export function report(event: ClientEvent) {
@@ -28,8 +28,9 @@ export function report(event: ClientEvent) {
     if (early.length < 20) early.push(event);
     return;
   }
-  if (!token || budget <= 0) return;
-  budget--;
+  const sort = event.kind === 'client.error' ? 'error' : 'ui';
+  if (!token || budget[sort] <= 0) return;
+  budget[sort]--;
   void fetch('/api/client-log', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },

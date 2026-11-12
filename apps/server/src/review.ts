@@ -534,12 +534,14 @@ Question: ${question}`,
             tourCacheName(workspace.pr, this.#options.model),
           )
         : null;
+      // The tour's own time starts here, after the PR is loaded.
+      const tourStarted = Date.now();
       const hit = cacheFile !== null && existsSync(cacheFile);
       this.#log.event('tour.cache', cacheFile ? { hit } : { hit: false, reason: 'cache off' });
       if (cacheFile && hit) {
         const outcome = JSON.parse(await readFile(cacheFile, 'utf8')) as TourOutcome;
         await lookup;
-        this.#tourReady({ ...outcome, cached: true }, started);
+        this.#tourReady({ ...outcome, cached: true }, tourStarted);
         return;
       }
 
@@ -556,7 +558,7 @@ Question: ${question}`,
         await writeFile(cacheFile, JSON.stringify(outcome, null, 2));
       }
       await lookup;
-      this.#tourReady(outcome, started);
+      this.#tourReady(outcome, tourStarted);
     } catch (error) {
       const costs = error instanceof TourError ? error.costs : [];
       this.#log.event('tour.failed', {

@@ -48,7 +48,11 @@ export function createApp({
   const noReview = { error: 'No review is open. Start Docent with: docent review <pr-url>' };
   const stillLoading = { error: 'The pull request is still loading.' };
   const indexFailed = { error: "Docent couldn't index the repository." };
-  const clientLimit = new RateLimit(clientLogLimits.perMinute, clientLogLimits.total);
+  // Errors and screen events have separate limits, so a fast reader can't crowd out an error.
+  const clientLimits = {
+    error: new RateLimit(clientLogLimits.perMinute, clientLogLimits.total),
+    ui: new RateLimit(clientLogLimits.perMinute, clientLogLimits.total),
+  };
 
   const app = new Hono()
     .use(ownOriginOnly(origin))
@@ -67,8 +71,9 @@ export function createApp({
         return typeof event === 'string' ? c.json({ error: event }, 400) : event;
       }),
       (c) => {
-        if (!clientLimit.take(Date.now())) return c.json({ error: 'Too many client reports' }, 429);
         const { kind, ...fields }: ClientEvent = c.req.valid('json');
+        const limit = kind === 'client.error' ? clientLimits.error : clientLimits.ui;
+        if (!limit.take(Date.now())) return c.json({ error: 'Too many client reports' }, 429);
         log.event(kind, fields);
         return c.body(null, 204);
       },

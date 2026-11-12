@@ -33,19 +33,27 @@ export const MAX_FIELD_CHARS = 8_000;
 const MAX_LIST_ITEMS = 50;
 /** Objects nest at most this deep; anything deeper is dropped. */
 const MAX_DEPTH = 6;
+/** One run file stops growing here, so a repeating error can't fill the disk. */
+export const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
 const REDACTED = '[redacted]';
 
 /** Field names whose values are never written, whatever they hold. */
 const SECRET_KEY = /^(token|authorization|password|secret|cookie|api[-_]?key)$/i;
-/** Environment variable names whose values count as secrets. */
-const SECRET_ENV = /TOKEN|SECRET|KEY|PASSWORD|PASSWD|AUTH|CREDENTIAL|COOKIE|SESSION/i;
-/** Token shapes worth catching wherever they turn up, even when we were never told them. */
+/**
+ * Environment variable names whose values count as secrets. Not session ids: those name who
+ * answered a question, and the log exists to show that.
+ */
+const SECRET_ENV = /TOKEN|SECRET|KEY|PASSWORD|PASSWD|AUTH|CREDENTIAL|COOKIE/i;
+/**
+ * Token shapes worth catching wherever they turn up, even when we were never told them. Matched
+ * anywhere, even glued to other text: `_ghp_…` and `xghp_…` are still tokens.
+ */
 const SECRET_PATTERNS: [RegExp, string][] = [
-  [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, REDACTED],
-  [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, REDACTED],
-  [/\bsk-ant-[A-Za-z0-9_-]{10,}/g, REDACTED],
-  [/\bsk-[A-Za-z0-9_-]{20,}/g, REDACTED],
+  [/gh[pousr]_[A-Za-z0-9]{20,}/g, REDACTED],
+  [/github_pat_[A-Za-z0-9_]{20,}/g, REDACTED],
+  [/sk-ant-[A-Za-z0-9_-]{10,}/g, REDACTED],
+  [/sk-[A-Za-z0-9_-]{20,}/g, REDACTED],
   [/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, `Bearer ${REDACTED}`],
   [/([#?&]token=)[^\s&#"'<>]+/gi, `$1${REDACTED}`],
 ];
@@ -69,6 +77,7 @@ export class RunLog {
   #fd: number | null;
   #now: () => Date;
   #secrets: string[];
+  #bytes = 0;
 
   private constructor(path: string | null, fd: number | null, now: () => Date, secrets: string[]) {
     this.path = path;
@@ -113,8 +122,14 @@ export class RunLog {
   event(kind: string, fields: Fields = {}) {
     if (this.#fd === null) return;
     const line = { ts: this.#now().toISOString(), kind, ...(this.#clean(fields, 0) as Fields) };
+    let text = `${escapeInvisible(JSON.stringify(line))}\n`;
+    const full = this.#bytes + Buffer.byteLength(text) > MAX_FILE_BYTES;
+    if (full) {
+      text = `${JSON.stringify({ ts: line.ts, kind: 'log.full', bytes: this.#bytes })}\n`;
+    }
     try {
-      writeSync(this.#fd, `${JSON.stringify(line)}\n`);
+      this.#bytes += writeSync(this.#fd, text);
+      if (full) this.close();
     } catch (error) {
       console.error(`Docent's run log stopped: ${error}`);
       this.close();
@@ -149,7 +164,8 @@ export class RunLog {
   }
 
   #clean(value: unknown, depth: number): unknown {
-    if (typeof value === 'string') return this.#scrub(cap(value));
+    // Scrub first: a cut could split a secret and hide it from the patterns.
+    if (typeof value === 'string') return cap(this.#scrub(value));
     if (typeof value === 'number') return Number.isFinite(value) ? value : null;
     if (typeof value === 'boolean' || value === null) return value;
     if (value === undefined || typeof value === 'function' || typeof value === 'symbol') {
@@ -166,7 +182,8 @@ export class RunLog {
     const out: Fields = {};
     for (const [key, v] of Object.entries(value as Fields)) {
       if (key === 'ts' || key === 'kind') continue;
-      out[key] = SECRET_KEY.test(key) ? REDACTED : this.#clean(v, depth + 1);
+      const safeKey = this.#scrub(key).slice(0, 100);
+      out[safeKey] = SECRET_KEY.test(key) ? REDACTED : this.#clean(v, depth + 1);
     }
     return out;
   }
@@ -235,4 +252,15 @@ function prune(dir: string, now: Date) {
 /** Reads `DOCENT_RUN_LOG`: `off`, `0`, `false` or `no` turns the run log off. */
 export function runLogDisabledByEnv(env: NodeJS.ProcessEnv = process.env): boolean {
   return /^(off|0|false|no)$/i.test(env.DOCENT_RUN_LOG?.trim() ?? '');
+}
+
+/**
+ * Characters JSON leaves raw that a terminal or reader could act on: C1 controls (U+009B starts
+ * an escape in some terminals), line separators, and bidi controls. Written as `\\uXXXX`.
+ * They only occur inside JSON strings, so the text stays valid JSON.
+ */
+export const INVISIBLE = /[\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
+export function escapeInvisible(json: string): string {
+  return json.replace(INVISIBLE, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }

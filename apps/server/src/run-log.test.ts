@@ -171,6 +171,51 @@ describe('redaction', () => {
     expect(text).toContain('failed at http://127.0.0.1:4123/#token=[redacted]');
   });
 
+  test('scrubs before it cuts, so a secret across the cut leaves nothing behind', async () => {
+    const log = RunLog.open({ dir: await tempDir(), label: 'x', env: {} });
+    log.addSecret(token);
+    const gh = `ghp_${'e'.repeat(36)}`;
+    log.event('question', {
+      a: `${'x'.repeat(MAX_FIELD_CHARS - 20)}${token}`,
+      b: `${'x'.repeat(MAX_FIELD_CHARS - 10)}${gh}`,
+    });
+
+    const text = await readFile(log.path ?? '', 'utf8');
+    expect(text).not.toContain(token.slice(0, 12));
+    expect(text).not.toContain('ghp_');
+  });
+
+  test('catches tokens glued to other text, and in field names', async () => {
+    const log = RunLog.open({ dir: await tempDir(), label: 'x', env: {} });
+    log.addSecret(token);
+    log.event('x', { a: `id_ghp_${'f'.repeat(36)}`, nested: { [token]: 1 } });
+
+    const text = await readFile(log.path ?? '', 'utf8');
+    expect(text).not.toContain('ghp_');
+    expect(text).not.toContain(token);
+  });
+
+  test('keeps session ids, which say who answered', async () => {
+    const id = '7e2cfb5b-77c5-46af-9de2-27ca9a1c1f85';
+    const log = RunLog.open({
+      dir: await tempDir(),
+      label: 'x',
+      env: { CLAUDE_CODE_SESSION_ID: id },
+    });
+    log.event('author', { session: id });
+
+    expect((await events(log))[0]?.session).toBe(id);
+  });
+
+  test('writes characters a terminal could act on as escapes', async () => {
+    const log = RunLog.open({ dir: await tempDir(), label: 'x', env: {} });
+    log.event('question', { question: 'a\u009b2Jb\u2028c\u202ed' });
+
+    const text = await readFile(log.path ?? '', 'utf8');
+    expect(text).toContain('a\\u009b2Jb\\u2028c\\u202ed');
+    expect((await events(log))[0]?.question).toBe('a\u009b2Jb\u2028c\u202ed');
+  });
+
   test('caps long text, so one answer cannot swallow the log', async () => {
     const log = RunLog.open({ dir: await tempDir(), label: 'x', env: {} });
     log.event('question', { answer: 'a'.repeat(MAX_FIELD_CHARS + 500) });

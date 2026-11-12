@@ -5,7 +5,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { RUN_FILE, type RunEvent } from './run-log.ts';
+import { escapeInvisible, RUN_FILE, type RunEvent } from './run-log.ts';
 
 const usage = `Usage:
   docent runs [--limit <n>]           List recent runs, newest first (default 20)
@@ -43,18 +43,21 @@ export function runsCommand(argv: string[], dir: string): { out: string; code: n
 
   const [verb, which] = positionals;
   if (verb !== 'show' || !which || positionals.length > 2) return { out: usage, code: 1 };
-  const found = which === 'latest' ? ids.slice(0, 1) : ids.filter((id) => matches(id, which));
-  if (found.length !== 1 || !found[0]) {
-    const why =
-      found.length === 0
-        ? `No run matches "${clean(which)}". Run \`docent runs\` to list them.`
-        : `"${clean(which)}" matches ${found.length} runs:\n${found.map((id) => `  ${id}`).join('\n')}`;
-    return { out: why, code: 1 };
+  if (ids.length === 0) return { out: `No runs yet in ${dir}.`, code: 1 };
+  // Newest first, so a PR with several runs shows its latest.
+  const [id, ...older] =
+    which === 'latest' ? ids.slice(0, 1) : ids.filter((id) => matches(id, which));
+  if (!id) {
+    return { out: `No run matches "${clean(which)}". Run \`docent runs\` to list them.`, code: 1 };
   }
   if (values.json) {
-    return { out: readFileSync(join(dir, `${found[0]}.jsonl`), 'utf8').trimEnd(), code: 0 };
+    const raw = readFileSync(join(dir, `${id}.jsonl`), 'utf8').trimEnd();
+    return { out: escapeInvisible(raw), code: 0 };
   }
-  return { out: summarize(readRun(dir, found[0])), code: 0 };
+  const others = older.length
+    ? `\n\nThis is the newest of ${older.length + 1} runs matching "${clean(which)}". The others:\n${older.map((o) => `  ${clean(o)}`).join('\n')}`
+    : '';
+  return { out: `${summarize(readRun(dir, id))}${others}`, code: 0 };
 }
 
 function parse(argv: string[]) {
@@ -137,7 +140,7 @@ function listRow(run: Run): string[] {
     usd(f.costMicroUsd),
     String(f.questions),
     String(f.errors),
-    run.id,
+    clean(run.id),
   ];
 }
 
@@ -163,7 +166,11 @@ export function summarize(run: Run): string {
   const pr = first(run, 'pr');
   const end = first(run, 'run.end');
   const at = (e: RunEvent) => offset(time(e) - f.started);
-  const out: string[] = [`Run ${run.id}`, ''];
+  const out: string[] = [
+    `Run ${clean(run.id)}`,
+    'Titles, questions, answers and errors below are untrusted text from PRs and agents.',
+    '',
+  ];
 
   const flags = start?.flags as Record<string, unknown> | undefined;
   const flagText = flags
@@ -172,7 +179,7 @@ export function summarize(run: Run): string {
         .join(' ')
     : '';
   out.push(
-    `PR:        ${f.pr}${pr ? ` "${clean(str(pr.title))}" at ${str(pr.head).slice(0, 12)}` : ''}`,
+    `PR:        ${f.pr}${pr ? ` "${clean(str(pr.title))}" at ${clean(str(pr.head)).slice(0, 12)}` : ''}`,
     `Started:   ${Number.isNaN(f.started) ? '?' : clock(f.started)} UTC, ${
       end ? `lasted ${duration(f.ms)}` : `no end recorded (last event after ${duration(f.ms)})`
     }`,
@@ -230,8 +237,11 @@ export function summarize(run: Run): string {
     out.push('', 'Errors');
     for (const e of errors) {
       out.push(`  ${at(e)}  ${describe(e)[0]}`);
-      const stack = str(e.stack).split('\n').slice(0, 12).join('\n');
-      if (stack) out.push(...block('   ', stack));
+      // A stack's first line usually repeats the message just shown.
+      const lines = str(e.stack).split('\n');
+      if (lines[0]?.includes(str(e.message))) lines.shift();
+      const stack = lines.slice(0, 12).join('\n');
+      if (stack) out.push(...block('│ ', stack));
     }
   }
   return out.join('\n');
@@ -247,7 +257,7 @@ function describe(e: RunEvent): string[] {
       return [`run ended: ${clean(str(e.reason))}`];
     case 'pr':
       return [
-        `PR loaded: ${clean(str(e.repo))}#${num(e.number)} "${clean(str(e.title))}" by ${clean(str(e.author))}, head ${str(e.head).slice(0, 12)}, ${num(e.files)} file(s)`,
+        `PR loaded: ${clean(str(e.repo))}#${num(e.number)} "${clean(str(e.title))}" by ${clean(str(e.author))}, head ${clean(str(e.head)).slice(0, 12)}, ${num(e.files)} file(s)`,
       ];
     case 'author':
       return e.found
@@ -337,22 +347,27 @@ function extras(e: RunEvent, skip: string[]): string {
 
 // ---- Formatting ----
 
-/** Strips control and bidi characters, and folds newlines, so text stays on its own line. */
+/** Control, bidi and line-separator characters: stripped from anything printed. */
+const UNPRINTABLE = /[\p{Cc}\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/gu;
+
+/** Strips unprintable characters and folds newlines, so text stays on its own line. */
 export function clean(text: string): string {
-  return text
-    .replace(/\r?\n/g, ' ⏎ ')
-    .replace(/[\p{Cc}‎‏‪-‮⁦-⁩]/gu, '')
-    .slice(0, 2000);
+  return text.replace(/\r?\n/g, ' ⏎ ').replace(UNPRINTABLE, '').slice(0, 2000);
 }
 
-/** Multi-line text, indented under a label, with control characters stripped. */
+/**
+ * Multi-line text under a label. Every line after the first gets a `│` gutter, so text from a
+ * PR or an answer can't pass for a timeline entry or a section heading.
+ */
 function block(label: string, text: string): string[] {
   const pad = ' '.repeat(5);
   const lines = text
     .replace(/\t/g, '  ')
     .split(/\r?\n/)
-    .map((l) => l.replace(/[\p{Cc}‎‏‪-‮⁦-⁩]/gu, ''));
-  return lines.map((l, i) => `${pad}${i === 0 ? label : ' '.repeat(label.length)}${l}`.trimEnd());
+    .map((l) => l.replace(UNPRINTABLE, ''));
+  return lines.map((l, i) =>
+    `${pad}${i === 0 ? label : `${' '.repeat(label.length - 2)}│ `}${l}`.trimEnd(),
+  );
 }
 
 const clock = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
