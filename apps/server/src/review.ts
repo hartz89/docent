@@ -1,7 +1,7 @@
 // One review: opens the PR, generates (or loads) its tour, and answers questions about it, from
 // the author's own session when it can. The server routes read from here; the model, GitHub and
 // the author's session sit behind injected boundaries.
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -14,6 +14,7 @@ import {
   type SessionId,
 } from '@docent/core';
 import { AgentError, type AgentRunner, forkCostEstimateUsd } from './agent.ts';
+import { type CheckOutcome, checkAnswer, DEFAULT_CHECK_MODEL } from './answer-check.ts';
 import { type AuthorSession, Busy, oneAtATime, type SessionLocator } from './author-session.ts';
 import {
   GitHubRefusal,
@@ -27,6 +28,7 @@ import { describeError, RunLog } from './run-log.ts';
 import { type BuiltIndex, buildIndex, type IndexLimits, type IndexStatus } from './symbols.ts';
 import {
   generateTour,
+  type StopView,
   TOUR_PROMPT_VERSION,
   TOUR_PROMPTS,
   TourError,
@@ -109,7 +111,15 @@ export type AnswerView = {
   askedAt: string;
   costs: CostRecord[];
   costIncomplete: boolean;
-} & ({ source: 'author_session'; session: SessionId } | { source: 'guide'; whyNotAuthor: string });
+} & (
+  | {
+      source: 'author_session';
+      session: SessionId;
+      /** Fetch the guide's check of this answer with `Review.answerCheck`. */
+      checkId: string;
+    }
+  | { source: 'guide'; whyNotAuthor: string }
+);
 
 export type ReviewOptions = {
   source: PrSource;
@@ -123,6 +133,8 @@ export type ReviewOptions = {
   forkBudgetUsd?: number;
   /** How long one answer may take, author or guide, before it's abandoned. Default 3 minutes. */
   questionTimeoutMs?: number;
+  /** The model that checks author answers against the code. Default `DEFAULT_CHECK_MODEL`. */
+  checkModel?: string;
   /** Caps on the symbol index. Default `INDEX_LIMITS`. */
   indexLimits?: IndexLimits;
   /** How long a failed index build is remembered before one is tried again. Default 30 s. */
@@ -155,6 +167,8 @@ export class Review {
   #listeners = new Set<(tour: TourState) => void>();
   #posted: PostedReview | null = null;
   #posting = false;
+  /** Checks of author answers, by check id. Each settles, never rejects. */
+  #checks = new Map<string, Promise<CheckOutcome>>();
   /** The symbol index, built on first use. A review is bound to one head, so this is per head. */
   #symbols: Promise<BuiltIndex> | null = null;
   /** What a question to the author's session was estimated to cost, when it was estimated. */
@@ -289,18 +303,7 @@ export class Review {
     if (!workspace || tour.state !== 'ready') throw new Error('The tour is not ready yet.');
     const stop = tour.tour.stops.find((s) => s.id === stopId);
     if (!stop) throw new Error(`No stop ${stopId}.`);
-    const cited = await Promise.all(
-      stop.anchors.map(async (a) => {
-        const text = (await workspace.readFile(a.side, a.path)) ?? '';
-        const lines = text.split(/\r?\n/).slice(a.startLine - 1, a.endLine);
-        return `${a.path} (${a.side === 'new' ? 'head' : 'base'}) lines ${a.startLine}-${a.endLine}:\n${lines.join('\n')}`;
-      }),
-    );
-    const context = `The reviewer is at this stop of the tour:
-${stop.title}
-${stop.body}
-
-${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
+    const context = await stopContext(stop, workspace.readFile);
     const { pr } = workspace;
     const askedAt = pr.head;
     const timeoutMs = this.#options.questionTimeoutMs ?? DEFAULT_QUESTION_TIMEOUT_MS;
@@ -342,10 +345,24 @@ ${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
           },
           signal,
         );
+        // The answer goes out now; the check follows on its own, and only ever adds to it.
+        const checkId = randomUUID();
+        this.#checks.set(
+          checkId,
+          checkAnswer({
+            workspace,
+            runner: this.#options.runner,
+            model: this.#options.checkModel ?? DEFAULT_CHECK_MODEL,
+            context,
+            question,
+            answer: reply.text,
+          }),
+        );
         return {
           text: reply.text,
           source: 'author_session',
           session: author.id,
+          checkId,
           askedAt,
           costs: [reply.cost],
           costIncomplete: false,
@@ -393,6 +410,14 @@ Question: ${question}`,
       costs: [...costs, reply.cost],
       costIncomplete,
     };
+  }
+
+  /**
+   * The guide's check of an author answer, once it's done: a correction with cited lines, or
+   * null when the answer holds up or the check couldn't run. Undefined for an unknown id.
+   */
+  answerCheck(checkId: string): Promise<CheckOutcome> | undefined {
+    return this.#checks.get(checkId);
   }
 
   /**
@@ -596,6 +621,24 @@ Question: ${question}`,
   }
 }
 
+/** The stop a question was asked at, with the code it cites: what every answer starts from. */
+export async function stopContext(
+  stop: StopView,
+  readFile: Workspace['readFile'],
+): Promise<string> {
+  const cited = await Promise.all(
+    stop.anchors.map(async (a) => {
+      const text = (await readFile(a.side, a.path)) ?? '';
+      const lines = text.split(/\r?\n/).slice(a.startLine - 1, a.endLine);
+      return `${a.path} (${a.side === 'new' ? 'head' : 'base'}) lines ${a.startLine}-${a.endLine}:\n${lines.join('\n')}`;
+    }),
+  );
+  return `The reviewer is at this stop of the tour:
+${stop.title}
+${stop.body}
+
+${cited.length ? `It cites:\n\n${cited.join('\n\n')}` : 'It cites no code.'}`;
+}
 const totalMicroUsd = (costs: readonly CostRecord[]) =>
   costs.reduce((sum, c) => sum + c.costMicroUsd, 0);
 
@@ -604,7 +647,7 @@ class TurnedOver extends Error {}
 
 /** Text from the PR can't close or open the prompt's fenced blocks. */
 const unfence = (text: string) =>
-  text.replace(/<\/?(pull_request|question)>/gi, (tag) => tag.replace(/[<>]/g, ''));
+  text.replace(/<\s*\/?\s*(pull_request|question)\b[^>]*>/gi, (tag) => tag.replace(/[<>]/g, ''));
 
 /** The prompt for a fork of the author's session: it answers as the author, read-only. */
 function authorPrompt(

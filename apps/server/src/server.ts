@@ -8,6 +8,7 @@ import type { Review } from './review.ts';
 import type { RunLog } from './run-log.ts';
 
 export type { CostRecord } from '@docent/core';
+export type { CorrectionView } from './answer-check.ts';
 export type { AppType } from './app.ts';
 export type { PrInfo, ReviewEvent } from './github.ts';
 export type {
