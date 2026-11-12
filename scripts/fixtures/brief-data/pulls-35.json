@@ -1,0 +1,18 @@
+{
+  "html_url": "https://github.com/hartz89/docent/pull/35",
+  "number": 35,
+  "title": "Web: name the tab after the PR, and add a favicon",
+  "user": {
+    "login": "docent-builder-hartz89[bot]",
+    "html_url": "https://github.com/apps/docent-builder-hartz89"
+  },
+  "body": "**Intent:** the maintainer asked for the tab to name the PR, as \"PR title | Docent\" or the usual equivalent, and for a favicon.\n\n**Behavior change:**\n- **The tab title** is \"PR title · Docent\" once the PR is read. That's the common \"page · site\" convention, the one GitHub uses. Before that, and on the health page, it's \"Docent\". With several reviews open, the tabs can be told apart.\n- **The favicon** (`apps/web/public/favicon.svg`) is the tour: three brass stops on a route, on the app's dark ground. It's drawn rather than a letter, because favicons can't load our web fonts. I checked it at 16, 32 and 64 px on light, grey and dark tab bars.\n\n**Tests:** e2e checks:\n- the tab names the PR on the tour;\n- the tab says \"Docent\" with no review open;\n- `/favicon.svg` is served as `image/svg+xml`.\n\n`pnpm verify` and e2e pass.\n\n**Tier 1:** `apps/web` and two e2e assertions.\n\n**Known gaps:** none.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+  "created_at": "2026-11-10T04:02:52Z",
+  "updated_at": "2026-11-10T04:04:01Z",
+  "merged_at": "2026-11-10T04:03:59Z",
+  "labels": [],
+  "draft": false,
+  "auto_merge": null,
+  "additions": 23,
+  "deletions": 0
+}
