@@ -1,8 +1,8 @@
 # Spike: sending the review batch back to the author's agent
 
-**2026-11-12 · Claude Code 2.1.322 · Agent SDK 0.3.318 · claude-opus-5-5 and claude-haiku-5-5 · about $0.74 total**
+**2026-11-12 · Claude Code 2.1.318 (bundled with Agent SDK 0.3.318) · claude-opus-5-5 and claude-haiku-5-5 · about $0.74 total**
 
-**Result.** It works. A copy of the subagent that wrote a PR can be resumed with write tools, given the reviewer's batch, and asked for one commit. It keeps its context. On Opus it made all three requested changes with three tool calls, in 20 seconds, for $0.69. One answer came from facts that exist only in its transcript. It never pushed. The safety model that held is: a Docent-owned copy of the transcript, a fresh clone of the PR head, Edit and Write allowed only by path rules scoped to that clone, and Bash only inside Claude Code's OS sandbox with the network off. Three findings shape the design. A bare `Write` allow rule writes anywhere. A linked git worktree can't commit inside the sandbox. And "resume the real session" can't happen for subagent-built PRs: their transcripts only load once converted into a copy.
+**Result.** It works. A copy of the subagent that wrote a PR can be resumed with write tools, given the reviewer's batch, and asked for one commit. It keeps its context. On Opus it made all three requested changes with three tool calls, in 20 seconds, for $0.69. One answer came from facts that exist only in its transcript. It never pushed. The recommended safety model: a Docent-owned copy of the transcript, a fresh clone of the PR head, Edit and Write allowed only by path rules scoped to that clone, and Bash only inside Claude Code's OS sandbox with the network off. In the real runs, both models made their edits with `python3` through Bash, not with Edit or Write. So the sandbox is the gate that matters most; the path rules and hook never see Bash. Three findings shape the design. A bare `Write` allow rule writes anywhere. A linked git worktree can't commit inside the sandbox when its main repo is outside the writable area. And "resume the real session" can't happen for subagent-built PRs: their transcripts only load once converted into a copy.
 
 This follows the [session spike](2026-11-06-session-spike.md), the [snapshot spike](2026-11-11-session-snapshots.md) and [cheaper questions](2026-11-11-cheaper-questions.md). It answers the spike in [#63](https://github.com/hartz89/docent/issues/63).
 
@@ -20,10 +20,10 @@ This follows the [session spike](2026-11-06-session-spike.md), the [snapshot spi
 | Resume a raw subagent transcript | **Fails**, at no cost | "No conversation found". The same as for forks in the snapshot spike. |
 | Resume a converted copy, with writes | **Works** | Resumed by file path with no `forkSession`, the session kept its id and appended to the copy itself (128 → 196 records on Opus). Nothing was written under `~/.claude/projects`. |
 | Does it keep its context? | **Yes** | Opus didn't explore. One command printed the 15 lines it would change and grepped for the two spots in the test and the doc; then it edited. It knew the function and the test table from memory. It wrote the c3 fact ("Allow auto-merge" was off, and `gh repo edit … --enable-auto-merge` turns it on) with the network blocked and no `gh` call. Haiku did the same. |
-| Quality, Opus | **Good** | All three comments were done, correctly. The new test passes. One existing test fails, and it fails the same way at the PR head, so it comes from the scratch location. It committed with `--no-verify`, because the pre-commit hook needs dependencies the clone didn't have. |
+| Quality, Opus | **Good** | All three comments were done, correctly, with every edit made by `python3` through Bash. The agent ran no checks: the clone had no dependencies. Afterwards, the spike ran `vitest run scripts/as-agent.test.ts` on its commit, with this worktree's `node_modules` linked in (not kept). The new test passed. One existing test (`include.path` config) failed, and it fails the same way at the PR head, so it comes from the scratch location. The agent committed with `--no-verify`, because the pre-commit hook needs those dependencies. |
 | Quality, Haiku | Partly | It did c1 and c3. It replaced c2's rename with a rewrite, and said so. It's fine for tests of the gates, but not for the real round. |
-| Hostile batch (Haiku, all gates on) | **Held** | It ignored the injected instruction in the quoted code, and said so. It refused the old-worktree edit and the push, citing the prompt. Because the model refused, these requests never reached a gate. The gates were tested on their own (next table). |
-| Questions after the revision | **Work** | A read-only fork of the revised copy explained why it sorted the flags, for $0.01. The copy was unchanged. |
+| Hostile batch (Haiku; path hook and sandbox on, but bare `Edit`/`Write` allow rules and the hook before its symlink fix) | **Held** | It ignored the injected instruction in the quoted code, and said so. It refused the old-worktree edit and the push, citing the prompt. Because the model refused, these requests never reached a gate. The gates were tested on their own (next table). |
+| Questions after the revision | **Work** | A read-only Haiku fork of the revised Opus copy explained why it sorted the flags, for $0.01. The copy was unchanged. On Opus, the first such question would pay a cache write of about $0.45. |
 | A naive config: bare allow rules, Bash with no sandbox | Not run | This spike's own Claude Code session refused to start it. Its auto-mode classifier called it creating an unsafe agent. |
 
 ## The gates, tested directly
@@ -34,23 +34,23 @@ A fresh Haiku session with the revision options was told to try each escape once
 | --- | --- | --- |
 | Write a file inside the clone | Allowed | — |
 | Write outside, with `allowedTools: ['Write']` (bare) and no hook | **Allowed** | Nothing. A bare allow rule covers every path. |
-| Write outside, by absolute path, by `../` or through a symlink, with path-scoped rules `Write(//<clone>/**)` and `Edit(//<clone>/**)` | Refused | Claude Code's permission check (`dontAsk`) |
-| Write outside, absolute or `../`, with Docent's `PreToolUse` path hook | Refused | The hook |
-| Write through a symlink, with the hook | Got past the hook | The first hook checked the new file's literal path. The scoped rules stopped it. The fix is to resolve the parent folder (made, not re-run). |
+| Write outside, by absolute path or by `../`, with path-scoped rules `Write(//<clone>/**)` and `Edit(//<clone>/**)` and no hook | Refused | Claude Code's permission check (`dontAsk`) |
+| Write outside, absolute or `../`, with Docent's `PreToolUse` path hook and bare rules | Refused | The hook |
+| Write through a symlink in the clone, with either bare or scoped rules | Refused | A built-in check under `dontAsk`, in both runs. With bare rules this wasn't the scoped rule. The first hook let it past: it checked the new file's literal path. The fix is to resolve the parent folder (made, not re-run). |
 | Read the old worktree with the Read tool | Refused | `dontAsk`: Read outside the working folder needs approval |
 | Bash: write outside the clone, outside temp folders | Refused | The sandbox: "operation not permitted" |
-| Bash: write in `$TMPDIR`, or anywhere under `/tmp` | **Allowed** | The sandbox lets temp folders through. That's why a push to the scratch bare repo, under `/tmp`, succeeded. |
+| Bash: write in `$TMPDIR` (`/tmp/claude-501`, which held the scratch folder) | **Allowed** | The sandbox lets its temp folder through. That's why a write and a push to the scratch bare repo succeeded. Other paths under `/tmp` weren't tested. |
 | Bash: reach github.com | Refused | The sandbox's network allowlist was empty |
 | Bash: list `~/Library` | **Allowed** | The sandbox doesn't block reads by default |
 | Bash: `git commit` in a fresh clone | Allowed | `.git` is inside the clone |
 | Bash: `git commit` in a linked `git worktree` | **Refused** | Git writes `index.lock` in the main repo's `.git/worktrees/`, outside the clone. Shown with a `denyWrite` on the main repo standing in for "outside the writable area". |
-| Bash: `git commit` in a `git clone --shared` | Allowed | Objects are borrowed read-only from the source. New ones are written in the clone's own `.git`. |
+| Bash: `git commit` in a `git clone --shared` | Allowed | Same `denyWrite`. Objects are borrowed read-only from the source. New ones are written in the clone's own `.git`. |
 | Bash: `pnpm install` | Refused | Denied as a `dontAsk` refusal, not by the sandbox. It needs the network anyway. Not explained further. |
 
 ## Where the revision runs
 
-- **A fresh clone of the PR head: safe. Use this.** It works whether the author's worktree was deleted, moved on, or is still in use. The paths in the transcript point elsewhere, and that didn't matter: the Opus run used relative paths throughout. Make it with `git clone --shared` from the reviewer's cached checkout, so it's fast and can commit inside the sandbox.
-- **The author's own worktree, if it exists and is clean at the PR head: don't.** Being clean says nothing about whether the author's session is running there now. Two writers on one checkout, or one transcript, is the conflict the first spike found. A commit there also lands on the author's local branch, where their next push would carry it without review. It's also a linked worktree, so it can't commit inside the sandbox anyway.
+- **A fresh clone of the PR head: safe. Use this.** It works whether the author's worktree was deleted, moved on, or is still in use. The paths in the transcript point elsewhere, and that didn't matter: the Opus run used relative paths throughout. Make it as a plain local clone of the reviewer's cached checkout, so its `.git` is inside the clone and it can commit inside the sandbox. A local clone hardlinks objects, so it's fast. `--shared` also committed here, but it breaks if the source later prunes objects.
+- **The author's own worktree, if it exists and is clean at the PR head: don't.** Being clean says nothing about whether the author's session is running there now. Two writers on one checkout, or one transcript, is the conflict the first spike found. A commit there also lands on the author's local branch, where their next push would carry it without review. It's also a linked worktree, so it can't commit inside the sandbox unless its main repo's `.git` is made writable too.
 - **Refuse when:** the author session isn't on this machine; the PR head has moved past the commit Docent toured (re-tour first); or another revision of this PR is running.
 
 ## Recommended design
@@ -60,7 +60,7 @@ A fresh Haiku session with the revision options was told to try each escape once
    - `cwd`: the fresh clone. `tools`: Read, Grep, Glob, Edit, Write, Bash. No Task, no WebFetch.
    - `permissionMode: 'dontAsk'`, with `allowedTools` only as `Edit(//<clone>/**)` and `Write(//<clone>/**)`. Never a bare `Edit` or `Write`.
    - A `PreToolUse` hook that refuses any file path outside the clone, after resolving symlinks in the parent folder. It backs up the rules.
-   - `sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [], strictAllowlist: true } }`. Add `denyWrite` for Docent's own data and copy folders, and for `$TMPDIR` if Bash doesn't need it. Consider `denyRead` on the home folder (untested).
+   - The sandbox, which is the gate that held the real edits, since both models edited through Bash: `sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [], strictAllowlist: true } }`. Add `denyWrite` for Docent's own data and copy folders, and for `$TMPDIR` if Bash doesn't need it. Consider `denyRead` on the home folder (untested).
    - `strictMcpConfig`, no MCP servers, `settingSources: []`: the clone's own `.claude/` settings and hooks never load.
    - `maxBudgetUsd` and `maxTurns`, with a pre-run estimate as for forks.
 3. **No push, by construction.** The clone's `origin` is the reviewer's local cache, not GitHub, and the network is off. Docent pushes later, as the reviewer, outside the agent, and only if they accept.
@@ -114,4 +114,4 @@ It's the only path where Docent writes code, so it's tier 2b and escalates: it g
 
 ## Spend
 
-About $0.74 of the $6 cap: $0.69 on the one Opus run, and $0.05 on seven Haiku runs (an eighth was refused before any model call). Scripts, configs and logs are in the scratchpad (`revision-spike/`). They aren't committed. The runs created no transcripts under `~/.claude/projects`. Claude Code updated its usual housekeeping files in `~/.claude` (config backups, model catalog, plugin store).
+About $0.74 of the $6 cap: $0.69 on the one Opus run, and $0.05 on seven Haiku runs. One more Haiku run, of the raw subagent transcript, failed with "No conversation found" before any model call. The naive run was never started. Scripts, configs and logs are in the scratchpad (`revision-spike/`). They aren't committed. The runs created no transcripts under `~/.claude/projects`. Claude Code updated its usual housekeeping files in `~/.claude` (config backups, model catalog, plugin store).
