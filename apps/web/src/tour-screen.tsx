@@ -6,6 +6,7 @@ import type {
   LedgerFileView,
   LedgerView,
   PostedReview,
+  PrInfo,
   ProofLabel,
   QuestionView,
   ReviewSnapshot,
@@ -23,6 +24,16 @@ import {
 } from 'react';
 import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
+import {
+  BatchTray,
+  Composer,
+  type Composing,
+  type Draft,
+  DraftCard,
+  ReviewList,
+  useDrafts,
+  whereLabel,
+} from './comments.tsx';
 import { FileTree, type Place } from './file-tree.tsx';
 import { Markdown } from './markdown.tsx';
 import type { Ready, Working } from './review-page.tsx';
@@ -47,7 +58,10 @@ type Viewing = {
   side: 'old' | 'new';
   focus?: AnchorView;
   label?: string;
-  /** A line to scroll to without marking it cited, like the first line not on the route. */
+  /**
+   * A line to scroll to without marking it cited, like the first line not on the route, or a
+   * comment's line.
+   */
   at?: number;
 };
 /** Opens a file on one side (by default head, or base if the PR deleted it), at a line if given. */
@@ -69,6 +83,8 @@ export function TourScreen({ snapshot, tour }: Props) {
   const [anchorIndex, setAnchorIndex] = useState(0);
   // A file opened from the ledger, the overview or the file tree, in place of the stop's citation.
   const [viewing, setViewing] = useState<Viewing | null>(null);
+  // At the verdict stop the middle pane lists the batch, until a citation is chosen.
+  const [verdictCode, setVerdictCode] = useState(false);
   // The left pane shows the route or the whole repo's files.
   const [pane, setPane] = useState<'route' | 'files'>('route');
   const goToFile = useRef<HTMLInputElement>(null);
@@ -219,6 +235,7 @@ export function TourScreen({ snapshot, tour }: Props) {
       setAnchorIndex(0);
       setOverviewFirst(false);
       setViewing(null);
+      setVerdictCode(false);
     },
     [stop, stops.length],
   );
@@ -302,6 +319,81 @@ export function TourScreen({ snapshot, tour }: Props) {
           ),
     [ledger, stops],
   );
+
+  // Line comments: saved drafts per PR, and the one being written.
+  const pr = snapshot.pr as PrInfo;
+  const drafts = useDrafts(pr);
+  const [composing, setComposing] = useState<Composing | null>(null);
+  const [trayOpen, setTrayOpen] = useState(false);
+  const verdictIndex = stops.findIndex((s) => s.kind === 'verdict_prompt');
+  const saveComposing = () => {
+    if (!composing || !stop) return;
+    const body = composing.text.trim();
+    if (!body) return;
+    const existing = [...drafts.current, ...drafts.stale].find((d) => d.id === composing.draftId);
+    drafts.save({
+      id: existing?.id ?? crypto.randomUUID(),
+      path: composing.path,
+      side: composing.side,
+      line: composing.line,
+      body,
+      head: pr.head,
+      stopId: composing.stopId,
+    });
+    setComposing(null);
+  };
+  const editDraft = (draft: Draft) =>
+    setComposing({
+      path: draft.path,
+      side: draft.side,
+      line: draft.line,
+      draftId: draft.id,
+      text: draft.body,
+      stopId: draft.stopId,
+    });
+  const removeDraft = (draft: Draft) => {
+    drafts.remove([draft.id]);
+    if (composing?.draftId === draft.id) setComposing(null);
+  };
+  /** Back to a comment's line: at the stop that cites it, or opened from the stop it was written at. */
+  const jumpTo = (draft: Pick<Draft, 'path' | 'side' | 'line' | 'stopId'>) => {
+    const covers = (a: AnchorView) =>
+      a.path === draft.path &&
+      a.side === draft.side &&
+      draft.line >= a.startLine &&
+      draft.line <= a.endLine;
+    const written = stops.findIndex((s) => s.id === draft.stopId);
+    const candidates = [written, ...stops.keys()].filter((i) => i >= 0);
+    const at = candidates.find((i) => stops[i]?.anchors.some(covers));
+    if (at !== undefined) {
+      go(at);
+      setAnchorIndex(stops[at]?.anchors.findIndex(covers) ?? 0);
+      setVerdictCode(true);
+    } else {
+      go(written >= 0 && written !== verdictIndex ? written : index);
+      setViewing({ path: draft.path, side: draft.side, at: draft.line });
+    }
+  };
+  /** Opens a comment on a line, unless one with text is already open: that one keeps its words. */
+  const openComposer = (at: { path: string; side: 'old' | 'new' }, line: number) => {
+    if (composing?.text.trim()) {
+      const open = document.querySelector<HTMLTextAreaElement>('.composer textarea');
+      if (open) open.focus();
+      else jumpTo(composing);
+      return;
+    }
+    if (!stop) return;
+    setComposing({ path: at.path, side: at.side, line, draftId: null, text: '', stopId: stop.id });
+  };
+  const composer = composing && (
+    <Composer
+      composing={composing}
+      onText={(text) => setComposing({ ...composing, text })}
+      onSave={saveComposing}
+      onCancel={() => setComposing(null)}
+    />
+  );
+
   if (!snapshot.pr) return null;
 
   const anchor = stop?.anchors[anchorIndex] ?? null;
@@ -309,6 +401,44 @@ export function TourScreen({ snapshot, tour }: Props) {
     viewing ?? (anchor && !overviewFirst ? { path: anchor.path, side: anchor.side } : null);
   const cited =
     shown && stop ? stop.anchors.filter((a) => a.path === shown.path && a.side === shown.side) : [];
+  const isVerdict = stop?.kind === 'verdict_prompt';
+  // Any line on screen takes a comment, in a file the tour cites or one opened from the tree.
+  // A comment is written at a stop, so none before the first stop arrives.
+  const commenting = !posted && shown !== null && stop !== undefined;
+  const onThisFile = (d: { path: string; side: string }) =>
+    shown !== null && d.path === shown.path && d.side === shown.side;
+  const below = (line: number) => {
+    const here = drafts.current.filter((d) => onThisFile(d) && d.line === line);
+    const composingHere =
+      composing && onThisFile(composing) && composing.line === line ? composing : null;
+    if (here.length === 0 && !composingHere) return null;
+    return (
+      <div className="line-thread">
+        {here.map((draft) =>
+          composingHere?.draftId === draft.id ? (
+            <Fragment key={draft.id}>{composer}</Fragment>
+          ) : (
+            <DraftCard
+              key={draft.id}
+              draft={draft}
+              onEdit={() => editDraft(draft)}
+              onRemove={() => removeDraft(draft)}
+            />
+          ),
+        )}
+        {composingHere && composingHere.draftId === null && composer}
+      </div>
+    );
+  };
+  const hasDrafts = drafts.current.length + drafts.stale.length > 0;
+  // A comment being written, or an edit not yet saved: what's on screen isn't what would post.
+  const editing = [...drafts.current, ...drafts.stale].find((d) => d.id === composing?.draftId);
+  const hasUnsaved =
+    composing !== null &&
+    (editing ? composing.text.trim() !== editing.body : composing.text.trim() !== '');
+  const listsBatch = isVerdict && hasDrafts && !posted && !viewing && !verdictCode;
+  // At the verdict stop, "Your review" is the way back; a second back button would go there too.
+  const backToReview = isVerdict && hasDrafts && !posted;
 
   // The route and the file tree, as tabs: in their own column, or in the drawer.
   const leftPane = (
@@ -343,6 +473,7 @@ export function TourScreen({ snapshot, tour }: Props) {
             go(i);
             closeRoute();
           }}
+          commentsByStop={countBy(drafts.current, (d) => d.stopId)}
           onOpenFile={(path, side, at) => {
             setViewing({ path, side: side ?? sideFor(diff, path), ...(at ? { at } : {}) });
             closeRoute();
@@ -375,6 +506,15 @@ export function TourScreen({ snapshot, tour }: Props) {
         total={stops.length}
         finished={ready !== null}
         posted={posted}
+        pending={drafts.current.length}
+        onOpenBatch={() => {
+          if (verdictIndex >= 0) return go(verdictIndex);
+          // While the tour streams there's no verdict stop yet: open the tray where you are.
+          setTrayOpen(true);
+          requestAnimationFrame(() =>
+            document.querySelector('.tray')?.scrollIntoView({ block: 'nearest' }),
+          );
+        }}
         drawer={drawer ? { open: routeOpen, onOpen: openRoute } : null}
       />
       <div className="columns" ref={columns}>
@@ -388,9 +528,33 @@ export function TourScreen({ snapshot, tour }: Props) {
           </nav>
         )}
         <section className="column code-column" aria-label="Code">
-          {shown ? (
+          {listsBatch ? (
+            <ReviewList
+              current={drafts.current}
+              stale={drafts.stale}
+              diff={diff}
+              head={pr.head}
+              composing={composing}
+              onEdit={editDraft}
+              onRemove={removeDraft}
+              onKeep={(draft) => drafts.save({ ...draft, head: pr.head })}
+              composer={composer}
+            />
+          ) : shown ? (
             <>
               <div className="code-header">
+                {backToReview && (
+                  <button
+                    type="button"
+                    className="text-button back-to-review"
+                    onClick={() => {
+                      setViewing(null);
+                      setVerdictCode(false);
+                    }}
+                  >
+                    <span aria-hidden="true">←</span> Your review
+                  </button>
+                )}
                 {/* Truncates from the start, so the file name stays in view. */}
                 <span className="code-path" title={shown.path}>
                   <bdi>{shown.path}</bdi>
@@ -406,7 +570,7 @@ export function TourScreen({ snapshot, tour }: Props) {
                       : ''}
                 </span>
                 <span className="code-side">{shown.side === 'new' ? 'head' : 'base'}</span>
-                {viewing && (
+                {viewing && !backToReview && (
                   <button
                     type="button"
                     className="secondary-button back-to-stop"
@@ -430,6 +594,9 @@ export function TourScreen({ snapshot, tour }: Props) {
                 changed={changes.get(`${shown.side}:${shown.path}`) ?? new Set()}
                 offRoute={offRoute.get(`${shown.side}:${shown.path}`) ?? new Set()}
                 onStep={viewing ? undefined : stepAnchor}
+                onComment={commenting ? (line) => openComposer(shown, line) : undefined}
+                below={commenting ? below : undefined}
+                commentLine={composing && onThisFile(composing) ? composing.line : null}
               />
             </>
           ) : (
@@ -460,14 +627,28 @@ export function TourScreen({ snapshot, tour }: Props) {
                   label: `lines ${cite.startLine}–${cite.endLine} · cited by the guide's note`,
                 })
               }
-              activeAnchor={viewing || overviewFirst ? -1 : anchorIndex}
+              activeAnchor={viewing || overviewFirst || listsBatch ? -1 : anchorIndex}
               onAnchor={(i) => {
                 setOverviewFirst(false);
                 setAnchorIndex(i);
                 setViewing(null);
+                setVerdictCode(true);
               }}
               isLast={index === stops.length - 1}
               onNext={() => go(index + 1)}
+              hasComments={hasDrafts || posted !== null}
+              tray={
+                !posted && !isVerdict && hasDrafts ? (
+                  <BatchTray
+                    current={drafts.current}
+                    stale={drafts.stale}
+                    diff={diff}
+                    onJump={jumpTo}
+                    open={trayOpen}
+                    onToggle={() => setTrayOpen(!trayOpen)}
+                  />
+                ) : null
+              }
               finished={ready !== null}
               waiting={
                 writing?.attempt === 1 &&
@@ -477,7 +658,27 @@ export function TourScreen({ snapshot, tour }: Props) {
               }
               verdict={
                 stop.kind !== 'verdict_prompt' ? null : ready ? (
-                  <VerdictForm pr={snapshot.pr} posted={posted} onPosted={setPosted} />
+                  <VerdictForm
+                    pr={snapshot.pr}
+                    diff={diff}
+                    comments={drafts.current}
+                    stale={drafts.stale.length}
+                    unsaved={
+                      hasUnsaved && composing
+                        ? {
+                            where: whereLabel(composing),
+                            onShow: () => jumpTo(composing),
+                            onDiscard: () => setComposing(null),
+                          }
+                        : null
+                    }
+                    posted={posted}
+                    onPosted={(review, sent) => {
+                      setPosted(review);
+                      drafts.remove(sent.map((d) => d.id));
+                      setComposing(null);
+                    }}
+                  />
                 ) : (
                   <p className="waiting-note">
                     Your verdict opens once the whole tour is written and checked.
@@ -552,6 +753,8 @@ function TopBar({
   total,
   finished,
   posted,
+  pending,
+  onOpenBatch,
   drawer,
 }: {
   snapshot: ReviewSnapshot;
@@ -561,6 +764,10 @@ function TopBar({
   /** False while stops are still being written, so the total isn't known yet. */
   finished: boolean;
   posted: PostedReview | null;
+  /** Comments in the batch, not yet posted. */
+  pending: number;
+  /** Goes to the verdict stop's list, or opens the tray while the tour is still being written. */
+  onOpenBatch: () => void;
   /** How to open the route when it's a drawer; null when it has its own column. */
   drawer: { open: boolean; onOpen: () => void } | null;
 }) {
@@ -627,6 +834,17 @@ function TopBar({
           <span>{progressText(index, total, finished)}</span>
           <ProgressTrack index={index} total={total} finished={finished} />
         </div>
+      )}
+      {!posted && pending > 0 && (
+        <button
+          type="button"
+          className="batch-pill"
+          onClick={onOpenBatch}
+          title="Your batch: nothing is posted until you send your verdict"
+        >
+          <span className="count">{pending}</span>{' '}
+          <span className="batch-pill-label">not posted</span>
+        </button>
       )}
       {/* On narrow windows the label collapses to its icon; screen readers still hear it. */}
       {posted ? (
@@ -710,6 +928,7 @@ function Route({
   stops,
   index,
   onSelect,
+  commentsByStop,
   onOpenFile,
   tour,
   writing,
@@ -717,6 +936,8 @@ function Route({
   stops: readonly StopView[];
   index: number;
   onSelect: (index: number) => void;
+  /** How many comments in the batch were written at each stop. */
+  commentsByStop: ReadonlyMap<string, number>;
   onOpenFile: OpenFile;
   /** The finished tour, or null while it's still being written. */
   tour: Ready | null;
@@ -752,6 +973,12 @@ function Route({
                   </span>
                   <span className="stop-title">{inline(stop.title)}</span>
                 </span>
+                {commentsByStop.has(stop.id) && (
+                  <span className="stop-comments">
+                    {commentsByStop.get(stop.id)}
+                    <span className="sr-only"> comments</span>
+                  </span>
+                )}
               </button>
             </li>
           );
@@ -1106,6 +1333,8 @@ function Narration({
   onAnchor,
   isLast,
   onNext,
+  tray,
+  hasComments,
   finished,
   waiting,
   verdict,
@@ -1123,6 +1352,10 @@ function Narration({
   onAnchor: (index: number) => void;
   isLast: boolean;
   onNext: () => void;
+  /** The pending batch, when it holds any comments. */
+  tray: ReactNode;
+  /** The reviewer has comments, or has posted: no need for the how-to note. */
+  hasComments: boolean;
   /** False while the rest of the tour is still being written and checked. */
   finished: boolean;
   /** What the next-stop button says while the next stop isn't ready yet. */
@@ -1267,16 +1500,21 @@ function Narration({
       </div>
 
       <footer className="narration-footer">
-        <span className="batch-note">Pending batch · no changes yet</span>
-        {!isLast ? (
-          <button type="button" className="primary-button" onClick={onNext}>
-            Next stop <span aria-hidden="true">→</span>
-          </button>
-        ) : !finished && stop.kind !== 'verdict_prompt' ? (
-          <button type="button" className="primary-button" disabled>
-            {waiting}
-          </button>
-        ) : null}
+        {tray}
+        <div className="narration-nav">
+          <span className="batch-note">
+            {hasComments ? '' : 'No comments yet · click + beside a line'}
+          </span>
+          {!isLast ? (
+            <button type="button" className="primary-button" onClick={onNext}>
+              Next stop <span aria-hidden="true">→</span>
+            </button>
+          ) : !finished && stop.kind !== 'verdict_prompt' ? (
+            <button type="button" className="primary-button" disabled>
+              {waiting}
+            </button>
+          ) : null}
+        </div>
       </footer>
     </div>
   );
@@ -1338,6 +1576,12 @@ function inline(text: string): ReactNode {
       <Fragment key={j}>{part}</Fragment>
     ),
   );
+}
+
+function countBy<T>(items: readonly T[], key: (item: T) => string): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const item of items) counts.set(key(item), (counts.get(key(item)) ?? 0) + 1);
+  return counts;
 }
 
 function chipLabel(anchor: AnchorView): string {

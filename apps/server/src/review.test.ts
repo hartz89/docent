@@ -56,6 +56,7 @@ const prHead = commitSha('h'.repeat(40));
 function fakeGitHub() {
   return {
     head: prHead,
+    baseRef: 'main',
     posted: [] as ReviewPost[],
     refusal: null as string | null,
     slowRead: null as Promise<void> | null,
@@ -98,7 +99,7 @@ const sourceFor =
         entries: Object.keys(head).map((path) => ({ path, kind: 'file' as const })),
         truncated: false,
       }),
-      currentHead: async () => github.head,
+      current: async () => ({ head: github.head, baseRef: github.baseRef }),
       postReview: async (review) => {
         if (github.refusal) throw new GitHubRefusal(github.refusal);
         github.posted.push(review);
@@ -1631,16 +1632,17 @@ describe('POST /api/review/submit', () => {
     const { github, api } = await openWithGitHub();
 
     const res = await api.review.submit.$post({
-      json: { event: 'APPROVE', body: '  Looks right to me.  ' },
+      json: { event: 'APPROVE', body: '  Looks right to me.  ', comments: [] },
     });
 
     expect(res.status).toBe(200);
     expect(github.posted).toEqual([
-      { commitId: prHead, event: 'APPROVE', body: 'Looks right to me.' },
+      { commitId: prHead, event: 'APPROVE', body: 'Looks right to me.', comments: [] },
     ]);
     const posted = {
       event: 'APPROVE',
       body: 'Looks right to me.',
+      comments: 0,
       commitId: prHead,
       url: 'https://github.com/acme/web/pull/7#pullrequestreview-1',
     };
@@ -1653,7 +1655,7 @@ describe('POST /api/review/submit', () => {
     const { github, app } = await openWithGitHub();
 
     expect((await post(app, { event: 'APPROVE' })).status).toBe(200);
-    expect(github.posted).toEqual([{ commitId: prHead, event: 'APPROVE', body: '' }]);
+    expect(github.posted).toEqual([{ commitId: prHead, event: 'APPROVE', body: '', comments: [] }]);
   });
 
   test('ignores any repo, PR or commit the client sends', async () => {
@@ -1668,7 +1670,9 @@ describe('POST /api/review/submit', () => {
       number: 1,
     });
 
-    expect(github.posted).toEqual([{ commitId: prHead, event: 'COMMENT', body: 'Note' }]);
+    expect(github.posted).toEqual([
+      { commitId: prHead, event: 'COMMENT', body: 'Note', comments: [] },
+    ]);
   });
 
   test.each(['REQUEST_CHANGES', 'COMMENT'])(
@@ -1687,6 +1691,16 @@ describe('POST /api/review/submit', () => {
     const { github, app } = await openWithGitHub();
 
     expect((await post(app, { event: 'DISMISS', body: 'x' })).status).toBe(400);
+    expect(github.posted).toEqual([]);
+  });
+
+  test('refuses when the PR now targets another branch, since base line numbers may have moved', async () => {
+    const { github, app } = await openWithGitHub();
+    github.baseRef = 'release';
+
+    const res = await post(app, { event: 'APPROVE' });
+
+    expect(res.status).toBe(409);
     expect(github.posted).toEqual([]);
   });
 
@@ -1729,6 +1743,136 @@ describe('POST /api/review/submit', () => {
     expect(await res.json()).toEqual({ error: github.refusal });
     github.refusal = null;
     expect((await post(app, { event: 'COMMENT', body: 'Fine by me' })).status).toBe(200);
+  });
+
+  describe('with line comments', () => {
+    const comment = (side: 'old' | 'new', line: number, body: string, path = 'src/cors.ts') => ({
+      path,
+      side,
+      line,
+      body,
+    });
+
+    test('lines in the diff become line comments: head lines on the right, removed lines on the left', async () => {
+      const { github, app } = await openWithGitHub();
+
+      const res = await post(app, {
+        event: 'REQUEST_CHANGES',
+        body: 'Two things.',
+        comments: [
+          comment('new', 2, '  Check the origin against a list.  '),
+          comment('old', 2, 'The wildcard was safer.'),
+          // An unchanged line shown at base sits on the right, at its head line number.
+          comment('old', 3, 'Same as before.'),
+          comment('new', 1, 'Lockfile too?', 'pnpm-lock.yaml'),
+        ],
+      });
+
+      expect(res.status).toBe(200);
+      expect(github.posted).toEqual([
+        {
+          commitId: prHead,
+          event: 'REQUEST_CHANGES',
+          body: 'Two things.',
+          comments: [
+            {
+              path: 'src/cors.ts',
+              line: 2,
+              side: 'RIGHT',
+              body: 'Check the origin against a list.',
+            },
+            { path: 'src/cors.ts', line: 2, side: 'LEFT', body: 'The wildcard was safer.' },
+            { path: 'src/cors.ts', line: 3, side: 'RIGHT', body: 'Same as before.' },
+            { path: 'pnpm-lock.yaml', line: 1, side: 'RIGHT', body: 'Lockfile too?' },
+          ],
+        },
+      ]);
+      expect(((await res.json()) as { posted: { comments: number } }).posted.comments).toBe(4);
+    });
+
+    test('a line outside the diff goes in the body as a linked quote, never on a nearby changed line', async () => {
+      const { github, app } = await openWithGitHub();
+
+      const res = await post(app, {
+        event: 'APPROVE',
+        comments: [
+          comment('new', 4, 'Worth a test here.\nAnd a note.'),
+          comment('new', 2, 'On the diff.'),
+        ],
+      });
+
+      expect(res.status).toBe(200);
+      expect(github.posted[0]?.comments).toEqual([
+        { path: 'src/cors.ts', line: 2, side: 'RIGHT', body: 'On the diff.' },
+      ]);
+      expect(github.posted[0]?.body).toBe(
+        `[\`src/cors.ts:4\`](https://github.com/acme/web/blob/${prHead}/src/cors.ts#L4)\n> Worth a test here.\n> And a note.`,
+      );
+    });
+
+    test('a note follows the summary, and a file name cannot break its link', async () => {
+      const { github, app } = await openWithGitHub();
+      // A file outside the diff whose name is built to end the markdown link early.
+      head['docs/a`b](x).md'] = 'one\n';
+      try {
+        await post(app, {
+          event: 'COMMENT',
+          body: 'Summary first.',
+          comments: [comment('new', 1, 'Odd name.', 'docs/a`b](x).md')],
+        });
+      } finally {
+        delete head['docs/a`b](x).md'];
+      }
+
+      expect(github.posted[0]?.body).toBe(
+        `Summary first.\n\n[\`\`docs/a\`b](x).md:1\`\`](https://github.com/acme/web/blob/${prHead}/docs/a%60b%5D%28x%29.md#L1)\n> Odd name.`,
+      );
+    });
+
+    test.each([
+      [
+        'a file that is not in the repository',
+        [comment('new', 1, 'x', 'src/nope.ts')],
+        /isn't a text file/,
+      ],
+      // The file ends in a newline: that ends line 4, it doesn't make a line 5.
+      ['a line past the end of the file', [comment('new', 5, 'x')], /has 4 lines at head/],
+      ['a binary file', [comment('new', 1, 'x', 'logo.png')], /isn't a text file/],
+      ['a path that leaves the repository', [comment('new', 1, 'x', '../etc/passwd')], /path/],
+      ['a path with a line break', [comment('new', 1, 'x', 'src/cors.ts\n[evil](x)')], /path/],
+      [
+        'a path that hides its name with bidi text',
+        [comment('new', 1, 'x', 'src/\u202ests.ts')],
+        /path/,
+      ],
+      ['a ./ path that would miss the diff', [comment('new', 2, 'x', './src/cors.ts')], /path/],
+      ['a line that is not a whole number', [comment('new', 1.5, 'x')], /line number/],
+      ['an empty comment', [comment('new', 1, '   ')], /empty/],
+      ['a comment that is too long', [comment('new', 1, 'x'.repeat(10_001))], /up to 10,000/],
+      ['too many comments', Array.from({ length: 51 }, () => comment('new', 1, 'x')), /up to 50/],
+      ['comments that are not a list', { path: 'src/cors.ts' }, /list/],
+    ])('refuses %s, and posts nothing', async (_, comments, error) => {
+      const { github, app } = await openWithGitHub();
+
+      const res = await post(app, { event: 'APPROVE', comments });
+
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toMatch(error);
+      expect(github.posted).toEqual([]);
+    });
+
+    test('the summary and the notes together stay within GitHub’s limit', async () => {
+      const { github, app } = await openWithGitHub();
+
+      const res = await post(app, {
+        event: 'COMMENT',
+        body: 'x'.repeat(60_000),
+        comments: [comment('new', 4, 'y'.repeat(9_000))],
+      });
+
+      expect(res.status).toBe(400);
+      expect(github.posted).toEqual([]);
+    });
   });
 
   test('needs the token and our own origin', async () => {

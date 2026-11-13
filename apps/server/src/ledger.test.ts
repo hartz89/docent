@@ -128,7 +128,7 @@ beforeAll(async () => {
     dir: repo,
     ...commitReader(repo, base, head),
     headFiles: () => gitHeadFiles(repo, head),
-    currentHead: async () => head,
+    current: async () => ({ head, baseRef: 'main' }),
     postReview: async () => {
       throw new Error('not in this test');
     },

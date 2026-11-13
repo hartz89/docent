@@ -120,9 +120,9 @@ async function serve(
       readFile: async () => null,
       open: async () => ({ kind: 'missing' }),
       tree: async () => ({ entries: [], truncated: false }),
+      current: async () => ({ head, baseRef: 'main' }),
       baseGitattributes: async () => new Map(),
       findWords: async () => new Map(),
-      currentHead: async () => head,
       postReview: async () => {
         throw new Error('not in this test');
       },

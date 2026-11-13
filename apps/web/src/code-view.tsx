@@ -1,5 +1,13 @@
+import { lineCount } from '@docent/core';
 import { useQuery } from '@tanstack/react-query';
-import { type CSSProperties, useEffect, useLayoutEffect, useRef } from 'react';
+import {
+  type CSSProperties,
+  Fragment,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+} from 'react';
 import { api } from './api.ts';
 import { highlight, type Token } from './highlight.ts';
 
@@ -21,14 +29,20 @@ type Props = {
    * and the arrow keys then scroll the file instead. Absent when no citation is in focus.
    */
   onStep: ((delta: 1 | -1) => boolean) | undefined;
+  /** Opens a comment on a line: a "+" shows in the gutter on hover. Absent once comments close. */
+  onComment?: ((line: number) => void) | undefined;
+  /** What sits under a line, like GitHub: the reviewer's drafts and the open composer. */
+  below?: ((line: number) => ReactNode) | undefined;
+  /** The line a comment is being written on. */
+  commentLine?: number | null | undefined;
 };
 
 /** Room left around a citation when ↑ ↓ reveal its edges. */
 const REVEAL_PADDING = 48;
 
-/** A read-only view of one file, with the PR's changes and the stop's citations marked. */
-export function CodeView({ path, side, cited, focus, changed, offRoute, onStep }: Props) {
-  const file = useQuery({
+/** A file's lines as colored tokens, fetched once and shared by every view of it. */
+export function useFile(path: string, side: 'old' | 'new') {
+  return useQuery({
     queryKey: ['file', side, path],
     queryFn: async () => {
       const res = await api.file.$get({ query: { path, side } });
@@ -37,10 +51,37 @@ export function CodeView({ path, side, cited, focus, changed, offRoute, onStep }
         throw new Error(body.error ?? `The server answered ${res.status}`);
       }
       const { text } = await res.json();
-      return highlight(path, text);
+      // Only the file's real lines: a final newline doesn't add an empty one to comment on.
+      return (await highlight(path, text)).slice(0, lineCount(text));
     },
     staleTime: Number.POSITIVE_INFINITY,
   });
+}
+
+/** One line's tokens, colored for both themes. */
+export function LineTokens({ tokens }: { tokens: readonly Token[] }) {
+  return tokens.map((token, t) => (
+    // biome-ignore lint/suspicious/noArrayIndexKey: tokens are positional.
+    <span key={t} style={tokenStyle(token)}>
+      {token.text}
+    </span>
+  ));
+}
+
+/** A read-only view of one file, with the PR's changes and the stop's citations marked. */
+export function CodeView({
+  path,
+  side,
+  cited,
+  focus,
+  changed,
+  offRoute,
+  onStep,
+  onComment,
+  below,
+  commentLine,
+}: Props) {
+  const file = useFile(path, side);
 
   const scroller = useRef<HTMLDivElement>(null);
   const focusStart = focus?.startLine ?? null;
@@ -133,23 +174,34 @@ export function CodeView({ path, side, cited, focus, changed, offRoute, onStep }
                 isChanged ? changeClass : '',
                 isCited(line) ? 'cited' : '',
                 isChanged && offRoute.has(line) ? 'off-route' : '',
+                commentLine === line ? 'commenting' : '',
               ]
                 .filter(Boolean)
                 .join(' ');
               return (
                 // biome-ignore lint/suspicious/noArrayIndexKey: lines are positional by nature.
-                <div key={index} className={classes} data-line={line}>
-                  <span className="line-number">{line}</span>
-                  <span className="line-mark">{isChanged ? changeMark : ''}</span>
-                  <span className="line-text">
-                    {tokens.map((token, t) => (
-                      // biome-ignore lint/suspicious/noArrayIndexKey: tokens are positional too.
-                      <span key={t} style={tokenStyle(token)}>
-                        {token.text}
-                      </span>
-                    ))}
-                  </span>
-                </div>
+                <Fragment key={index}>
+                  <div className={classes} data-line={line}>
+                    {onComment && (
+                      <button
+                        type="button"
+                        className="add-comment"
+                        aria-label={`Comment on line ${line}`}
+                        // Out of the tab order: a file has a button per line. Click to comment.
+                        tabIndex={-1}
+                        onClick={() => onComment(line)}
+                      >
+                        +
+                      </button>
+                    )}
+                    <span className="line-number">{line}</span>
+                    <span className="line-mark">{isChanged ? changeMark : ''}</span>
+                    <span className="line-text">
+                      <LineTokens tokens={tokens} />
+                    </span>
+                  </div>
+                  {below?.(line)}
+                </Fragment>
               );
             })}
           </div>

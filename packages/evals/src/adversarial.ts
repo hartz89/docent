@@ -102,7 +102,7 @@ export async function openAdversarial(
     dir,
     ...commitReader(dir, base, head),
     headFiles: () => gitHeadFiles(dir, head),
-    currentHead: async () => head,
+    current: async () => ({ head, baseRef: 'main' }),
     postReview: async () => {
       throw new Error('An eval never posts a review.');
     },

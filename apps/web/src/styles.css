@@ -280,7 +280,7 @@ code,
 
 .stop-button {
   display: grid;
-  grid-template-columns: 26px 1fr;
+  grid-template-columns: 26px 1fr auto;
   gap: 12px;
   width: 100%;
   padding: 9px 8px;
@@ -957,6 +957,7 @@ code,
 }
 
 .line {
+  position: relative;
   display: grid;
   grid-template-columns: 56px 18px 1fr;
   border-left: 2px solid transparent;
@@ -1400,18 +1401,21 @@ code,
 .narration-footer {
   position: sticky;
   bottom: 0;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.narration-nav {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
   padding: 14px 28px;
-  border-top: 1px solid var(--border);
-  background: var(--panel);
 }
 
 .batch-note {
   font-size: 12px;
-  color: var(--faint);
+  color: var(--muted);
 }
 
 .primary-button {
@@ -2080,8 +2084,14 @@ kbd {
     font-size: 17px;
   }
 
-  /* The bottom bar takes over Next stop. */
+  /* The bottom bar takes over Next stop. The batch tray stays, at the foot of the guide, and
+     scrolls with it. */
   .narration-footer {
+    position: static;
+  }
+
+  .narration-nav,
+  .narration-footer:not(:has(.tray)) {
     display: none;
   }
 
@@ -2191,5 +2201,478 @@ kbd {
 @media (prefers-reduced-motion: reduce) {
   .upcoming-dot {
     animation: none;
+  }
+}
+
+/* ---------- Line comments ---------- */
+
+/* Cards under a line size to the visible code, not the longest line. */
+.code-scroll {
+  container-type: inline-size;
+}
+
+/* The "+" in the gutter: on hover, like GitHub. */
+.add-comment {
+  position: absolute;
+  left: 3px;
+  top: 1px;
+  width: 18px;
+  height: 18px;
+  display: none;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: var(--brass-fill);
+  color: var(--brass-ink);
+  font: 600 14px / 1 var(--sans);
+  cursor: pointer;
+}
+
+.add-comment:hover {
+  filter: var(--fill-hover);
+}
+
+.line:hover .add-comment,
+.line.commenting .add-comment {
+  display: grid;
+}
+
+.line.commenting {
+  background: var(--brass-tint);
+  border-left-color: var(--brass-fill);
+}
+
+/* Sticky on the left, so a card stays in view when the code scrolls sideways. */
+.line-thread {
+  position: sticky;
+  left: 0;
+  width: min(100cqw, 760px);
+  padding: 6px 24px 10px 76px;
+  font-family: var(--sans);
+  font-variant-ligatures: normal;
+}
+
+.thread {
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.thread + .thread {
+  margin-top: 8px;
+}
+
+.thread.draft {
+  border: 1px dashed color-mix(in srgb, var(--brass-fill) 70%, transparent);
+}
+
+.thread-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-raised);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.thread-bar label {
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+}
+
+.grow {
+  flex: 1;
+}
+
+.draft-chip {
+  padding: 0 8px;
+  border-radius: 10px;
+  border: 1px solid var(--brass-soft);
+  background: var(--brass-tint);
+  color: var(--brass-text);
+  font-size: 11.5px;
+}
+
+.thread-body {
+  margin: 0;
+  padding: 10px 14px 12px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.text-button {
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.text-button:hover {
+  background: var(--brass-tint);
+  color: var(--text);
+}
+
+.composer {
+  padding: 10px 12px 12px;
+}
+
+.composer textarea {
+  display: block;
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--ground);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.composer textarea:focus {
+  outline: none;
+  border-color: var(--brass-text);
+  box-shadow: 0 0 0 3px var(--brass-tint);
+}
+
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 9px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.composer-row .primary-button {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+/* The batch count in the top bar. */
+.batch-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 12px 0 7px;
+  border-radius: 16px;
+  border: 1px solid var(--brass-soft);
+  background: var(--brass-tint);
+  color: var(--text);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.batch-pill:hover {
+  border-color: var(--brass-text);
+}
+
+.count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--brass-soft);
+  color: var(--brass-text);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* The batch, at the foot of the guide. */
+.tray {
+  border-bottom: 1px solid var(--border);
+}
+
+.tray-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 20px 7px 28px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.tray-head b {
+  font-weight: 600;
+}
+
+.tray-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tray-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 16px 8px;
+  max-height: 168px;
+  overflow: auto;
+}
+
+.tray-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1px 10px;
+  width: 100%;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tray-item:hover {
+  background: var(--panel-raised);
+}
+
+.tray-where {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.tray-what {
+  grid-column: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.tray-tag {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  align-self: center;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* The verdict stop's list of every comment in the batch. */
+.review-list {
+  padding: 28px 32px 48px;
+  overflow: auto;
+  max-width: 860px;
+}
+
+.review-list h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.review-list-sub {
+  margin: 4px 0 20px;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+
+.review-item {
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.review-item.stale {
+  border-style: dashed;
+}
+
+.review-item-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px 9px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.review-item-where {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.review-item-tag {
+  padding: 1px 9px;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.review-item.stale .review-item-tag {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  color: var(--danger);
+}
+
+.review-item-code {
+  padding: 6px 0;
+  min-width: 0;
+  overflow-x: auto;
+  background: var(--ground);
+  border-bottom: 1px solid var(--border);
+}
+
+.snippet-missing {
+  font-family: var(--sans);
+  color: var(--muted);
+}
+
+.review-item .composer {
+  background: var(--panel);
+}
+
+/* The verdict form's comment count and preview of the review body. */
+.verdict-lede {
+  margin: -4px 0 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.verdict-body {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--ground);
+}
+
+.verdict-body > * + * {
+  margin-top: 12px;
+}
+
+.verdict-summary {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.verdict-note a {
+  font-size: 12px;
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.verdict-note blockquote {
+  margin: 4px 0 0;
+  padding: 0 0 0 10px;
+  border-left: 3px solid var(--border-strong);
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.verdict-stale {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px dashed color-mix(in srgb, var(--danger) 45%, transparent);
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* How many of the batch's comments were written at a stop. */
+.stop-comments {
+  align-self: start;
+  margin-top: 2px;
+  padding: 0 7px;
+  border-radius: 9px;
+  background: var(--brass-tint);
+  color: var(--brass-text);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.back-to-review {
+  margin-left: -8px;
+  white-space: nowrap;
+}
+
+.verdict-lines {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.verdict-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.verdict-line + .verdict-line {
+  margin-top: 2px;
+}
+
+.verdict-lines .mono {
+  color: var(--text);
+}
+
+.verdict-stale-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* A phone: cards under a line use the code's whole width, a bar that doesn't fit wraps rather
+   than hiding Edit and Remove, and the top bar's pill keeps only its count, so the PR title
+   keeps room. */
+@media (max-width: 799px) {
+  .line-thread {
+    padding: 6px 12px 10px;
+  }
+
+  .thread-bar {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
+
+  .batch-pill {
+    padding: 0 7px;
+  }
+
+  .batch-pill-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 }

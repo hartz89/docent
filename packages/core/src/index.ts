@@ -8,6 +8,7 @@ export * from './detect.ts';
 export * from './diff.ts';
 export * from './diff-parse.ts';
 export * from './ledger.ts';
+export * from './lines.ts';
 export type {
   Evidence,
   FileTexts,
