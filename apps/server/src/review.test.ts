@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type CostRecord, commitSha, type Job, type MicroUsd, sessionId } from '@docent/core';
@@ -16,7 +16,7 @@ import {
 } from './author-session.ts';
 import { fixtureRunner, recording } from './fixture.ts';
 import { fileFromText, GitHubRefusal, type PrSource, type ReviewPost } from './github.ts';
-import { MAX_FILE_BYTES, MAX_QUESTIONS } from './questions.ts';
+import { KEEP_DAYS, KEEP_FILES, MAX_FILE_BYTES, MAX_QUESTIONS } from './questions.ts';
 import { Review, type ReviewOptions, type TourState, tourCacheName } from './review.ts';
 import { RunLog } from './run-log.ts';
 
@@ -1822,26 +1822,70 @@ describe('question threads', () => {
     expect(await readFile(join(dir, 'acme__web__7.json'), 'utf8')).not.toContain('ghp_');
   });
 
-  test('an oversized, malformed or linked file means no earlier threads, not a broken review', async () => {
-    const plants = [
-      (path: string) => writeFile(path, ' '.repeat(MAX_FILE_BYTES + 1)),
-      (path: string) => writeFile(path, '{"version":1,"questions":[{"id":1}]}'),
-      async (path: string) => {
-        const elsewhere = join(await questionsDir(), 'x.json');
-        await writeFile(elsewhere, JSON.stringify({ version: 1, questions: [] }));
-        await symlink(elsewhere, path);
-      },
+  test('a file it cannot read is left alone, and this launch keeps its threads in memory', async () => {
+    const elsewhere = join(await questionsDir(), 'x.json');
+    await writeFile(elsewhere, JSON.stringify({ version: 1, questions: [] }));
+    const plants: [string, (path: string) => Promise<void>][] = [
+      ['oversized', (path) => writeFile(path, ' '.repeat(MAX_FILE_BYTES + 1))],
+      ['not JSON', (path) => writeFile(path, '{not json')],
+      ['from a newer Docent', (path) => writeFile(path, '{"version":2,"questions":[]}')],
+      ['a link', (path) => symlink(elsewhere, path)],
     ];
-    for (const plant of plants) {
+    for (const [what, plant] of plants) {
       const dir = await questionsDir();
-      await plant(join(dir, 'acme__web__7.json'));
+      const path = join(dir, 'acme__web__7.json');
+      await plant(path);
+      const before = await readFile(path, 'utf8');
 
       const { api, review } = await launch(dir);
-      expect(await threads(api)).toEqual([]);
+      expect(await threads(api), what).toEqual([]);
       await ask(api, 'Still works?');
       await review.close();
-      expect(await threads(api)).toHaveLength(1);
+      expect(await threads(api), what).toHaveLength(1);
+      expect(await readFile(path, 'utf8'), what).toBe(before);
+      expect(await readdir(dir), what).toEqual(['acme__web__7.json']);
     }
+    expect(await readFile(elsewhere, 'utf8')).toBe('{"version":1,"questions":[]}');
+  });
+
+  test('old thread files and stray temp files are pruned, and nothing else', async () => {
+    const dir = await questionsDir();
+    const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const plant = async (name: string, at: Date) => {
+      await writeFile(join(dir, name), '{}');
+      await utimes(join(dir, name), at, at);
+    };
+    const uuid = (digit: string) => `${digit.repeat(8)}-0000-4000-8000-${'0'.repeat(12)}`;
+    await plant('acme__web__7.json', daysAgo(KEEP_DAYS + 5));
+    await plant('acme__old__1.json', daysAgo(KEEP_DAYS + 5));
+    await plant('notes.json', daysAgo(KEEP_DAYS + 5));
+    await plant(`acme__web__8.json.${uuid('0')}.tmp`, daysAgo(1));
+    await plant(`acme__web__9.json.${uuid('1')}.tmp`, new Date());
+    for (let i = 0; i < KEEP_FILES; i++) await plant(`acme__many__${i}.json`, daysAgo(i / 1000));
+
+    const { review } = await launch(dir);
+    await review.close();
+
+    const left = new Set(await readdir(dir));
+    // This PR's own file stays however old it is.
+    expect(left.has('acme__web__7.json')).toBe(true);
+    expect(left.has('acme__old__1.json')).toBe(false);
+    expect(left.has('notes.json')).toBe(true);
+    expect([...left].filter((n) => n.endsWith('.tmp'))).toEqual([
+      `acme__web__9.json.${uuid('1')}.tmp`,
+    ]);
+    // Room for this PR's file: the least recently used one goes.
+    expect([...left].filter((n) => n.startsWith('acme__many__'))).toHaveLength(KEEP_FILES - 1);
+    expect(left.has(`acme__many__${KEEP_FILES - 1}.json`)).toBe(false);
+  });
+
+  test('the threads need the token', async () => {
+    const { app } = await open(scripted(goodTour).runner);
+    expect((await app.request(`${origin}/api/questions`)).status).toBe(401);
+    const wrong = await app.request(`${origin}/api/questions`, {
+      headers: { Authorization: 'Bearer wrong-token' },
+    });
+    expect(wrong.status).toBe(401);
   });
 
   test('threads wait for the tour', async () => {

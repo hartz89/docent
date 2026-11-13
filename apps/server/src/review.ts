@@ -789,17 +789,19 @@ Question: ${question}`,
       ended();
       ended = time.span('Parse the diff');
       this.#workspace = workspace;
+      this.#diff = parseUnifiedDiff(workspace.diffText, workspace.pr.base, workspace.pr.head);
+      const lines = this.#diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
+      const changed = lines.filter((l) => l.kind !== 'context').length;
+      ended(`${this.#diff.files.length} files, ${changed} changed lines`);
       if (this.#options.questionsDir) {
+        ended = time.span('Read earlier questions');
         this.#questions = await QuestionStore.open({
           dir: this.#options.questionsDir,
           pr: workspace.pr,
           onError: (where, error) => this.#log.error(where, error),
         });
+        ended(`${this.#questions.list().length} kept`);
       }
-      this.#diff = parseUnifiedDiff(workspace.diffText, workspace.pr.base, workspace.pr.head);
-      const lines = this.#diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
-      const changed = lines.filter((l) => l.kind !== 'context').length;
-      ended(`${this.#diff.files.length} files, ${changed} changed lines`);
       ended = time.span('Look up the cached tour');
       const { pr } = workspace;
       this.#log.event('pr', {

@@ -5,15 +5,17 @@
 //
 // The file is the reviewer's own: 0600, in a 0700 folder, written whole and renamed into place.
 // Text is scrubbed of anything shaped like a secret before it's written, and everything is capped,
-// so a long review can't grow it without bound. Reading never throws: a missing, oversized or
-// malformed file means no earlier threads, not a broken review.
+// so a long review can't grow it without bound. Opening never throws: a file that can't be read
+// is left alone, and this launch keeps its threads in memory, so nothing is lost or overwritten.
 import { randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
 import {
   chmod,
+  type FileHandle,
   lstat,
   mkdir,
+  open,
   readdir,
-  readFile,
   rename,
   unlink,
   writeFile,
@@ -41,7 +43,7 @@ export type AskedQuestion = {
 export const MAX_QUESTIONS = 200;
 /** Any one stored text, an answer say, is cut to this many characters. */
 export const MAX_TEXT_CHARS = 16_000;
-/** A file bigger than this isn't read, and a write that would pass it drops the oldest questions. */
+/** A file bigger than this isn't read, and the oldest questions go before a file would pass it. */
 export const MAX_FILE_BYTES = 4 * 1024 * 1024;
 /** Thread files untouched this long are removed when a review opens. */
 export const KEEP_DAYS = 90;
@@ -91,16 +93,33 @@ export class QuestionStore {
   static async open(options: StoreOptions): Promise<QuestionStore> {
     const secrets = envSecrets(options.env ?? process.env);
     const path = join(options.dir, threadFileName(options.pr));
-    let questions: AskedQuestion[] = [];
     try {
       await mkdir(options.dir, { recursive: true, mode: 0o700 });
+      // A linked folder could point pruning and writes somewhere else.
+      if (!(await lstat(options.dir)).isDirectory()) {
+        throw new Error(`${options.dir} is not a plain folder`);
+      }
       await chmod(options.dir, 0o700);
-      await prune(options.dir, (options.now ?? (() => new Date()))(), path);
-      questions = await load(path);
     } catch (error) {
+      // No folder we can trust: threads are kept for this launch only.
+      options.onError?.('question threads', error);
+      return new QuestionStore(null, [], secrets, options.onError);
+    }
+    try {
+      await prune(options.dir, (options.now ?? (() => new Date()))(), path);
+    } catch (error) {
+      // Old files stay a while longer; this review goes on.
       options.onError?.('question threads', error);
     }
-    return new QuestionStore(path, questions, secrets, options.onError);
+    try {
+      const questions = await load(path);
+      return new QuestionStore(path, questions, secrets, options.onError);
+    } catch (error) {
+      // A file we can't read is left as it is, never overwritten: a newer Docent may have
+      // written it, or the reviewer may want it back. Threads are kept for this launch only.
+      options.onError?.('question threads', error);
+      return new QuestionStore(null, [], secrets, options.onError);
+    }
   }
 
   list(): readonly AskedQuestion[] {
@@ -110,15 +129,17 @@ export class QuestionStore {
   /** Keeps a newly answered question, scrubbed and capped, and saves the threads. */
   add(question: Omit<AskedQuestion, 'id'>): AskedQuestion {
     const kept = this.#clean({ ...question, id: randomUUID() });
-    this.#questions = [...this.#questions, kept].slice(-MAX_QUESTIONS);
+    this.#questions = fitting([...this.#questions, kept].slice(-MAX_QUESTIONS));
     this.#save();
     return kept;
   }
 
   /** Records the guide's check of an answer once it has settled. */
   checked(id: string, correction: CorrectionView | null) {
-    this.#questions = this.#questions.map((q) =>
-      q.id === id ? this.#clean({ ...q, correction, checked: true }) : q,
+    this.#questions = fitting(
+      this.#questions.map((q) =>
+        q.id === id ? this.#clean({ ...q, correction, checked: true }) : q,
+      ),
     );
     this.#save();
   }
@@ -161,18 +182,32 @@ export class QuestionStore {
 
 /** One file per PR, named for it. Only letters, digits, `.`, `_` and `-` survive. */
 export function threadFileName(pr: { repo: string; number: number }): string {
-  const safe = `${pr.repo.replace('/', '__')}__${pr.number}`.replace(/[^\w.-]/g, '_');
-  return `${safe.slice(0, 200)}.json`;
+  const repo = pr.repo
+    .replace('/', '__')
+    .replace(/[^\w.-]/g, '_')
+    .slice(0, 200);
+  return `${repo}__${Math.trunc(pr.number)}.json`;
+}
+
+/**
+ * The newest questions whose file fits within MAX_FILE_BYTES. Each question is measured once; the
+ * envelope and commas take well under the 1 KB left over.
+ */
+function fitting(questions: AskedQuestion[]): AskedQuestion[] {
+  let bytes = 1024;
+  let from = questions.length;
+  while (from > 0) {
+    const size = Buffer.byteLength(JSON.stringify(questions[from - 1])) + 1;
+    if (bytes + size > MAX_FILE_BYTES) break;
+    bytes += size;
+    from -= 1;
+  }
+  return from === 0 ? questions : questions.slice(from);
 }
 
 /** Writes the whole file under a fresh name, then renames it over the old one. */
 async function save(path: string, questions: AskedQuestion[]) {
-  let kept = questions;
-  let body = JSON.stringify({ version: VERSION, questions: kept });
-  while (Buffer.byteLength(body) > MAX_FILE_BYTES && kept.length > 0) {
-    kept = kept.slice(1);
-    body = JSON.stringify({ version: VERSION, questions: kept });
-  }
+  const body = JSON.stringify({ version: VERSION, questions });
   const temp = `${path}.${randomUUID()}.tmp`;
   // `wx`: never follow or reuse an existing file. The rename replaces a link, not its target.
   await writeFile(temp, body, { mode: 0o600, flag: 'wx' });
@@ -184,14 +219,36 @@ async function save(path: string, questions: AskedQuestion[]) {
   }
 }
 
+/**
+ * This PR's earlier questions: none when there's no file yet. Throws for a file that isn't a
+ * plain one of a sane size in this version's shape, so the caller leaves it alone.
+ */
 async function load(path: string): Promise<AskedQuestion[]> {
-  const info = await lstat(path).catch(() => null);
-  // Only a plain file of a sane size; never a link someone left in its place.
-  if (!info?.isFile() || info.size > MAX_FILE_BYTES) return [];
-  const data = JSON.parse(await readFile(path, 'utf8')) as unknown;
-  if (!isRecord(data) || data.version !== VERSION || !Array.isArray(data.questions)) return [];
-  return data.questions.filter(isAsked).slice(-MAX_QUESTIONS);
+  let file: FileHandle;
+  try {
+    // Never through a link someone left in its place.
+    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  try {
+    const info = await file.stat();
+    if (!info.isFile()) throw new Error(`${path} is not a plain file`);
+    if (info.size > MAX_FILE_BYTES) throw new Error(`${path} is over ${MAX_FILE_BYTES} bytes`);
+    const data = JSON.parse(await file.readFile('utf8')) as unknown;
+    if (!isRecord(data) || data.version !== VERSION || !Array.isArray(data.questions)) {
+      throw new Error(`${path} isn't a version ${VERSION} thread file`);
+    }
+    return data.questions.filter(isAsked).slice(-MAX_QUESTIONS);
+  } finally {
+    await file.close();
+  }
 }
+
+/** Names this module writes: thread files, and the temp files each save starts as. */
+const THREAD_FILE = /^[\w.-]+__\d+\.json$/;
+const TEMP_FILE = /^[\w.-]+__\d+\.json\.[0-9a-f-]{36}\.tmp$/;
 
 /** Removes thread files untouched for KEEP_DAYS, then the least recently used beyond KEEP_FILES. */
 async function prune(dir: string, now: Date, keep: string) {
@@ -199,11 +256,12 @@ async function prune(dir: string, now: Date, keep: string) {
   const files: { path: string; at: number }[] = [];
   for (const name of await readdir(dir)) {
     // Our own files only: thread files, and temp files a crash left behind.
-    if (!/\.json$|\.tmp$/.test(name)) continue;
+    const temp = TEMP_FILE.test(name);
+    if (!temp && !THREAD_FILE.test(name)) continue;
     const path = join(dir, name);
     const info = await lstat(path).catch(() => null);
     if (!info?.isFile() || path === keep) continue;
-    if (name.endsWith('.tmp')) {
+    if (temp) {
       // A minute old: another launch's write in progress is left to finish.
       if (info.mtimeMs < now.getTime() - 60_000) await unlink(path).catch(() => {});
     } else if (info.mtimeMs < cutoff) await unlink(path).catch(() => {});
