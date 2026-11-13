@@ -149,6 +149,9 @@ const review = new Review({
   ...(values['question-model'] ? { questionModel: values['question-model'] } : {}),
   log,
   ...(forkBudgetUsd !== undefined ? { forkBudgetUsd } : {}),
+  // Answered questions are kept per PR, so a relaunch shows them. A replayed fixture keeps them
+  // for this launch only, so replays never mix into a real review of the same PR.
+  ...(values.fixture ? {} : { questionsDir: join(defaultDataDir(), 'questions') }),
   // Fixtures and recordings always run the job, since a cached tour would skip it. Preparing
   // always caches: that is its whole point. (`--fixture --prepare` writes a replayed tour to
   // the cache, so point DOCENT_CACHE_DIR somewhere else for that.)
