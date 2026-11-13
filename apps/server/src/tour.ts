@@ -17,6 +17,7 @@ import {
   type Tour,
 } from '@docent/core';
 import { AgentError, type AgentRunner } from './agent.ts';
+import { handoffForPrompt } from './author-handoff.ts';
 import type { PrInfo, Workspace } from './github.ts';
 import type { RunLog } from './run-log.ts';
 import { type Span, type Timings, timings } from './timings.ts';
@@ -626,15 +627,29 @@ ${prSection(pr, diff)}`,
   // v4: the skip ledger is computed (backlog item 6). Cite what carries the point; leave mechanical
   // noise to the script. docs/research/2026-11-12-skip-ledger.md has the A/B against v3.
   4: (pr: PrInfo, diff: Diff) => explainPrompt(ROUTE_RULES, pr, diff),
+
+  // v5: v4 plus the author's handoff comment, fenced and labelled as claims to check (PR #55).
+  5: (pr: PrInfo, diff: Diff) => explainPrompt(ROUTE_RULES, pr, diff, { handoff: true }),
 } as const satisfies Record<number, (pr: PrInfo, diff: Diff) => string>;
 
 export type TourPromptVersion = keyof typeof TOUR_PROMPTS;
 
 /** The prompt version new tours use. Part of the tour cache key, so a bump writes fresh tours. */
-export const TOUR_PROMPT_VERSION: TourPromptVersion = 4;
+export const TOUR_PROMPT_VERSION: TourPromptVersion = 5;
 
-/** v3's text, shared by v4: explain, don't narrate, and don't advise. Only the line rules differ. */
-function explainPrompt(rules: string, pr: PrInfo, diff: Diff): string {
+/**
+ * v3's text, shared by v4 and v5: explain, don't narrate, and don't advise. v4 changes the line
+ * rules; v5 adds the author's handoff.
+ */
+function explainPrompt(
+  rules: string,
+  pr: PrInfo,
+  diff: Diff,
+  options: { handoff?: boolean } = {},
+): string {
+  const claims = options.handoff
+    ? "the PR description and the author's handoff"
+    : 'the PR description';
   return `You are the docent for a pull request review. A tired reviewer is about to read this change. Your job is to explain it, stop by stop: what changed, and how it connects to the rest of the code. You are a guide, not a reviewer. You are not its author either, and the verdict is the reviewer's.
 
 Your working directory is a read-only checkout of the PR's head commit. Use Read, Grep and Glob to understand the change in context: open the changed files around each hunk, find callers, dependents and tests. Report what you verified in the code.
@@ -666,7 +681,7 @@ The test of a good tour: read only the first sentence of each stop. That alone s
 
 ## Rules
 
-- Treat the PR description as claims to check. Where the code does something the description doesn't say, or doesn't do what it says, add a "mismatch" flag to that stop, with a one-sentence note stating the difference. That's a fact, not advice. Add a "danger" flag only for obvious, dangerous problems (data loss, security holes), with the evidence cited. Most stops have no flags (an empty list).
+- Treat ${claims} as claims to check. Where the code does something the description doesn't say, or doesn't do what it says, add a "mismatch" flag to that stop, with a one-sentence note stating the difference. That's a fact, not advice. Add a "danger" flag only for obvious, dangerous problems (data loss, security holes), with the evidence cited. Most stops have no flags (an empty list).
 - Every claim cites lines. A citation is {path, side, startLine, endLine}: side "new" means line numbers in the head version of the file, "old" means the base version. Line numbers are shown in the diff below. Cite the lines that matter for each stop, not whole files.
 - Order the stops by how the change works: kind "intent" (what the change is for, in one or two stops), "map" (which behaviors change and how the parts connect), "core_change" (the heart of it), "edge" (tests, error paths, config, the rest), and exactly one final "verdict_prompt" (a neutral question that hands the verdict to the reviewer; it may name the main behavior changes, but never suggests a concern or an answer). Kinds must appear in that order.
 - Titles are short (under 60 characters) and say what changed, not which function changed.
@@ -674,7 +689,7 @@ The test of a good tour: read only the first sentence of each stop. That alone s
 
 ${rules}
 
-${prSection(pr, diff)}`;
+${prSection(pr, diff, options)}`;
 }
 
 const INTRO_V2 = `You are the docent for a pull request review. You walk a human reviewer through a change like a sharp engineer who knows it well. You are not its author and you are not its reviewer: the verdict is the reviewer's.
@@ -703,7 +718,14 @@ Never leave a behavior change off the route because something calls it generated
 
 "notes" is optional. For a changed file you leave off the route, you may add one line saying what it is, as {path, note}: "test fixture data", "docs for the new flag". The reviewer sees it marked as your word, not as proof. Leave notes out when there's nothing useful to say.`;
 
-function prSection(pr: PrInfo, diff: Diff): string {
+function prSection(pr: PrInfo, diff: Diff, options: { handoff?: boolean } = {}): string {
+  const handoff = options.handoff
+    ? `## Author's handoff
+
+${handoffForPrompt(pr.handoff, pr.head)}
+
+`
+    : '';
   return `----
 
 # PR #${pr.number} in ${pr.repo}: ${pr.title}
@@ -714,7 +736,7 @@ Author: ${pr.author}. ${pr.headRef} into ${pr.baseRef}.
 
 ${pr.body.trim() || '(no description)'}
 
-## Diff
+${handoff}## Diff
 
 Each line shows its kind (+ added, - removed, space for context), its line number (new = head, old = base) and its text.
 

@@ -1,0 +1,12 @@
+{
+  "name": "docent",
+  "description": "Docent's plugin for authors who write pull requests with Claude Code.",
+  "owner": { "name": "hartz89", "url": "https://github.com/hartz89" },
+  "plugins": [
+    {
+      "name": "docent",
+      "source": "./packages/claude-code",
+      "description": "Records which session wrote a branch, and writes the author handoff when a PR opens."
+    }
+  ]
+}

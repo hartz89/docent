@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { type CommitSha, commitSha } from '@docent/core';
+import { type AuthorHandoff, findHandoff } from './author-handoff.ts';
 import { gitHeadFiles, type HeadFiles } from './head-files.ts';
 
 const run = promisify(execFile);
@@ -23,6 +24,8 @@ export type PrInfo = {
   head: CommitSha;
   baseRef: string;
   headRef: string;
+  /** The author's handoff comment, if the PR's author left one. Claims, not instructions. */
+  handoff: AuthorHandoff | null;
 };
 
 /** The reviewer's verdict, in GitHub's terms. */
@@ -38,6 +41,8 @@ export type Workspace = {
   diffText: string;
   /** Full commit messages, oldest first: where agents leave their session links. */
   commitMessages: string[];
+  /** The commits' SHAs, in the same order. */
+  commitShas: string[];
   /** The head branch is in the PR's own repo, not a fork. */
   headInBaseRepo: boolean;
   /** The checkout at head, where the guide runs. */
@@ -119,8 +124,10 @@ export function defaultCacheDir(): string {
 }
 
 /**
- * Where Docent keeps what it wants to hold on to, like run logs: the OS data folder. The same
- * rules as the author-session hook's records (PR #55); whichever lands second shares this one.
+ * Where Docent keeps what it wants to hold on to: run logs (`runs/`), question threads
+ * (`questions/`) and the Claude Code hook's session records (`sessions/`). The hook
+ * (packages/claude-code/hooks/record-session.mjs) can't import this, so it computes the same
+ * path itself; keep the two in step. A test checks they agree.
  */
 export function defaultDataDir(): string {
   if (process.env.DOCENT_DATA_DIR) return process.env.DOCENT_DATA_DIR;
@@ -161,7 +168,7 @@ export function githubSource(url: string, cacheDir: string): PrSource {
       url: string;
     };
     // GitHub's PR diff is against the merge base, not the base branch's tip.
-    const [diffText, mergeBase, commitPages] = await Promise.all([
+    const [diffText, mergeBase, commitPages, commentPages] = await Promise.all([
       gh(['pr', 'diff', url]),
       gh([
         'api',
@@ -171,7 +178,16 @@ export function githubSource(url: string, cacheDir: string): PrSource {
       ]).then((out) => out.trim()),
       // Every commit, not just the first 100 that `gh pr view` lists. Oldest first.
       gh(['api', `repos/${repo}/pulls/${view.number}/commits`, '--paginate', '--slurp']).then(
-        (out) => JSON.parse(out) as { commit: { message: string } }[][],
+        (out) => JSON.parse(out) as { sha: string; commit: { message: string } }[][],
+      ),
+      // The conversation, for the author handoff.
+      gh(['api', `repos/${repo}/issues/${view.number}/comments`, '--paginate', '--slurp']).then(
+        (out) =>
+          JSON.parse(out) as {
+            body: string | null;
+            html_url: string;
+            user: { login: string; type?: string } | null;
+          }[][],
       ),
     ]);
     const pr: PrInfo = {
@@ -185,6 +201,15 @@ export function githubSource(url: string, cacheDir: string): PrSource {
       head: commitSha(view.headRefOid),
       baseRef: view.baseRefName,
       headRef: view.headRefName,
+      handoff: findHandoff(
+        commentPages.flat().map((c) => ({
+          body: c.body ?? '',
+          login: c.user?.login ?? '',
+          isBot: c.user?.type === 'Bot',
+          url: c.html_url,
+        })),
+        view.author.login,
+      ),
     };
 
     onStep('Checking out the code');
@@ -198,6 +223,7 @@ export function githubSource(url: string, cacheDir: string): PrSource {
       pr,
       diffText,
       commitMessages: commitPages.flat().map((c) => c.commit.message),
+      commitShas: commitPages.flat().map((c) => c.sha),
       headInBaseRepo: !view.isCrossRepository,
       dir,
       ...commitReader(dir, pr.base, pr.head),

@@ -1,18 +1,30 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtempSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { expect, test } from 'vitest';
 import { type Handoff, localSessions } from './author-session.ts';
+
+// No test reads this machine's real hook records unless it says so.
+process.env.DOCENT_DATA_DIR = mkdtempSync(join(tmpdir(), 'docent-no-records-'));
 
 const LINK = 'https://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW';
 const OTHER_LINK = 'https://claude.ai/code/session_01Other';
 const AUTHOR = '7e2cfb5b-77c5-46af-9de2-27ca9a1c1f85';
 const CHECKOUT = '/Users/someone/repo';
+/** Where an isolated subagent worked: a worktree of the same repo. */
+const WORKTREE = '/Users/someone/repo/.claude/worktrees/agent-a1b2c3';
+const SUBAGENT = 'a1b2c3d4e5f6a7b8c';
+const PR_COMMIT = `c0ffee1${'a'.repeat(33)}`;
 
 /** Checkouts on this fake machine, and the GitHub repo each one belongs to. */
 const repoOf = async (dir: string) =>
-  ({ [CHECKOUT]: 'acme/web', '/Users/someone/private': 'someone/private' })[dir] ?? null;
+  ({
+    [CHECKOUT]: 'acme/web',
+    [WORKTREE]: 'acme/web',
+    '/Users/someone/private': 'someone/private',
+  })[dir] ?? null;
 
 /** A line as Claude Code writes it when remote control starts in a session. */
 const bridgeStatus = (session: string, url = LINK, cwd = CHECKOUT) =>
@@ -69,6 +81,7 @@ const pr = (overrides: Partial<Handoff> = {}): Handoff => ({
   headInBaseRepo: true,
   body: 'Fixes the origin.',
   commitMessages: [`Reflect the origin\n\nClaude-Session: ${LINK}`],
+  commitShas: [PR_COMMIT],
   ...overrides,
 });
 
@@ -216,4 +229,380 @@ test('an explicit session must be a session id that exists on this machine', asy
     id: AUTHOR,
     via: 'the --session flag',
   });
+});
+
+// ---- Through the hook's records (packages/claude-code). ----
+
+type Who = { session?: string; cwd?: string; gitBranch?: string; agentId?: string };
+
+/**
+ * One of the session's own tool calls and its result, as Claude Code writes them: two records.
+ * A subagent's records carry its agent id and `isSidechain`.
+ */
+const toolCall = (
+  tool: string,
+  input: Record<string, unknown>,
+  output: string,
+  { session = AUTHOR, cwd = CHECKOUT, gitBranch = 'fix', agentId }: Who = {},
+) => {
+  const id = `toolu_${randomUUID()}`;
+  const base = {
+    sessionId: session,
+    ...(agentId ? { agentId, isSidechain: true } : { isSidechain: false }),
+    timestamp: '2026-11-07T11:30:00.000Z',
+    cwd,
+    gitBranch,
+  };
+  return [
+    JSON.stringify({
+      ...base,
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id, name: tool, input }] },
+    }),
+    JSON.stringify({
+      ...base,
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: id, content: output }],
+      },
+    }),
+  ].join('\n');
+};
+
+/** A Bash command the session ran, and what it printed. */
+const bash = (command: string, output: string, who: Who = {}) =>
+  toolCall('Bash', { command }, output, who);
+
+const subagentTurn = (cwd = WORKTREE, gitBranch = 'fix') =>
+  JSON.stringify({
+    type: 'assistant',
+    sessionId: AUTHOR,
+    agentId: SUBAGENT,
+    isSidechain: true,
+    timestamp: '2026-11-07T11:20:00.000Z',
+    cwd,
+    gitBranch,
+    message: {
+      usage: { input_tokens: 5, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 0 },
+    },
+  });
+
+const COORDINATOR_PATH = `project/${AUTHOR}.jsonl`;
+const SUBAGENT_PATH = `project/${AUTHOR}/subagents/agent-${SUBAGENT}.jsonl`;
+
+/**
+ * A fake machine with the hook installed: Claude Code's projects folder, and Docent's records,
+ * each made from the projects folder's path.
+ */
+async function machine(
+  files: Record<string, string[]>,
+  records: ((projectsDir: string) => Record<string, unknown>)[],
+) {
+  const projectsDir = await mkdtemp(join(tmpdir(), 'docent-projects-'));
+  for (const [path, lines] of Object.entries(files)) {
+    await mkdir(dirname(join(projectsDir, path)), { recursive: true });
+    await writeFile(join(projectsDir, path), `${lines.join('\n')}\n`);
+  }
+  const dataDir = await mkdtemp(join(tmpdir(), 'docent-data-'));
+  await mkdir(join(dataDir, 'sessions'));
+  for (const [i, make] of records.entries()) {
+    await writeFile(join(dataDir, 'sessions', `${i}.json`), JSON.stringify(make(projectsDir)));
+  }
+  return { projectsDir, dataDir, locate: localSessions({ projectsDir, dataDir, repoOf }) };
+}
+
+/** The hook's record of the author session, or of its subagent. */
+const recorded =
+  (agentId: string | null, overrides: (projectsDir: string) => object = () => ({})) =>
+  (projectsDir: string) => ({
+    version: 1,
+    event: agentId ? 'SubagentStart' : 'SessionStart',
+    sessionId: AUTHOR,
+    agentId,
+    parentSessionId: agentId ? AUTHOR : null,
+    cwd: agentId ? WORKTREE : CHECKOUT,
+    // The branch when the session started, before it made the PR's branch.
+    branch: 'main',
+    origin: 'git@github.com:acme/web.git',
+    transcriptPath: join(projectsDir, agentId ? SUBAGENT_PATH : COORDINATOR_PATH),
+    recordedAt: '2026-11-07T09:00:00.000Z',
+    ...overrides(projectsDir),
+  });
+
+/** The linked coordinator, which delegated the work and then pushed the branch. */
+const coordinator = [
+  ...authorTranscript().lines,
+  bash(
+    'git push origin fix',
+    'To https://github.com/acme/web.git\n   1234567..c0ffee1  fix -> fix',
+  ),
+];
+
+/** A subagent's work: its first turn, then the commands it ran. */
+const subagentWork = (commands: string[], { agentId = SUBAGENT, cwd = WORKTREE } = {}) => [
+  JSON.stringify({ ...JSON.parse(subagentTurn(cwd)), agentId }),
+  ...commands,
+];
+
+/** The subagent that wrote and committed the code, in its own worktree. */
+const subagent = (cwd = WORKTREE) =>
+  subagentWork(
+    [
+      bash(
+        "git commit -m 'Reflect the origin'",
+        '[fix c0ffee1] Reflect the origin\n 2 files changed',
+        {
+          cwd,
+          agentId: SUBAGENT,
+        },
+      ),
+    ],
+    { cwd },
+  );
+
+/** Where the PR's link alone leads: the coordinator. */
+const linkedOnly = {
+  found: true,
+  id: AUTHOR,
+  cwd: CHECKOUT,
+  via: 'the session link in the PR',
+  contextTokens: 100_002,
+};
+
+const viaSubagent = "the hook's record of the subagent that wrote the code";
+
+test('narrows the linked session to the subagent that wrote the code', async () => {
+  const { projectsDir, locate } = await machine(
+    { [COORDINATOR_PATH]: coordinator, [SUBAGENT_PATH]: subagent() },
+    [recorded(null), recorded(SUBAGENT)],
+  );
+  const original = await readFile(join(projectsDir, SUBAGENT_PATH), 'utf8');
+
+  const found = await locate(pr());
+
+  expect(found).toMatchObject({
+    found: true,
+    cwd: WORKTREE,
+    via: viaSubagent,
+    contextTokens: 40_005,
+    // The run log names the real session and subagent, not just the copy.
+    subagent: { session: AUTHOR, agentId: SUBAGENT },
+  });
+  if (!found.found || !found.transcript) throw new Error('expected a copy of the transcript');
+  // The fork reads a converted copy: a top-level session under a fresh id.
+  expect(found.id).not.toBe(AUTHOR);
+  expect(found.transcript.endsWith(`${found.id}.jsonl`)).toBe(true);
+  const copy = (await readFile(found.transcript, 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  expect(copy).toHaveLength(3);
+  for (const entry of copy) {
+    expect(entry).toMatchObject({ sessionId: found.id, isSidechain: false });
+    expect(entry).not.toHaveProperty('agentId');
+  }
+  // The original is untouched.
+  expect(await readFile(join(projectsDir, SUBAGENT_PATH), 'utf8')).toBe(original);
+  // Docent deletes copies when it exits; a test worker may not exit that way.
+  await rm(found.transcript);
+});
+
+test('a coordinator never on the PR branch is reached through its proven subagent', async () => {
+  // The usual shape: the linked coordinator stays on its own branch and delegates the PR to a
+  // subagent in a worktree. The link alone doesn't match the PR; its subagent does.
+  const coordinatorElsewhere = [
+    turn(AUTHOR, '2026-11-07T09:00:00.000Z', 'dev'),
+    bridgeStatus(AUTHOR),
+    turn(AUTHOR, '2026-11-07T11:00:00.000Z', 'dev'),
+  ];
+  const located = async (lines: string[]) =>
+    (
+      await machine({ [COORDINATOR_PATH]: coordinatorElsewhere, [SUBAGENT_PATH]: lines }, [
+        recorded(SUBAGENT),
+      ])
+    ).locate(pr());
+
+  const found = await located(subagent());
+  expect(found).toMatchObject({ found: true, cwd: WORKTREE, via: viaSubagent });
+  if (found.found && found.transcript) await rm(found.transcript);
+
+  // A subagent in another repo's checkout proves nothing, and the link alone doesn't match.
+  expect(await located(subagent('/Users/someone/private'))).toEqual({
+    found: false,
+    reason: "The linked session doesn't match this PR",
+  });
+});
+
+test('a PR with no link never reaches a session through records alone', async () => {
+  const { locate } = await machine(
+    { [COORDINATOR_PATH]: coordinator, [SUBAGENT_PATH]: subagent() },
+    [recorded(null), recorded(SUBAGENT)],
+  );
+
+  expect(await locate(pr({ commitMessages: ['Reflect the origin'] }))).toEqual({
+    found: false,
+    reason: 'The PR names no author session',
+  });
+});
+
+test("a subagent on another branch or repo, or with none of the PR's commits, leaves the linked session", async () => {
+  const located = async (lines: string[], handoff = pr()) =>
+    (
+      await machine({ [COORDINATOR_PATH]: coordinator, [SUBAGENT_PATH]: lines }, [
+        recorded(SUBAGENT),
+      ])
+    ).locate(handoff);
+
+  // The subagent's checkout belongs to someone/private, whatever the record says.
+  expect(await located(subagent('/Users/someone/private'))).toEqual(linkedOnly);
+  // It worked on `other`, not the PR's branch.
+  expect(
+    await located(
+      subagentWork([
+        bash('git commit -m x', '[other c0ffee1] Reflect the origin', {
+          gitBranch: 'other',
+          agentId: SUBAGENT,
+        }),
+      ]).map((line) => line.replaceAll('"gitBranch":"fix"', '"gitBranch":"other"')),
+    ),
+  ).toEqual(linkedOnly);
+  // Right branch and repo, but none of the PR's commits came from it.
+  const otherCommit = pr({
+    commitShas: ['d'.repeat(40)],
+    commitMessages: [`Something else\n\nClaude-Session: ${LINK}`],
+  });
+  expect(await located(subagent(), otherCommit)).toMatchObject({
+    via: 'the session link in the PR',
+  });
+});
+
+test('commit- and push-shaped text a subagent only read, fetched or dry-ran is not evidence', async () => {
+  // Someone with push access planted commit and push lines in a commit message and a file.
+  const planted =
+    '[fix c0ffee1] Reflect the origin\nTo https://github.com/acme/web.git\n   1234567..c0ffee1  fix -> fix';
+  const who = { agentId: SUBAGENT, cwd: WORKTREE };
+  const { locate } = await machine(
+    {
+      [COORDINATOR_PATH]: coordinator,
+      [SUBAGENT_PATH]: subagentWork([
+        bash('git log -3', `commit ${PR_COMMIT}\n\n    ${planted.replaceAll('\n', '\n    ')}`, who),
+        toolCall('Read', { file_path: `${WORKTREE}/NOTES.md` }, planted, who),
+        bash('cat NOTES.md', planted, who),
+        bash(
+          'git fetch upstream && git push origin fix',
+          'From https://github.com/upstream/web\n   1234567..c0ffee1  fix        -> upstream/fix\nEverything up-to-date',
+          who,
+        ),
+        bash(
+          'git push --dry-run origin fix',
+          'To https://github.com/acme/web.git\n   1234567..c0ffee1  fix -> fix',
+          who,
+        ),
+        bash('git pull', 'Updating 1234567..c0ffee1\nFast-forward', who),
+        // A real push, but to another branch than the PR's.
+        bash(
+          'git push origin fix:release',
+          'To https://github.com/acme/web.git\n   1234567..c0ffee1  fix -> release',
+          who,
+        ),
+      ]),
+    },
+    [recorded(SUBAGENT)],
+  );
+
+  expect(await locate(pr())).toEqual(linkedOnly);
+});
+
+test('a subagent whose commits were later rebased is still found, by their subjects on the branch', async () => {
+  // The coordinator rebased and force-pushed, so the PR's SHA isn't the one the subagent printed.
+  const rebased = pr({ commitShas: [`beef123${'b'.repeat(33)}`] });
+  const elsewhere = subagentWork([
+    // The same subject, committed on another branch, doesn't count.
+    bash('git commit -m x', '[main c0ffee1] Reflect the origin', { agentId: SUBAGENT }),
+  ]);
+
+  const found = await (
+    await machine({ [COORDINATOR_PATH]: coordinator, [SUBAGENT_PATH]: subagent() }, [
+      recorded(SUBAGENT),
+    ])
+  ).locate(rebased);
+  expect(found).toMatchObject({ found: true, via: viaSubagent });
+  if (found.found && found.transcript) await rm(found.transcript);
+
+  expect(
+    await (
+      await machine({ [COORDINATOR_PATH]: coordinator, [SUBAGENT_PATH]: elsewhere }, [
+        recorded(SUBAGENT),
+      ])
+    ).locate(rebased),
+  ).toMatchObject({ via: 'the session link in the PR' });
+});
+
+test('the subagent behind the newest PR commit wins over one behind an older commit', async () => {
+  // The first subagent wrote the PR; a second one added a fix-up commit on top.
+  const second = 'f0e1d2c3b4a5f6e7d';
+  const secondPath = `project/${AUTHOR}/subagents/agent-${second}.jsonl`;
+  const { locate } = await machine(
+    {
+      [COORDINATOR_PATH]: coordinator,
+      [SUBAGENT_PATH]: subagent(),
+      [secondPath]: subagentWork(
+        [
+          bash('git commit -am fixup', '[fix facade1] Handle a missing origin', {
+            cwd: WORKTREE,
+            agentId: second,
+          }),
+        ],
+        { agentId: second },
+      ),
+    },
+    [recorded(SUBAGENT), recorded(second, (dir) => ({ transcriptPath: join(dir, secondPath) }))],
+  );
+
+  const found = await locate(
+    pr({
+      commitShas: [PR_COMMIT, `facade1${'f'.repeat(33)}`],
+      commitMessages: [`Reflect the origin\n\nClaude-Session: ${LINK}`, 'Handle a missing origin'],
+    }),
+  );
+
+  expect(found).toMatchObject({ found: true, via: viaSubagent });
+  if (!found.found || !found.transcript) throw new Error('expected a subagent');
+  expect(await readFile(found.transcript, 'utf8')).toContain('Handle a missing origin');
+  await rm(found.transcript);
+});
+
+test('with no records, the link finds the session as before', async () => {
+  const { locate } = await machine({ [COORDINATOR_PATH]: coordinator }, []);
+
+  expect(await locate(pr())).toEqual(linkedOnly);
+});
+
+test('a forged record pointing at a transcript from another session or repo, or outside Claude Code, is refused', async () => {
+  const other = randomUUID();
+  const otherPath = `project/${other}/subagents/agent-${SUBAGENT}.jsonl`;
+  // A real subagent of another session, in another repo, on a branch also called `fix`, that
+  // committed the PR's SHA.
+  const elsewhere = subagentWork([
+    bash('git commit -m x', '[fix c0ffee1] Reflect the origin', {
+      session: other,
+      cwd: '/Users/someone/private',
+      agentId: SUBAGENT,
+    }),
+  ]).map((line) => line.replaceAll(AUTHOR, other));
+  // A transcript planted outside the projects folder, claiming everything the PR needs.
+  const planted = join(await mkdtemp(join(tmpdir(), 'docent-planted-')), `agent-${SUBAGENT}.jsonl`);
+  await writeFile(planted, `${subagent().join('\n')}\n`);
+
+  const { locate } = await machine({ [COORDINATOR_PATH]: coordinator, [otherPath]: elsewhere }, [
+    // Claims the author's session, but points at the other session's subagent.
+    recorded(SUBAGENT, (dir) => ({ transcriptPath: join(dir, otherPath) })),
+    // Points outside Claude Code's projects folder.
+    recorded(SUBAGENT, () => ({ transcriptPath: planted })),
+    // Climbs out of it.
+    recorded(SUBAGENT, (dir) => ({ transcriptPath: join(dir, '..', `agent-${SUBAGENT}.jsonl`) })),
+  ]);
+
+  expect(await locate(pr())).toEqual(linkedOnly);
 });

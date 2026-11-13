@@ -35,7 +35,11 @@ export const printReview: ReviewRecorder = (review) =>
 export function fixtureSource(dir: string, record: ReviewRecorder = printReview): PrSource {
   return async (onStep) => {
     onStep('Loading the recorded pull request');
-    const pr = JSON.parse(await readFileText(join(dir, 'pr.json'), 'utf8')) as PrInfo;
+    // Fixtures recorded before the handoff existed have none.
+    const pr: PrInfo = {
+      handoff: null,
+      ...(JSON.parse(await readFileText(join(dir, 'pr.json'), 'utf8')) as Omit<PrInfo, 'handoff'>),
+    };
     // Recorded files are trusted test data, so they're read from disk.
     const readFile = async (side: 'old' | 'new', path: string) => {
       const file = fileAt(dir, side, path);
@@ -46,6 +50,7 @@ export function fixtureSource(dir: string, record: ReviewRecorder = printReview)
       diffText: await readFileText(join(dir, 'diff.patch'), 'utf8'),
       // Not recorded: a replay names its author session with --session, or has none.
       commitMessages: [],
+      commitShas: [],
       headInBaseRepo: false,
       dir: join(dir, 'files', 'head'),
       readFile,

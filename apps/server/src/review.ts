@@ -457,7 +457,13 @@ export class Review {
             // The deadline starts now, when the question leaves the line, not when it joined.
             const limit = deadline();
             try {
-              const primed = await this.#prime(author.id, workspace.dir, limit.signal);
+              // A subagent is primed from a converted copy of its transcript (see
+              // author-session.ts); a session, from its id.
+              const primed = await this.#prime(
+                author.transcript ?? author.id,
+                workspace.dir,
+                limit.signal,
+              );
               if (primed.cost) costs.push(primed.cost);
               return await this.#options.runner({
                 job: 'question',
@@ -593,6 +599,7 @@ Question: ${question}`,
         headInBaseRepo: workspace.headInBaseRepo,
         body: pr.body,
         commitMessages: workspace.commitMessages,
+        commitShas: workspace.commitShas,
       })
       .catch(
         (error: unknown): AuthorSession => ({
@@ -606,6 +613,10 @@ Question: ${question}`,
         this.#log.event('author', {
           found: found.found,
           ...(found.found ? { session: found.id, via: found.via } : { reason: found.reason }),
+          // A subagent's `session` is its throwaway copy; these name the real one.
+          ...(found.found && found.subagent
+            ? { parentSession: found.subagent.session, agentId: found.subagent.agentId }
+            : {}),
           ...(author.found ? { contextTokens: author.contextTokens } : {}),
           ...this.#forkEstimateFields(),
           forkBudgetUsd: this.#forkBudgetUsd(),
@@ -622,10 +633,10 @@ Question: ${question}`,
    * (docs/research/2026-11-11-cheaper-questions.md). The first question pays for the primer too,
    * and shares its deadline. The fork budget caps each call: the primer, which is what the
    * pre-fork estimate prices, and each question. A primed copy that has gone missing, or whose
-   * folder has, is primed again.
+   * folder has, is primed again. `author` is a session id, or the path of a transcript to fork.
    */
   async #prime(
-    author: SessionId,
+    author: string,
     cwd: string,
     signal: AbortSignal,
   ): Promise<{ session: string; cost: CostRecord | null }> {

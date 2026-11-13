@@ -80,12 +80,14 @@ const sourceFor =
         head: github.head,
         baseRef: 'main',
         headRef: 'fix',
+        handoff: null,
       },
       diffText,
       headInBaseRepo: true,
       commitMessages: [
         'Reflect the origin\n\nClaude-Session: https://claude.ai/code/session_01Abc',
       ],
+      commitShas: ['c'.repeat(40)],
       dir: '/nowhere',
       readFile: async (side, path) => {
         const slow = github.slowRead;
@@ -1128,6 +1130,29 @@ describe('POST /api/questions', () => {
     ]);
     // Only the first question pays for the primer.
     expect(await second.json()).toMatchObject({ answer: { costs: [{ costMicroUsd: 2500 }] } });
+  });
+
+  test("a subagent is primed from its transcript's copy, and questions fork the primed copy", async () => {
+    // The locator found a subagent: it hands over a converted copy of the subagent's transcript,
+    // which is what gets primed. The subagent's own id names no session Claude Code can resume.
+    const copy = '/tmp/docent-subagent-x/99999999-2222-4333-8444-555555555555.jsonl';
+    const author = withAuthor();
+    const subagent = fixedSession({
+      found: true,
+      id: sessionId('99999999-2222-4333-8444-555555555555'),
+      cwd: '/Users/someone/web',
+      via: "the hook's record of the subagent that wrote the code",
+      contextTokens: null,
+      transcript: copy,
+    });
+    const { api } = await open(author.runner, undefined, 'claude-test', subagent);
+
+    await ask(api, 'First?');
+    await ask(api, 'Second?');
+
+    expect(author.primers.map((p) => p.fork)).toEqual([copy]);
+    const primed = join(author.primers[0]?.keepIn ?? '', 'primed-1.jsonl');
+    expect(author.forks.map((f) => f.fork)).toEqual([primed, primed]);
   });
 
   test('a primer that runs over budget turns questions over to the guide', async () => {

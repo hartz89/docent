@@ -1860,6 +1860,30 @@ kbd {
   }
 }
 
+.callout.handoff {
+  border-color: var(--border);
+  background: transparent;
+}
+
+.callout.handoff .callout-label {
+  color: var(--muted);
+}
+
+.callout .handoff-caveat {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.handoff-text {
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.callout .handoff-text > * + * {
+  margin-top: 8px;
+}
+
 /* ---------- Narrow windows ---------- */
 
 /* Shown only where the layout calls for them. */
