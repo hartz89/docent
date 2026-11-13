@@ -108,6 +108,8 @@ const sourceFor =
         };
       },
       headFiles: async () => ({ entries: [], truncated: false, read: async function* () {} }),
+      baseGitattributes: async () => new Map(),
+      findWords: async () => new Map(),
     };
   };
 
@@ -132,12 +134,14 @@ const goodTour = {
       citations: [cite('new', 2), cite('old', 2)],
     },
   ]),
-  skips: [{ target: 'pnpm-lock.yaml', reason: 'Lockfile bump' }],
+  notes: [{ path: 'pnpm-lock.yaml', note: 'Lockfile bump' }],
 };
-// Forgets the removed line, so the checker has something to send back.
+// Cites past the end of the file, so the checker has something to send back.
 const gappyTour = {
   ...goodTour,
-  stops: stops([{ kind: 'core_change', title: 'x', body: 'y', citations: [cite('new', 2)] }]),
+  stops: stops([
+    { kind: 'core_change', title: 'x', body: 'y', citations: [cite('new', 2, 90), cite('old', 2)] },
+  ]),
 };
 /**
  * A repair, in the tour's own shape: only the stops that change. A stop with `replaces: n`
@@ -145,7 +149,6 @@ const gappyTour = {
  */
 const repairOf = (...changed: object[]) => ({
   stops: changed.map((stop) => ({ flags: [], replaces: 0, ...stop })),
-  skips: goodTour.skips,
 });
 
 /** Stands in for a turn that hit the budget cap: the runner throws, with the cost so far. */
@@ -244,10 +247,70 @@ describe('GET /api/review', () => {
     expect(tour.tour.stops[1]?.flagNotes).toEqual([
       { flag: 'mismatch', note: 'The description does not mention Vary.' },
     ]);
-    expect(tour.tour.skips).toEqual([
-      { path: 'pnpm-lock.yaml', hunk: null, reason: 'Lockfile bump' },
-    ]);
+    expect(tour.tour.notes).toEqual([{ path: 'pnpm-lock.yaml', note: 'Lockfile bump' }]);
+    // The lockfile's manifest didn't change, so nothing proves it: it's listed, with the note.
+    expect(tour.ledger).toEqual({
+      lines: { onRoute: 2, provenSkip: 0, notOnRoute: 2 },
+      files: [
+        {
+          path: 'src/cors.ts',
+          oldPath: 'src/cors.ts',
+          place: 'on_route',
+          onRoute: 2,
+          proven: null,
+          notOnRoute: null,
+          note: null,
+        },
+        {
+          path: 'pnpm-lock.yaml',
+          oldPath: 'pnpm-lock.yaml',
+          place: 'not_on_route',
+          onRoute: 0,
+          proven: null,
+          notOnRoute: { added: [1], removed: [1] },
+          note: 'Lockfile bump',
+        },
+      ],
+    });
     expect(tour.costs.map((c) => c.costMicroUsd)).toEqual([1500]);
+  });
+
+  test('an uncited changed line is no problem: the tour passes, and the ledger lists the line', async () => {
+    const { runner, requests } = scripted({
+      stops: stops([
+        { kind: 'core_change', title: 'New only', body: 'b', citations: [cite('new', 2)] },
+      ]),
+    });
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(requests).toHaveLength(1);
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.notes).toEqual([]);
+    expect(tour.ledger.lines).toEqual({ onRoute: 1, provenSkip: 0, notOnRoute: 3 });
+    expect(tour.ledger.files[0]).toMatchObject({
+      path: 'src/cors.ts',
+      place: 'on_route',
+      notOnRoute: { added: [], removed: [2] },
+    });
+  });
+
+  test("the guide's notes are kept only as one line on a changed file", async () => {
+    const { runner } = scripted({
+      ...goodTour,
+      notes: [
+        { path: 'pnpm-lock.yaml', note: '  Lockfile bump  ' },
+        { path: 'pnpm-lock.yaml', note: 'A second note on the same file' },
+        { path: 'not-in-the-diff.ts', note: 'Not changed' },
+        { path: 'src/cors.ts', note: 'Two\nlines' },
+      ],
+    });
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(tour.tour.notes).toEqual([{ path: 'pnpm-lock.yaml', note: 'Lockfile bump' }]);
   });
 
   test('sends the checker problems back, and the guide repairs only the stop that broke', async () => {
@@ -270,7 +333,7 @@ describe('GET /api/review', () => {
     expect(requests[1]?.resume).toBe('session-1');
     // The same schema, so the resumed session keeps its prompt cache.
     expect(requests[1]?.schema).toBe(requests[0]?.schema);
-    expect(requests[1]?.prompt).toContain('Unexplained: src/cors.ts base line 2 has no home');
+    expect(requests[1]?.prompt).toContain('cites src/cors.ts head lines 2-90, outside the file');
     expect(requests[1]?.prompt).toContain('sending back only what changes');
     expect(tour.tour.stops.map((s) => s.title)).toEqual([
       'Why',
@@ -289,7 +352,14 @@ describe('GET /api/review', () => {
       flags: [],
       citations: [cite('old', 2)],
     };
-    const { runner } = scripted(gappyTour, repairOf(extra));
+    const fixed = {
+      replaces: 2,
+      kind: 'core_change',
+      title: 'x',
+      body: 'y',
+      citations: [cite('new', 2)],
+    };
+    const { runner } = scripted(gappyTour, repairOf(fixed, extra));
     const { api } = await open(runner);
 
     const tour = ready((await snapshot(api)).tour);
@@ -333,7 +403,7 @@ describe('GET /api/review', () => {
 
     expect(requests).toHaveLength(3);
     expect(tour.problems).toEqual([
-      'Unexplained: src/cors.ts base line 2 has no home. Cite it in a core_change or edge stop, or skip it.',
+      'Stop 2 ("x") cites src/cors.ts head lines 2-90, outside the file (it has 5 lines).',
     ]);
   });
 
@@ -343,7 +413,6 @@ describe('GET /api/review', () => {
         { kind: 'core_change', title: 'a', body: 'b', citations: [cite('new', 2), cite('old', 2)] },
         { kind: 'edge', title: 'c', body: 'd', citations: [cite('new', 2, 90)] },
       ]),
-      skips: [{ target: 'pnpm-lock.yaml', reason: 'Lockfile' }],
     };
     const { runner, requests } = scripted(bad, goodTour);
     await open(runner);

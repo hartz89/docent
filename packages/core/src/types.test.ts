@@ -11,7 +11,7 @@ import type { Placement } from './ledger.ts';
 import type { Evidence, Proof } from './proof.ts';
 import { type Answer, type Exchange, type QuestionThread, threadId } from './question.ts';
 import { type Review, reviewId } from './review.ts';
-import { type Skip, type Stop, stopId, type Tour } from './tour.ts';
+import { type Stop, stopId, type Tour } from './tour.ts';
 
 const at = { commit: base, path: 'a', startLine: 1 };
 const context = { before: [], after: [] };
@@ -56,7 +56,7 @@ describe('illegal states do not typecheck', () => {
 
   test('T1: a tour is written for one head commit', () => {
     // @ts-expect-error no head commit
-    const _t: Tour = { review: reviewId('r'), stops: [], skips: [] };
+    const _t: Tour = { review: reviewId('r'), stops: [] };
     typechecks();
   });
 
@@ -96,20 +96,6 @@ describe('illegal states do not typecheck', () => {
       flags: ['nit'],
       anchors: [],
     };
-    typechecks();
-  });
-
-  test('S1: a skip targets a file or a hunk, and records the head it was judged at', () => {
-    // @ts-expect-error not a skip target
-    const _t: Skip['target'] = { kind: 'line', path: 'a' };
-    // @ts-expect-error no judgedAt
-    const _s: Skip = { target: { kind: 'file', path: 'a' }, reason: 'x' as Skip['reason'] };
-    typechecks();
-  });
-
-  test('S2: a skip reason comes only from oneLine()', () => {
-    // @ts-expect-error a plain string is not a OneLine
-    const _s: Skip = { target: { kind: 'file', path: 'a' }, reason: 'lockfile', judgedAt: base };
     typechecks();
   });
 

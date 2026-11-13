@@ -11,6 +11,7 @@ import {
   type CommitSha,
   type CostRecord,
   type Diff,
+  type Proof,
   parseUnifiedDiff,
   type SessionId,
 } from '@docent/core';
@@ -41,6 +42,7 @@ import {
   type ReviewEvent,
   type Workspace,
 } from './github.ts';
+import { type LedgerView, ledgerFor, proveForReview } from './ledger.ts';
 import { type AskedQuestion, QuestionStore } from './questions.ts';
 import { composeBody, type DraftComment, parseComments, placeComments } from './review-comments.ts';
 import { describeError, RunLog } from './run-log.ts';
@@ -73,7 +75,8 @@ export type TourState =
       /** How many stops the guide has begun writing, shown or not. */
       writing: number;
     }
-  | ({ state: 'ready' } & TourOutcome)
+  /** `ledger`: where every changed line stands, computed for this tour by core (L1–L4). */
+  | ({ state: 'ready'; ledger: LedgerView } & TourOutcome)
   | { state: 'failed'; reason: string; costs: CostRecord[] };
 
 /** Who answers questions: the author's session, or the guide and why. Null while still looking. */
@@ -868,6 +871,8 @@ Question: ${question}`,
       });
       // Settled before the tour is ready, so the screen knows who will answer questions.
       const lookup = this.#findAuthor(workspace);
+      // Proofs need only the diff and git, so they're found while the guide writes.
+      const proofs = this.#prove(workspace, this.#diff);
 
       const cacheFile = this.#options.cacheDir
         ? join(
@@ -889,7 +894,11 @@ Question: ${question}`,
         const outcome = JSON.parse(await readFile(cacheFile, 'utf8')) as TourOutcome;
         await lookup;
         ended('hit');
-        this.#tourReady({ ...outcome, timing: outcome.timing ?? [], cached: true }, tourStarted);
+        await this.#tourReady(
+          { ...outcome, timing: outcome.timing ?? [], cached: true },
+          await proofs,
+          tourStarted,
+        );
         return;
       }
       ended('missed');
@@ -911,7 +920,7 @@ Question: ${question}`,
         await writeFile(cacheFile, JSON.stringify(outcome, null, 2));
       }
       await lookup;
-      this.#tourReady(outcome, tourStarted);
+      await this.#tourReady(outcome, await proofs, tourStarted);
     } catch (error) {
       const costs = error instanceof TourError ? error.costs : [];
       this.#log.event('tour.failed', {
@@ -927,19 +936,48 @@ Question: ${question}`,
     }
   }
 
-  #tourReady(outcome: TourOutcome, started: number) {
+  /**
+   * Every proof core finds in the diff. A failure proves nothing, which is the safe direction:
+   * those lines stay in the ledger as "not on the route".
+   */
+  async #prove(workspace: Workspace, diff: Diff): Promise<Proof[]> {
+    const end = this.#timings.span('Prove skips');
+    try {
+      const proofs = await proveForReview(workspace, diff);
+      end(`${proofs.length} proofs`);
+      return proofs;
+    } catch (error) {
+      end(`failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.#log.error('skip proofs', error);
+      return [];
+    }
+  }
+
+  async #tourReady(outcome: TourOutcome, proofs: readonly Proof[], started: number) {
+    const workspace = this.#workspace as Workspace;
+    let ledger: LedgerView;
+    try {
+      ledger = await ledgerFor(this.#diff as Diff, outcome.tour, proofs, workspace.readFile);
+    } catch (error) {
+      // The tour is paid for, so its costs stay on the record even though it can't be shown.
+      throw new TourError(
+        `Docent couldn't place the changed lines: ${error instanceof Error ? error.message : String(error)}`,
+        outcome.cached ? [] : outcome.costs,
+      );
+    }
     this.#log.event('tour.ready', {
       cached: outcome.cached,
       stops: outcome.tour.stops.length,
-      skips: outcome.tour.skips.length,
+      ledger: ledger.lines,
       attempts: outcome.attempts,
+      retries: outcome.attempts - 1,
       problems: outcome.problems,
       model: outcome.model,
       // A cached tour cost nothing this run.
       costMicroUsd: outcome.cached ? 0 : totalMicroUsd(outcome.costs),
       ms: Date.now() - started,
     });
-    this.#set({ state: 'ready', ...outcome });
+    this.#set({ state: 'ready', ledger, ...outcome });
   }
 }
 

@@ -9,7 +9,16 @@ export {
   sdkRunner,
 } from './agent.ts';
 export { fixtureRunner, fixtureSource } from './fixture.ts';
-export { defaultCacheDir, githubSource, type PrSource, type Workspace } from './github.ts';
+export {
+  commitReader,
+  defaultCacheDir,
+  git,
+  githubSource,
+  type PrSource,
+  type Workspace,
+} from './github.ts';
+export { gitHeadFiles } from './head-files.ts';
+export { type LedgerView, ledgerFor, placeLines, proveForReview } from './ledger.ts';
 export {
   generateTour,
   TOUR_PROMPT_VERSION,

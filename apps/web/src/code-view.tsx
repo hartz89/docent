@@ -22,6 +22,8 @@ type Props = {
   focus: Range | null;
   /** Line numbers changed by the PR on this side: added at head, removed at base. */
   changed: ReadonlySet<number>;
+  /** Changed lines on this side that no stop cites and no script proved (the ledger's rest). */
+  offRoute: ReadonlySet<number>;
   /**
    * Moves to the stop's next (1) or previous (-1) citation. Returns false when there is none,
    * and the arrow keys then scroll the file instead. Absent when no citation is in focus.
@@ -73,6 +75,7 @@ export function CodeView({
   cited,
   focus,
   changed,
+  offRoute,
   onStep,
   onComment,
   below,
@@ -170,6 +173,7 @@ export function CodeView({
                 'line',
                 isChanged ? changeClass : '',
                 isCited(line) ? 'cited' : '',
+                isChanged && offRoute.has(line) ? 'off-route' : '',
                 commentLine === line ? 'commenting' : '',
               ]
                 .filter(Boolean)
@@ -214,6 +218,12 @@ export function CodeView({
           <span>
             <i className="swatch cited" />
             Cited by this stop
+          </span>
+        )}
+        {offRoute.size > 0 && (
+          <span>
+            <i className="swatch off-route" />
+            Not on the route
           </span>
         )}
         <span className="legend-keys">

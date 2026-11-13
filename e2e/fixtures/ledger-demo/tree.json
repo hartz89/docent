@@ -1,0 +1,25 @@
+{
+ "entries": [
+  {
+   "path": "docs/notes.md",
+   "kind": "file"
+  },
+  {
+   "path": "src/caller.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/format.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/greet.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/names.ts",
+   "kind": "file"
+  }
+ ],
+ "truncated": false
+}

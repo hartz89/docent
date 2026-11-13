@@ -121,6 +121,8 @@ async function serve(
       open: async () => ({ kind: 'missing' }),
       tree: async () => ({ entries: [], truncated: false }),
       current: async () => ({ head, baseRef: 'main' }),
+      baseGitattributes: async () => new Map(),
+      findWords: async () => new Map(),
       postReview: async () => {
         throw new Error('not in this test');
       },
