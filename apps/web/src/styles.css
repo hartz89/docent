@@ -787,6 +787,145 @@ code,
   color: var(--token-light);
 }
 
+/* A focus ring inside the scroller, where the column's edges can't clip it. */
+.code-scroll:focus-visible {
+  outline-offset: -2px;
+  border-radius: 0;
+}
+
+/* ⌘ held over a name: it underlines like a link, and the pointer says it can be followed. */
+.code-scroll[data-jump] {
+  cursor: pointer;
+}
+
+::highlight(jump) {
+  text-decoration: underline;
+  text-decoration-color: var(--brass-text);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+/* Back and forward through explored files. */
+.trail-nav {
+  display: inline-flex;
+  align-self: center;
+  margin: -6px -6px -6px 0;
+}
+
+.trail-nav .icon-button {
+  width: 28px;
+  height: 28px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.trail-nav .icon-button:disabled {
+  color: var(--faint);
+  background: transparent;
+  cursor: default;
+}
+
+/* Jump to definition: the candidates for an ambiguous name, beside it. */
+.jump-popover {
+  position: fixed;
+  inset: auto;
+  z-index: 20;
+  margin: 0;
+  padding: 6px;
+  width: max-content;
+  min-width: 260px;
+  max-width: min(520px, calc(100vw - 16px));
+  max-height: min(360px, calc(100vh - 16px));
+  overflow: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--panel-raised);
+  color: var(--text);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  font-size: 13px;
+}
+
+/* A quick lookup never flashes "Looking up": it shows only past 150ms. */
+.jump-popover.loading {
+  opacity: 0;
+  animation: jump-appear 0s 150ms forwards;
+}
+
+@keyframes jump-appear {
+  to {
+    opacity: 1;
+  }
+}
+
+.jump-heading,
+.jump-note {
+  margin: 4px 8px 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.jump-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.jump-candidate {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jump-candidate:hover,
+.jump-candidate:focus-visible {
+  background: var(--brass-tint);
+}
+
+.jump-candidate:focus-visible {
+  outline-offset: -2px;
+}
+
+.jump-where {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.jump-path {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.jump-rank {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.jump-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+  font-family: var(--mono);
+  font-variant-ligatures: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .legend {
   display: flex;
   flex-wrap: wrap;
@@ -1321,6 +1460,10 @@ kbd {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .jump-popover.loading {
+    animation-duration: 0s;
+  }
+
   .fade-in,
   .step.active .step-dot {
     animation: none;
