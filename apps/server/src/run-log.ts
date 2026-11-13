@@ -47,13 +47,14 @@ const SECRET_KEY = /^(token|authorization|password|secret|cookie|api[-_]?key)$/i
 const SECRET_ENV = /TOKEN|SECRET|KEY|PASSWORD|PASSWD|AUTH|CREDENTIAL|COOKIE/i;
 /**
  * Token shapes worth catching wherever they turn up, even when we were never told them. GitHub's
- * are matched anywhere, even glued to other text (`_ghp_…`). `sk-` keys need a non-letter before
- * them, or hyphenated words like "task-list-with-…" would be scrubbed.
+ * and Anthropic's are matched anywhere, even glued to other text (`_ghp_…`, `keysk-ant-…`): their
+ * prefixes don't occur in ordinary words. A bare `sk-` key needs a non-letter before it, or
+ * hyphenated words like "task-list-with-…" would be scrubbed.
  */
 const SECRET_PATTERNS: [RegExp, string][] = [
   [/gh[pousr]_[A-Za-z0-9]{20,}/g, REDACTED],
   [/github_pat_[A-Za-z0-9_]{20,}/g, REDACTED],
-  [/(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{10,}/g, REDACTED],
+  [/sk-ant-[A-Za-z0-9_-]{10,}/g, REDACTED],
   [/(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/g, REDACTED],
   [/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, `Bearer ${REDACTED}`],
   [/([#?&]token=)[^\s&#"'<>]+/gi, `$1${REDACTED}`],
@@ -195,11 +196,19 @@ export class RunLog {
   }
 
   #scrub(text: string): string {
-    let out = text;
-    for (const secret of this.#secrets) out = out.split(secret).join(REDACTED);
-    for (const [pattern, replacement] of SECRET_PATTERNS) out = out.replace(pattern, replacement);
-    return out;
+    return scrubSecrets(text, this.#secrets);
   }
+}
+
+/**
+ * Text with secrets taken out: each of `secrets` wherever it occurs, and anything shaped like a
+ * token. What the run log and the stored question threads both write.
+ */
+export function scrubSecrets(text: string, secrets: readonly string[] = []): string {
+  let out = text;
+  for (const secret of secrets) out = out.split(secret).join(REDACTED);
+  for (const [pattern, replacement] of SECRET_PATTERNS) out = out.replace(pattern, replacement);
+  return out;
 }
 
 /** Message and stack, for any thrown value. */
@@ -219,7 +228,7 @@ function cap(text: string): string {
 }
 
 /** Values of env vars named like secrets. Short ones are skipped, so "1" isn't scrubbed everywhere. */
-function envSecrets(env: NodeJS.ProcessEnv): string[] {
+export function envSecrets(env: NodeJS.ProcessEnv): string[] {
   return Object.entries(env)
     .filter(([name, value]) => SECRET_ENV.test(name) && value && value.length >= 8)
     .map(([, value]) => value as string);

@@ -193,10 +193,15 @@ describe('redaction', () => {
   test('catches tokens glued to other text, and in field names', async () => {
     const log = RunLog.open({ dir: await tempDir(), label: 'x', env: {} });
     log.addSecret(token);
-    log.event('x', { a: `id_ghp_${'f'.repeat(36)}`, nested: { [token]: 1 } });
+    log.event('x', {
+      a: `id_ghp_${'f'.repeat(36)}`,
+      b: `keysk-ant-api03-${'e'.repeat(40)}`,
+      nested: { [token]: 1 },
+    });
 
     const text = await readFile(log.path ?? '', 'utf8');
     expect(text).not.toContain('ghp_');
+    expect(text).not.toContain('sk-ant-');
     expect(text).not.toContain(token);
   });
 

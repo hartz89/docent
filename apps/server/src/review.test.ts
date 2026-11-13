@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type CostRecord, commitSha, type Job, type MicroUsd, sessionId } from '@docent/core';
@@ -16,6 +16,7 @@ import {
 } from './author-session.ts';
 import { fixtureRunner, recording } from './fixture.ts';
 import { fileFromText, GitHubRefusal, type PrSource, type ReviewPost } from './github.ts';
+import { KEEP_DAYS, KEEP_FILES, MAX_FILE_BYTES, MAX_QUESTIONS } from './questions.ts';
 import { Review, type ReviewOptions, type TourState, tourCacheName } from './review.ts';
 import { RunLog } from './run-log.ts';
 
@@ -76,7 +77,8 @@ const sourceFor =
         body: 'Reflects the origin instead of the wildcard.',
         author: 'someone',
         base: commitSha('b'.repeat(40)),
-        head: prHead,
+        // Where the PR's head is when the review opens.
+        head: github.head,
         baseRef: 'main',
         headRef: 'fix',
       },
@@ -189,7 +191,10 @@ async function open(
   cacheDir?: string,
   model = 'claude-test',
   locator: SessionLocator = noAuthor,
-  extra: Pick<ReviewOptions, 'forkBudgetUsd' | 'questionTimeoutMs' | 'questionModel' | 'log'> = {},
+  extra: Pick<
+    ReviewOptions,
+    'forkBudgetUsd' | 'questionTimeoutMs' | 'questionModel' | 'log' | 'questionsDir'
+  > = {},
   github = fakeGitHub(),
 ) {
   const review = new Review({
@@ -1840,5 +1845,211 @@ describe('recorded reviews', () => {
       'We reflect the origin because the dashboard sends credentials.',
     ]);
     expect(replayed).toMatchObject({ text: 'Ready.', cost: { costMicroUsd: 0 } });
+  });
+});
+
+describe('question threads', () => {
+  /** GET /api/questions, narrowed to the success body. */
+  const threads = async (api: Api) => {
+    const res = await api.questions.$get();
+    if (res.status !== 200) throw new Error(`GET /api/questions answered ${res.status}`);
+    return (await res.json()).questions;
+  };
+  /** Opens the review in a fresh launch, keeping questions in `dir`. */
+  const launch = (dir: string, github = fakeGitHub()) =>
+    open(
+      scripted(goodTour).runner,
+      undefined,
+      'claude-test',
+      noAuthor,
+      { questionsDir: dir },
+      github,
+    );
+  const questionsDir = () => mkdtemp(join(tmpdir(), 'docent-questions-'));
+
+  test('a reload reads the thread back: the answer, who answered and why, and its cost', async () => {
+    const { api } = await open(scripted(goodTour).runner);
+    await ask(api, 'What does reflect() return?');
+
+    expect(await threads(api)).toEqual([
+      expect.objectContaining({
+        stopId: 'stop-2',
+        question: 'What does reflect() return?',
+        answer: expect.objectContaining({
+          source: 'guide',
+          whyNotAuthor: 'The PR names no author session',
+          text: 'It calls `reflect()` on line 2.',
+          costs: [cost('question', 1500)],
+          askedAt: prHead,
+        }),
+        correction: null,
+        earlier: null,
+      }),
+    ]);
+  });
+
+  test("a reload also gets the guide's note on an author answer", async () => {
+    const wrong = {
+      contradicted: true,
+      claim: 'x',
+      correction: 'The code calls `reflect()`.',
+      citations: [{ path: 'src/cors.ts', startLine: 2, endLine: 2 }],
+    };
+    const author = withAuthor({ check: wrong });
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound);
+    const body = await (await ask(api)).json();
+    if (!('answer' in body) || body.answer.source !== 'author_session') {
+      throw new Error(`Expected an author answer: ${JSON.stringify(body)}`);
+    }
+    await api['answer-checks'][':id'].$get({ param: { id: body.answer.checkId } });
+
+    expect(await threads(api)).toEqual([
+      expect.objectContaining({
+        checked: true,
+        answer: expect.objectContaining({ source: 'author_session' }),
+        correction: expect.objectContaining({ text: 'The code calls `reflect()`.' }),
+      }),
+    ]);
+  });
+
+  test('a relaunch for the same PR and head shows the earlier threads, from a 0600 file', async () => {
+    const dir = await questionsDir();
+    const first = await launch(dir);
+    await ask(first.api, 'Why reflect?');
+    await first.review.close();
+
+    const second = await launch(dir);
+    expect(await threads(second.api)).toEqual([
+      expect.objectContaining({ stopId: 'stop-2', question: 'Why reflect?', earlier: null }),
+    ]);
+    expect(await readdir(dir)).toEqual(['acme__web__7.json']);
+    expect((await stat(join(dir, 'acme__web__7.json'))).mode & 0o777).toBe(0o600);
+    expect((await stat(dir)).mode & 0o777).toBe(0o700);
+  });
+
+  test('a thread asked at an older head is marked as asked at an earlier commit', async () => {
+    const dir = await questionsDir();
+    const first = await launch(dir);
+    await ask(first.api, 'Why reflect?');
+    await first.review.close();
+
+    const moved = fakeGitHub();
+    moved.head = commitSha('n'.repeat(40));
+    const second = await launch(dir, moved);
+    await ask(second.api, 'And now?');
+
+    expect(await threads(second.api)).toEqual([
+      expect.objectContaining({
+        question: 'Why reflect?',
+        stopId: 'stop-2',
+        earlier: { commit: prHead, stopTitle: null },
+      }),
+      expect.objectContaining({ question: 'And now?', earlier: null }),
+    ]);
+  });
+
+  test('keeps the newest questions within the cap, and scrubs secrets before writing', async () => {
+    const dir = await questionsDir();
+    const first = await launch(dir);
+    // Fake, token-shaped: the store must never write it.
+    const fakeKey = `ghp_${'q'.repeat(36)}`;
+    for (let i = 0; i < MAX_QUESTIONS + 3; i++) {
+      await ask(first.api, i === MAX_QUESTIONS + 2 ? `Is ${fakeKey} used?` : `Question ${i}`);
+    }
+    await first.review.close();
+
+    const second = await launch(dir);
+    const kept = await threads(second.api);
+    expect(kept).toHaveLength(MAX_QUESTIONS);
+    expect(kept[0]?.question).toBe('Question 3');
+    expect(kept.at(-1)?.question).toBe('Is [redacted] used?');
+    expect(await readFile(join(dir, 'acme__web__7.json'), 'utf8')).not.toContain('ghp_');
+  });
+
+  test('a file it cannot read is left alone, and this launch keeps its threads in memory', async () => {
+    const elsewhere = join(await questionsDir(), 'x.json');
+    await writeFile(elsewhere, JSON.stringify({ version: 1, questions: [] }));
+    const plants: [string, (path: string) => Promise<void>][] = [
+      ['oversized', (path) => writeFile(path, ' '.repeat(MAX_FILE_BYTES + 1))],
+      ['not JSON', (path) => writeFile(path, '{not json')],
+      ['from a newer Docent', (path) => writeFile(path, '{"version":2,"questions":[]}')],
+      ['a link', (path) => symlink(elsewhere, path)],
+    ];
+    for (const [what, plant] of plants) {
+      const dir = await questionsDir();
+      const path = join(dir, 'acme__web__7.json');
+      await plant(path);
+      const before = await readFile(path, 'utf8');
+
+      const { api, review } = await launch(dir);
+      expect(await threads(api), what).toEqual([]);
+      await ask(api, 'Still works?');
+      await review.close();
+      expect(await threads(api), what).toHaveLength(1);
+      expect(await readFile(path, 'utf8'), what).toBe(before);
+      expect(await readdir(dir), what).toEqual(['acme__web__7.json']);
+    }
+    expect(await readFile(elsewhere, 'utf8')).toBe('{"version":1,"questions":[]}');
+  });
+
+  test('old thread files and stray temp files are pruned, and nothing else', async () => {
+    const dir = await questionsDir();
+    const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const plant = async (name: string, at: Date) => {
+      await writeFile(join(dir, name), '{}');
+      await utimes(join(dir, name), at, at);
+    };
+    const uuid = (digit: string) => `${digit.repeat(8)}-0000-4000-8000-${'0'.repeat(12)}`;
+    await plant('acme__web__7.json', daysAgo(KEEP_DAYS + 5));
+    await plant('acme__old__1.json', daysAgo(KEEP_DAYS + 5));
+    await plant('notes.json', daysAgo(KEEP_DAYS + 5));
+    await plant(`acme__web__8.json.${uuid('0')}.tmp`, daysAgo(1));
+    await plant(`acme__web__9.json.${uuid('1')}.tmp`, new Date());
+    for (let i = 0; i < KEEP_FILES; i++) await plant(`acme__many__${i}.json`, daysAgo(i / 1000));
+
+    const { review } = await launch(dir);
+    await review.close();
+
+    const left = new Set(await readdir(dir));
+    // This PR's own file stays however old it is.
+    expect(left.has('acme__web__7.json')).toBe(true);
+    expect(left.has('acme__old__1.json')).toBe(false);
+    expect(left.has('notes.json')).toBe(true);
+    expect([...left].filter((n) => n.endsWith('.tmp'))).toEqual([
+      `acme__web__9.json.${uuid('1')}.tmp`,
+    ]);
+    // Room for this PR's file: the least recently used one goes.
+    expect([...left].filter((n) => n.startsWith('acme__many__'))).toHaveLength(KEEP_FILES - 1);
+    expect(left.has(`acme__many__${KEEP_FILES - 1}.json`)).toBe(false);
+  });
+
+  test('the threads need the token', async () => {
+    const { app } = await open(scripted(goodTour).runner);
+    expect((await app.request(`${origin}/api/questions`)).status).toBe(401);
+    const wrong = await app.request(`${origin}/api/questions`, {
+      headers: { Authorization: 'Bearer wrong-token' },
+    });
+    expect(wrong.status).toBe(401);
+  });
+
+  test('threads wait for the tour', async () => {
+    const github = fakeGitHub();
+    const slow = new Promise<void>(() => {});
+    const review = new Review({
+      source: async (onStep) => {
+        await slow;
+        return sourceFor(github)(onStep);
+      },
+      runner: scripted(goodTour).runner,
+      locator: noAuthor,
+      model: 'claude-test',
+    });
+    const app = createApp({ origin, token, version: '0.0.0', review });
+    const api = hc<AppType>(origin, {
+      fetch: app.request,
+      headers: { Authorization: `Bearer ${token}` },
+    }).api;
+
+    expect((await api.questions.$get()).status).toBe(503);
   });
 });
