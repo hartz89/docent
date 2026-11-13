@@ -41,6 +41,7 @@ import {
   type ReviewEvent,
   type Workspace,
 } from './github.ts';
+import { type AskedQuestion, QuestionStore } from './questions.ts';
 import { describeError, RunLog } from './run-log.ts';
 import { type BuiltIndex, buildIndex, type IndexLimits, type IndexStatus } from './symbols.ts';
 import { type Timings, timings } from './timings.ts';
@@ -181,6 +182,20 @@ export type ReviewOptions = {
   indexRetryMs?: number;
   /** Where this run's events go: the tour, each question, the submit. Default: nowhere. */
   log?: RunLog;
+  /**
+   * Where answered questions are kept, one file per PR, so a relaunch shows them again. Leave
+   * out to keep them for this launch only.
+   */
+  questionsDir?: string;
+};
+
+/**
+ * An answered question, placed in this review's tour. `earlier` is set when it was asked at
+ * another head commit, or at a stop this tour doesn't have: then it names the stop it was asked
+ * at, and `stopId` is where it's shown now.
+ */
+export type QuestionView = Omit<AskedQuestion, 'stopTitle'> & {
+  earlier: { commit: string; stopTitle: string | null } | null;
 };
 
 /** A jump returns at most this many candidates; `truncated` says when there were more. */
@@ -224,6 +239,8 @@ export class Review {
   #forkEstimate: ForkEstimate | null = null;
   /** Questions in the order they arrived, so they reach the author's session in that order. */
   #arrivals = new Arrivals();
+  /** Answered questions, this launch's and earlier ones for the same PR. */
+  #questions: QuestionStore = QuestionStore.memory();
   #log: RunLog;
   readonly done: Promise<void>;
 
@@ -352,17 +369,26 @@ export class Review {
         answer: answer.text,
         ...(answer.source === 'author_session' ? { checkId: answer.checkId } : {}),
       });
+      const kept = this.#questions.add({
+        stopId,
+        stopTitle: stops[at]?.title ?? '',
+        question,
+        answer,
+        correction: null,
+        checked: answer.source !== 'author_session',
+      });
       // The check finishes on its own, after the answer has gone out. Checks never reject.
       if (answer.source === 'author_session') {
         const { checkId } = answer;
-        void this.#checks.get(checkId)?.then(({ result, costs, correction }) =>
+        void this.#checks.get(checkId)?.then(({ result, costs, correction }) => {
+          this.#questions.checked(kept.id, correction);
           this.#log.event('question.check', {
             checkId,
             result,
             costMicroUsd: totalMicroUsd(costs),
             ...(correction ? { correction: correction.text } : {}),
-          }),
-        );
+          });
+        });
       }
       return answer;
     } catch (error) {
@@ -516,6 +542,34 @@ Question: ${question}`,
   }
 
   /**
+   * Every answered question for this PR, oldest first, each placed at a stop of this tour. One
+   * asked at an earlier head, or at a stop this tour doesn't have, goes to the stop with the same
+   * title, or else the first stop, and says where it was asked. Null until the tour is ready.
+   */
+  questions(): QuestionView[] | null {
+    const tour = this.#tour;
+    const head = this.#workspace?.pr.head;
+    if (tour.state !== 'ready' || !head) return null;
+    const stops = tour.tour.stops;
+    return this.#questions.list().map(({ stopTitle, ...asked }) => {
+      const sameHead = asked.answer.askedAt === head;
+      const stop =
+        stops.find((s) => s.id === asked.stopId && s.title === stopTitle) ??
+        stops.find((s) => s.title === stopTitle) ??
+        (sameHead ? stops.find((s) => s.id === asked.stopId) : undefined);
+      const stopId = stop?.id ?? stops[0]?.id ?? asked.stopId;
+      return {
+        ...asked,
+        stopId,
+        earlier:
+          sameHead && stop
+            ? null
+            : { commit: asked.answer.askedAt, stopTitle: stop ? null : stopTitle },
+      };
+    });
+  }
+
+  /**
    * The guide's check of an author answer, once it's done: a correction with cited lines, or
    * null when the answer holds up or the check couldn't run. Undefined for an unknown id.
    */
@@ -619,6 +673,8 @@ Question: ${question}`,
     this.#primed = null;
     this.#primedDir = null;
     if (dir) await rm(dir, { recursive: true, force: true });
+    // A question answered just now is on disk before the process goes.
+    await this.#questions.settled();
   }
 
   #questionModel(): string {
@@ -733,6 +789,13 @@ Question: ${question}`,
       ended();
       ended = time.span('Parse the diff');
       this.#workspace = workspace;
+      if (this.#options.questionsDir) {
+        this.#questions = await QuestionStore.open({
+          dir: this.#options.questionsDir,
+          pr: workspace.pr,
+          onError: (where, error) => this.#log.error(where, error),
+        });
+      }
       this.#diff = parseUnifiedDiff(workspace.diffText, workspace.pr.base, workspace.pr.head);
       const lines = this.#diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
       const changed = lines.filter((l) => l.kind !== 'context').length;
