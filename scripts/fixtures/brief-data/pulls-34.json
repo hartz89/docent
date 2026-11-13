@@ -1,0 +1,18 @@
+{
+  "html_url": "https://github.com/hartz89/docent/pull/34",
+  "number": 34,
+  "title": "Backlog: open a tour from a link",
+  "user": {
+    "login": "docent-builder-hartz89[bot]",
+    "html_url": "https://github.com/apps/docent-builder-hartz89"
+  },
+  "body": "**Intent:** the maintainer wants the briefs' PR links to open Docent directly, without jumping to a terminal.\n\n**Behavior change:** none. Adds backlog item 9, \"Open a tour from a link\":\n- a `docent serve` launcher on a fixed localhost port;\n- links open a confirm page on the launcher's own origin, naming the PR and its cost;\n- a review starts only from a click on that page, so a hostile site can't start one;\n- only allowed repos are accepted;\n- briefs link to tours that `--prepare` has pre-built.\n\nIt's marked tier 2b with its own security review, because it changes the server's security model. Later items shift down by one, and the cross-references are updated.\n\n**Tier 0:** `backlog/` only.\n\n**Known gaps:** two things are unverified: whether a claude.ai artifact can open a localhost link, and how the launcher starts on macOS. Both are listed in the item as checks to do first.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+  "created_at": "2026-11-10T03:59:05Z",
+  "updated_at": "2026-11-10T04:00:26Z",
+  "merged_at": "2026-11-10T04:00:25Z",
+  "labels": [],
+  "draft": false,
+  "auto_merge": {},
+  "additions": 24,
+  "deletions": 17
+}

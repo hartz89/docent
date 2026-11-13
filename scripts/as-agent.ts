@@ -9,11 +9,22 @@
 
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import { createPrivateKey, type KeyObject, sign } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  constants as fsConstants,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { constants, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 
-const ROLES = ['builder', 'reviewer'] as const;
+export const ROLES = ['builder', 'reviewer'] as const;
 export type Role = (typeof ROLES)[number];
 
 /** The slug names the app. appId is needed for private apps, which GitHub hides from lookup. */
@@ -28,6 +39,8 @@ const DEFAULT_CONFIG = join(import.meta.dirname, '..', '.github', 'agent-apps.js
 const TOOL_DIRS = ['/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'];
 /** The child's PATH, for anything gh or git runs in turn. */
 const SAFE_PATH = '/usr/bin:/bin';
+/** A PR description with more visible words than this is refused. The rule says about 300. */
+const DESCRIPTION_WORDS = 350;
 
 /** What each role's token may do. Metadata read is always included. */
 const TOKEN_PERMISSIONS: Record<Role, Record<string, 'read' | 'write'>> = {
@@ -52,6 +65,11 @@ export type Deps = {
   exit?: (code: number) => void;
   /** Seconds since the epoch. */
   now?: () => number;
+  /**
+   * Reads a key from the macOS Keychain, or returns undefined if it isn't there. Required, so a
+   * test can't fall back to the real Keychain by leaving it out: tests stub it to throw.
+   */
+  keychain: (service: string) => string | undefined;
 };
 
 /** A failure with a message meant for the person running the command. */
@@ -73,20 +91,29 @@ function parseArgs(argv: string[]): { role: Role; command: string[] } {
 }
 
 // The allowlist. A broad "allow as-agent" permission rule is only safe because this is strict:
-// anything not matching one of these forms is refused before a token exists. scripts/ is
-// code-owned, so widening it needs the maintainer's approval.
+// anything not matching one of these forms is refused before a token exists. Widening it grants
+// agents new powers, so it escalates to the maintainer. The app's permissions cap it.
 const ALLOWED: Record<Role, string[]> = {
   builder: [
     'git push [-u] origin <branch>   (a plain branch name: not main, HEAD or refs/...; no flags but -u)',
     'gh pr create|view|checks|diff|comment|edit ...',
+    '                                (create needs --body-file or --body; a description stays under',
+    `                                ${DESCRIPTION_WORDS} visible words, so put detail in <details>)`,
     'gh pr merge <number> --squash [--auto]',
+    'gh issue create|view|list|comment|edit|close ...   (edit keeps the description budget above)',
     'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
-    'Never with gh --jq/-q or --template/-t, or --web/--editor.',
+    'gh api --method POST /repos/hartz89/docent/pulls/<n>/comments/<id>/replies --input <file.json>',
+    '                                (reply to a review comment; the file is exactly {"body": string})',
+    'Never with gh --jq/-q or --template/-t, or --web/--editor. Never approve a PR.',
   ],
   reviewer: [
-    'gh pr view|diff|checks|review|comment ...',
+    'gh pr view|diff|checks|review|comment ...   (review with --comment or --request-changes)',
     'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
-    'Never with gh --jq/-q or --template/-t, or --web/--editor.',
+    'gh api --method POST /repos/hartz89/docent/pulls/<n>/reviews --input <file.json>',
+    '                                (keys: body, event, commit_id, comments; each comment: path,',
+    '                                line, side, start_line, start_side, body; nothing else;',
+    '                                event COMMENT or REQUEST_CHANGES)',
+    'Never with gh --jq/-q or --template/-t, or --web/--editor. Never approve a PR.',
   ],
 };
 
@@ -95,10 +122,34 @@ const PR_SUBCOMMANDS: Record<Role, string[]> = {
   reviewer: ['view', 'diff', 'checks', 'review', 'comment'],
 };
 
-type Allowed = { tool: 'gh' | 'git'; args: string[] };
+const ISSUE_SUBCOMMANDS = ['create', 'view', 'list', 'comment', 'edit', 'close'];
+
+/**
+ * --web and --editor, including -w or -e bundled with other short flags (-wl), which gh also
+ * accepts. A glued short value that happens to contain w or e (-bweb) is refused too: write it as
+ * a separate flag and value.
+ */
+const INTERACTIVE = /^(--web|--editor)(=|$)|^-[A-Za-z]*[we]/;
+
+/**
+ * gh pr review's --approve, in every spelling: --approve, --approve=..., and -a alone or after
+ * gh pr review's other value-less short flags (-ca, -rca). A glued value (-bdata) isn't an
+ * approval, as in gh. Agents post reviews as comments; see "Reviews live on the PR" in
+ * pull-requests.md.
+ */
+const APPROVE = /^--approve(=|$)|^-[cr]*a/;
+
+type Allowed = {
+  tool: 'gh' | 'git';
+  args: string[];
+  /** Permissions this command needs beyond the role's base set. */
+  extra?: Record<string, 'read' | 'write'>;
+  /** When set, exactly what the command reads on standard input. */
+  stdin?: string;
+};
 
 /** Returns the exact command to run, or throws why it's refused. */
-function allowed(role: Role, command: string[]): Allowed {
+function allowed(role: Role, command: string[], cwd: string): Allowed {
   const [program, sub, ...rest] = command;
   const refuse = (reason: string): never => {
     throw new AgentError(
@@ -114,15 +165,36 @@ function allowed(role: Role, command: string[]): Allowed {
     const formatter = rest.find((arg) => /^(-q|-t|--jq|--template)(=|$)|^-[qt]./.test(arg));
     if (formatter) refuse(`${formatter} can print the token in a form the scrubber can't catch`);
   }
+  if (program === 'gh' && sub === 'api' && rest.includes('--input')) {
+    return ghApiPost(role, rest, cwd, refuse);
+  }
   if (program === 'gh' && sub === 'api') {
     checkGhApi(rest, refuse);
-    return { tool: 'gh', args: ['api', ...rest] };
+    // Reading issues needs issues: read. Requested only for those calls, so other commands keep
+    // working on an app without the permission.
+    const issues =
+      role === 'builder' && rest.some((arg) => /^\/?repos\/[^/]+\/[^/]+\/issues\b/.test(arg));
+    return { tool: 'gh', args: ['api', ...rest], ...(issues ? { extra: { issues: 'read' } } : {}) };
+  }
+  if (program === 'gh' && sub === 'issue' && role === 'builder') {
+    const [action, ...args] = rest;
+    if (!action || !ISSUE_SUBCOMMANDS.includes(action)) {
+      refuse(`"gh issue ${action ?? ''}" isn't allowed for the ${role}`);
+    }
+    const interactive = args.find((arg) => INTERACTIVE.test(arg));
+    if (interactive) refuse(`${interactive} opens a browser or editor`);
+    // gh issue edit also edits a PR, given its number, so it gets the same description budget.
+    if (action === 'edit') checkDescription('edit', args, cwd, refuse);
+    const writes = action !== 'view' && action !== 'list';
+    return { tool: 'gh', args: ['issue', ...rest], extra: { issues: writes ? 'write' : 'read' } };
   }
   if (program === 'gh' && sub === 'pr') {
     const [action, ...args] = rest;
     if (args.some((arg) => arg.startsWith('--admin'))) refuse('--admin bypasses branch protection');
+    const approve = action === 'review' ? args.find((arg) => APPROVE.test(arg)) : undefined;
+    if (approve) refuse(`${approve} approves the PR, and agents never approve: post a --comment`);
     // A browser or editor would run outside the scrubber, with the token in its env.
-    const interactive = args.find((arg) => /^(--web|--editor)(=|$)|^-[we]$/.test(arg));
+    const interactive = args.find((arg) => INTERACTIVE.test(arg));
     if (interactive && ['create', 'edit', 'comment', 'review'].includes(action ?? '')) {
       refuse(`${interactive} opens a browser or editor`);
     }
@@ -130,6 +202,7 @@ function allowed(role: Role, command: string[]): Allowed {
     else if (!action || !PR_SUBCOMMANDS[role].includes(action)) {
       refuse(`"gh pr ${action ?? ''}" isn't allowed for the ${role}`);
     }
+    if (action === 'create' || action === 'edit') checkDescription(action, args, cwd, refuse);
     return { tool: 'gh', args: ['pr', ...rest] };
   }
   return refuse(`the ${role} may only run the commands below`);
@@ -160,11 +233,95 @@ function checkMerge(args: string[], refuse: (reason: string) => never): void {
   const [number, ...extra] = args.filter((arg) => !arg.startsWith('-'));
   const options = args.filter((arg) => arg.startsWith('-'));
   if (!number || !/^\d+$/.test(number) || extra.length > 0) refuse('merge takes one PR number');
-  // --auto queues the merge; GitHub lands it once the ruleset is satisfied (green CI, and the
-  // maintainer's approval on code-owned paths). The builder isn't an admin, so it can't bypass that.
+  // --auto queues the merge; GitHub lands it once the ruleset is satisfied (green CI). The builder
+  // isn't an admin, so it can't bypass that.
   const form = options.join(' ');
   if (form !== '--squash' && form !== '--squash --auto') {
     refuse('merge only with --squash, optionally followed by --auto');
+  }
+}
+
+/** Short flags of gh pr create and edit that take no value, so more flags may follow in a bundle. */
+const BOOL_SHORT = 'dfw';
+
+/**
+ * Every description a gh pr create or edit might set: [where it came from, its text]. Each arg
+ * that could start one is checked, even one gh might read as another flag's value (--title
+ * --body), so no parse of the command can carry an unchecked description.
+ */
+function descriptions(args: string[], cwd: string, refuse: (reason: string) => never) {
+  const found: [string, string][] = [];
+  const file = (path: string | undefined) => {
+    if (!path || path === '-') refuse('--body-file needs a file path, so the runner can read it');
+    found.push([path as string, readSmallFile(resolvePath(cwd, path as string), refuse)]);
+  };
+  const body = (text: string | undefined) => found.push(['--body', text ?? '']);
+  args.forEach((arg, i) => {
+    const next = args[i + 1];
+    if (arg === '--body-file') file(next);
+    else if (arg.startsWith('--body-file=')) file(arg.slice(12));
+    else if (arg === '--body') body(next);
+    else if (arg.startsWith('--body=')) body(arg.slice(7));
+    else if (/^-[^-]/.test(arg)) {
+      // As in gh, value-less flags may bundle, and the first flag that takes a value takes the
+      // rest of the arg, or else the next arg. So -db x sets the body to x.
+      const letters = arg.slice(1);
+      const at = [...letters].findIndex((letter) => !BOOL_SHORT.includes(letter));
+      if (at < 0) return;
+      const value = letters.slice(at + 1) || next;
+      if (letters[at] === 'F') file(value);
+      else if (letters[at] === 'b') body(value);
+    }
+  });
+  return found;
+}
+
+/**
+ * Words a reader sees: everything outside a closed <details>...</details>, split on whitespace.
+ * GitHub hides HTML comments, so they're dropped. A tag that GitHub shows as text (in code, or
+ * escaped as \<details>) hides nothing, so it's defanged first. <details open> shows its
+ * contents, so it hides nothing either.
+ */
+export function visibleWords(text: string): number {
+  // Code first, so a `<!--` written as code doesn't start a comment.
+  const defanged = text
+    .replace(/```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`/g, (code) => code.replaceAll('<', ' '))
+    .replaceAll('\\<', ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ');
+  const visible = defanged.replace(
+    /<details(?![^>]*\bopen\b)(\s[^>]*)?>[\s\S]*?<\/details>/gi,
+    ' ',
+  );
+  return visible.split(/\s+/).filter(Boolean).length;
+}
+
+/**
+ * Keeps PR descriptions short, as pull-requests.md asks: "Keep the visible part to about 300
+ * words." create must name its description, so the runner can check it before gh sends it.
+ */
+function checkDescription(
+  action: 'create' | 'edit',
+  args: string[],
+  cwd: string,
+  refuse: (reason: string) => never,
+): void {
+  // --recover reads a saved title and body from a failed run, past this check.
+  const recover = args.find((arg) => /^--recover(=|$)/.test(arg));
+  if (recover) refuse(`${recover} reads a description the runner can't check`);
+  const found = descriptions(args, cwd, refuse);
+  if (action === 'create' && found.length === 0) {
+    refuse('gh pr create needs --body-file <path> (or --body), so the runner can check its length');
+  }
+  for (const [source, text] of found) {
+    const words = visibleWords(text);
+    if (words > DESCRIPTION_WORDS) {
+      refuse(
+        `the description in ${source} has ${words} visible words, over the limit of ` +
+          `${DESCRIPTION_WORDS}. pull-requests.md asks for about 300 visible words, because ` +
+          'long descriptions cost the attention review exists to save. Move detail and known ' +
+          'gaps into collapsed <details> sections; text inside <details>...</details> is not counted',
+      );
+    }
   }
 }
 
@@ -191,6 +348,129 @@ function checkGhApi(args: string[], refuse: (reason: string) => never): void {
   }
 }
 
+// The two write forms of gh api. Each is one exact shape: one endpoint, one method, and a JSON
+// body checked key by key. The runner reads the file once, checks it, and pipes its own
+// re-serialized copy to gh on stdin. So the bytes gh sends are the bytes that were checked, even
+// if the file changes, and duplicate keys can't hide a value the check never saw.
+const PULL = `/?repos/${REPO}/pulls/[1-9][0-9]{0,9}`;
+const POST_FORMS: Record<Role, { endpoint: RegExp; check: (body: unknown) => string | undefined }> =
+  {
+    reviewer: { endpoint: new RegExp(`^${PULL}/reviews$`), check: checkReview },
+    builder: {
+      endpoint: new RegExp(`^${PULL}/comments/[1-9][0-9]{0,19}/replies$`),
+      check: checkReply,
+    },
+  };
+/** Plenty for a long review, and keeps a stray huge file from being read whole. */
+const MAX_BODY_BYTES = 1_000_000;
+
+function ghApiPost(
+  role: Role,
+  args: string[],
+  cwd: string,
+  refuse: (reason: string) => never,
+): Allowed {
+  const [method, verb, endpoint, input, path, ...extra] = args;
+  if (method !== '--method' || verb !== 'POST' || input !== '--input' || extra.length > 0) {
+    refuse('gh api --input only as "gh api --method POST <endpoint> --input <file.json>"');
+  }
+  if (!endpoint || !POST_FORMS[role].endpoint.test(endpoint)) {
+    refuse(`the ${role} can't POST to ${endpoint ?? '(none)'}`);
+  }
+  if (!path || path.startsWith('-')) refuse('--input needs a file path');
+  const text = readSmallFile(resolvePath(cwd, path as string), refuse);
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    refuse(`${path} isn't valid JSON`);
+  }
+  const problem = POST_FORMS[role].check(body);
+  if (problem) refuse(`${path}: ${problem}`);
+  return {
+    tool: 'gh',
+    args: ['api', '--method', 'POST', endpoint as string, '--input', '-'],
+    stdin: JSON.stringify(body),
+  };
+}
+
+/** Reads a regular file once, without hanging on a pipe or reading something huge. */
+function readSmallFile(path: string, refuse: (reason: string) => never): string {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) refuse(`${path} isn't a regular file`);
+    if (stat.size > MAX_BODY_BYTES) refuse(`${path} is over ${MAX_BODY_BYTES} bytes`);
+    const bytes = readFileSync(fd);
+    if (bytes.length > MAX_BODY_BYTES) refuse(`${path} is over ${MAX_BODY_BYTES} bytes`);
+    return bytes.toString('utf8');
+  } catch (error) {
+    if (error instanceof AgentError) throw error;
+    return refuse(`couldn't read ${path}`);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+type Field = (value: unknown) => boolean;
+const isString: Field = (value) => typeof value === 'string';
+const isLine: Field = (value) => Number.isInteger(value) && (value as number) > 0;
+const isSide: Field = (value) => value === 'LEFT' || value === 'RIGHT';
+
+/** An error if the value isn't an object with only known keys, of the right types, and all required ones. */
+function checkObject(
+  value: unknown,
+  what: string,
+  fields: Record<string, Field>,
+  required: string[],
+): string | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return `${what} must be a JSON object`;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    const field = Object.hasOwn(fields, key) ? fields[key] : undefined;
+    if (!field) return `${what} may not have "${key}"`;
+    if (!field(record[key])) return `${what} has a bad "${key}"`;
+  }
+  const missing = required.find((key) => !Object.hasOwn(record, key));
+  return missing ? `${what} needs "${missing}"` : undefined;
+}
+
+const REVIEW_FIELDS: Record<string, Field> = {
+  body: isString,
+  // Never APPROVE: agents post reviews as comments, or request changes when something blocks.
+  event: (value) => value === 'COMMENT' || value === 'REQUEST_CHANGES',
+  commit_id: (value) => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value),
+  comments: Array.isArray,
+};
+
+const COMMENT_FIELDS: Record<string, Field> = {
+  path: (value) => typeof value === 'string' && value !== '',
+  line: isLine,
+  side: isSide,
+  start_line: isLine,
+  start_side: isSide,
+  body: isString,
+};
+
+function checkReview(review: unknown): string | undefined {
+  // event is required: without it, GitHub leaves the review pending and unposted.
+  const problem = checkObject(review, 'the review', REVIEW_FIELDS, ['event']);
+  if (problem) return problem;
+  const comments = (review as { comments?: unknown[] }).comments ?? [];
+  for (const [i, comment] of comments.entries()) {
+    const bad = checkObject(comment, `comment ${i + 1}`, COMMENT_FIELDS, ['path', 'line', 'body']);
+    if (bad) return bad;
+  }
+  return undefined;
+}
+
+function checkReply(reply: unknown): string | undefined {
+  return checkObject(reply, 'the reply', { body: isString }, ['body']);
+}
+
 function loadConfig(path: string, role: Role): AppConfig {
   const all: unknown = JSON.parse(readFileSync(path, 'utf8'));
   const { slug, appId } = (all as Record<string, Record<string, unknown> | undefined>)[role] ?? {};
@@ -214,28 +494,38 @@ function decodeKey(stored: string): string {
   return text.startsWith('-----BEGIN') ? text : Buffer.from(text, 'base64').toString('utf8');
 }
 
-function loadKey(role: Role, env: NodeJS.ProcessEnv, secrets: string[]): KeyObject {
-  const envName = `DOCENT_${role.toUpperCase()}_APP_KEY`;
+/** The env variable that may hold a role's app key, as for CI. */
+export function keyEnvName(role: Role): string {
+  return `DOCENT_${role.toUpperCase()}_APP_KEY`;
+}
+
+/** The real Keychain lookup. Undefined if the item isn't there. */
+export function readKeychain(service: string): string | undefined {
+  try {
+    return execFileSync('/usr/bin/security', ['find-generic-password', '-s', service, '-w'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function loadKey(role: Role, deps: Deps, secrets: string[]): KeyObject {
+  const envName = keyEnvName(role);
   const service = `docent-${role}-app-key`;
-  let stored = env[envName];
+  const stored = deps.env[envName] || deps.keychain(service);
   if (!stored) {
-    try {
-      stored = execFileSync('/usr/bin/security', ['find-generic-password', '-s', service, '-w'], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      });
-    } catch {
-      throw new AgentError(
-        `no private key for the ${role} app: set ${envName}, or store it in the macOS Keychain ` +
-          `as "${service}" (see ${DOC}).`,
-      );
-    }
+    throw new AgentError(
+      `no private key for the ${role} app: set ${envName}, or store it in the macOS Keychain ` +
+        `as "${service}" (see ${DOC}).`,
+    );
   }
   secrets.push(stored.trim(), decodeKey(stored));
   try {
     return createPrivateKey(decodeKey(stored));
   } catch {
-    const source = env[envName] ? envName : `Keychain "${service}"`;
+    const source = deps.env[envName] ? envName : `Keychain "${service}"`;
     throw new AgentError(`the ${role} app's private key isn't a valid PEM key (from ${source}).`);
   }
 }
@@ -422,17 +712,22 @@ function run(
     deps: Deps;
     secrets: string[];
     onSpawn: (child: ChildProcess) => void;
+    stdin: string | undefined;
   },
 ): Promise<number> {
   return new Promise((resolve, reject) => {
     const out = scrubber(opts.deps.stdout, opts.secrets);
     const err = scrubber(opts.deps.stderr, opts.secrets);
-    const child = spawn(file, args, {
-      env: opts.env,
-      cwd: opts.cwd,
-      stdio: ['inherit', 'pipe', 'pipe'],
-    });
+    const options = { env: opts.env, cwd: opts.cwd };
+    // stdin is the checked request body when there is one, and otherwise the caller's.
+    const child =
+      opts.stdin === undefined
+        ? spawn(file, args, { ...options, stdio: ['inherit', 'pipe', 'pipe'] })
+        : spawn(file, args, { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
     opts.onSpawn(child);
+    // If gh exits without reading it all, the pipe breaks; gh's exit code tells that story.
+    child.stdin?.on('error', () => {});
+    if (opts.stdin !== undefined) child.stdin?.end(opts.stdin);
     child.stdout.setEncoding('utf8').on('data', out.push);
     child.stderr.setEncoding('utf8').on('data', err.push);
     child.on('error', () => reject(new AgentError(`couldn't start ${file}`)));
@@ -473,12 +768,12 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
   };
   try {
     const { role, command } = parseArgs(argv);
-    const { tool, args } = allowed(role, command);
+    const { tool, args, extra, stdin } = allowed(role, command, deps.cwd ?? process.cwd());
     const file = findTool(tool, deps);
     const base = baseEnv(deps.env);
     checkLocalGitConfig(findTool('git', deps), deps.cwd);
     const config = loadConfig(deps.configPath ?? DEFAULT_CONFIG, role);
-    const key = loadKey(role, deps.env, secrets);
+    const key = loadKey(role, deps, secrets);
 
     const appId =
       config.appId ??
@@ -505,7 +800,10 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
       path: `/app/installations/${installation.id}/access_tokens`,
       auth: `Bearer ${jwt}`,
       hint: `Check that the key belongs to the ${role} app and that it has these permissions.`,
-      body: { repositories: [REPO.split('/')[1]], permissions: TOKEN_PERMISSIONS[role] },
+      body: {
+        repositories: [REPO.split('/')[1]],
+        permissions: { ...TOKEN_PERMISSIONS[role], ...extra },
+      },
     });
     const basicAuth = Buffer.from(`x-access-token:${token}`).toString('base64');
     secrets.push(token, basicAuth);
@@ -529,7 +827,7 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
     const onSpawn = (spawned: ChildProcess) => {
       child = spawned;
     };
-    const code = await run(file, args, { env, cwd: deps.cwd, deps, secrets, onSpawn });
+    const code = await run(file, args, { env, cwd: deps.cwd, deps, secrets, onSpawn, stdin });
     if (code !== 0) say(`${tool} exited with ${code}`);
     return code;
   } catch (error) {
@@ -544,10 +842,14 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 
 if (import.meta.main) {
+  // If whoever reads our output goes away (`| head`), a write fails with EPIPE. Unhandled, that
+  // kills the runner before it revokes the token. Dropping the output is the lesser harm.
+  for (const stream of [process.stdout, process.stderr]) stream.on('error', () => {});
   process.exitCode = await asAgent(process.argv.slice(2), {
     fetch,
     env: process.env,
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
+    keychain: readKeychain,
   });
 }

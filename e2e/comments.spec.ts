@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, launch, test } from './fixtures.ts';
 
@@ -158,6 +160,49 @@ test('the reviewer comments on lines, and the comments post with the verdict', a
       );
       expect((JSON.parse(left ?? '[]') as { id: string }[]).map((d) => d.id)).toEqual(['old']);
     });
+  } finally {
+    await docent.stop();
+  }
+
+  // The run log counts what went with the verdict, and where it landed.
+  const runs = join(docent.dataDir, 'runs');
+  const [log] = await readdir(runs);
+  const events = (await readFile(join(runs, log ?? ''), 'utf8'))
+    .trimEnd()
+    .split('\n')
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  expect(events.find((e) => e.kind === 'review.submit')).toMatchObject({
+    outcome: 'posted',
+    comments: 2,
+    onLines: 1,
+    inBody: 1,
+  });
+});
+
+test('on a phone, a comment fits the screen and the batch stays in reach', async ({ page }) => {
+  const docent = await launch('cli.js', ['review', '--fixture', fixture]);
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(docent.url);
+    await page.getByRole('button', { name: 'Next stop' }).click();
+    await page.getByRole('button', { name: 'Next stop' }).click();
+    const code = page.getByRole('region', { name: 'Code' });
+    const row = code.locator('.line[data-line="80"]');
+    await row.scrollIntoViewIfNeeded();
+    await row.hover();
+    await row.getByRole('button', { name: 'Comment on line 80' }).click();
+    await code.getByLabel('Your comment on line 80').fill('Should this log?');
+    await code.getByRole('button', { name: 'Add to batch' }).click();
+
+    // Edit and Remove wrap into view rather than being cut off at the card's edge.
+    for (const name of ['Edit your comment on line 80', 'Remove your comment on line 80']) {
+      const box = await code.getByRole('button', { name }).boundingBox();
+      expect((box?.x ?? 999) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+    }
+    // The bottom bar takes over Next stop, but the batch stays at the foot of the guide.
+    await page.getByRole('button', { name: 'Next stop' }).click();
+    await expect(page.getByRole('region', { name: 'Your batch' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '1 not posted' })).toBeVisible();
   } finally {
     await docent.stop();
   }

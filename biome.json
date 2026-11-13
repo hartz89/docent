@@ -79,6 +79,23 @@
           }
         }
       }
+    },
+    {
+      "includes": ["apps/web/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@docent/server/evals": "The eval entry pulls in the Node model runner and GitHub source. Only packages/evals may import it; the web app imports types from @docent/server."
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

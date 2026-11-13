@@ -109,7 +109,7 @@ export function CodeView({
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
       const target = event.target as HTMLElement | null;
-      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], dialog')) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
       const box = scroller.current;
       if (!box) return;
@@ -204,15 +204,19 @@ export function CodeView({
         )}
       </div>
       <div className="legend" aria-hidden="true">
-        <span>
-          <i className={`swatch ${changeClass}`} />
-          {side === 'new' ? 'Added in this PR' : 'Removed by this PR'}
-        </span>
-        <span>
-          <i className="swatch cited" />
-          Cited by this stop
-        </span>
-        <span>
+        {changed.size > 0 && (
+          <span>
+            <i className={`swatch ${changeClass}`} />
+            {side === 'new' ? 'Added in this PR' : 'Removed by this PR'}
+          </span>
+        )}
+        {cited.length > 0 && (
+          <span>
+            <i className="swatch cited" />
+            Cited by this stop
+          </span>
+        )}
+        <span className="legend-keys">
           <kbd>←</kbd> <kbd>→</kbd> stops · <kbd>↑</kbd> <kbd>↓</kbd> read on
         </span>
       </div>

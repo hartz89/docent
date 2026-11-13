@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { type CommitSha, commitSha } from '@docent/core';
+import { gitHeadFiles, type HeadFiles } from './head-files.ts';
 
 const run = promisify(execFile);
 
@@ -56,6 +57,10 @@ export type Workspace = {
   dir: string;
   /** A file's text at the base or head commit, or null if it doesn't exist there. */
   readFile: (side: 'old' | 'new', path: string) => Promise<string | null>;
+  /** One file for the reviewer's code view: its text, or why it isn't shown. */
+  open: (side: 'old' | 'new', path: string) => Promise<RepoFile>;
+  /** Every file in the repo at head, for browsing. */
+  tree: () => Promise<RepoTree>;
   /**
    * The PR's head commit and base branch right now: the head moves when the author pushes, and
    * the base when they retarget the PR.
@@ -63,7 +68,34 @@ export type Workspace = {
   current: () => Promise<{ head: CommitSha; baseRef: string }>;
   /** Posts one review on this PR as the reviewer, and returns its link on GitHub. */
   postReview: (review: ReviewPost) => Promise<{ url: string }>;
+  /** The files at head, for the symbol index: read from git's objects, never the working tree. */
+  headFiles: () => Promise<HeadFiles>;
 };
+
+/** One path in the repo at head. Folders are implied by the paths under them. */
+export type TreeEntry = { path: string; kind: 'file' | 'symlink' | 'submodule' };
+export type RepoTree = { entries: TreeEntry[]; truncated: boolean };
+
+/** A file as the code view gets it. Only text is ever sent; the rest says why not. */
+export type RepoFile =
+  | { kind: 'text'; text: string }
+  | { kind: 'binary' }
+  | { kind: 'too_large'; bytes: number }
+  | { kind: 'symlink'; target: string }
+  | { kind: 'missing' };
+
+/** The code view shows text files up to this size. */
+export const MAX_FILE_BYTES = 2_000_000;
+/** The file tree lists at most this many paths. */
+export const MAX_TREE_ENTRIES = 50_000;
+
+/** Classifies text already in hand (fixtures and tests) the way the git reader does. */
+export function fileFromText(text: string | null): RepoFile {
+  if (text === null) return { kind: 'missing' };
+  const bytes = Buffer.byteLength(text);
+  if (bytes > MAX_FILE_BYTES) return { kind: 'too_large', bytes };
+  return text.includes('\0') ? { kind: 'binary' } : { kind: 'text', text };
+}
 
 /** GitHub turned the review down, or couldn't be reached. The message is fit to show. */
 export class GitHubRefusal extends Error {}
@@ -85,6 +117,21 @@ export function defaultCacheDir(): string {
   if (process.env.DOCENT_CACHE_DIR) return process.env.DOCENT_CACHE_DIR;
   if (process.platform === 'darwin') return join(homedir(), 'Library', 'Caches', 'docent');
   return join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'docent');
+}
+
+/**
+ * Where Docent keeps what it wants to hold on to, like run logs: the OS data folder. The same
+ * rules as the author-session hook's records (PR #55); whichever lands second shares this one.
+ */
+export function defaultDataDir(): string {
+  if (process.env.DOCENT_DATA_DIR) return process.env.DOCENT_DATA_DIR;
+  if (process.platform === 'darwin') {
+    return join(homedir(), 'Library', 'Application Support', 'docent');
+  }
+  if (process.platform === 'win32') {
+    return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'docent');
+  }
+  return join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'docent');
 }
 
 export function githubSource(url: string, cacheDir: string): PrSource {
@@ -145,18 +192,6 @@ export function githubSource(url: string, cacheDir: string): PrSource {
     const dir = join(cacheDir, 'repos', `${ref.owner}__${ref.name}`, pr.head);
     await ensureCheckout(dir, repo, pr);
 
-    const show = async (sha: string, path: string) => {
-      if (!isSafeRepoPath(path)) return null;
-      try {
-        // `cat-file blob`, not `show`: `show` prints a folder's listing as if it were a file.
-        const { stdout } = await git(dir, ['cat-file', 'blob', `${sha}:${path}`], {
-          maxBuffer: 64 * 1024 * 1024,
-        });
-        return stdout;
-      } catch {
-        return null;
-      }
-    };
     const pull = `repos/${repo}/pulls/${pr.number}`;
     // The PR is on github.com; GH_HOST or a default Enterprise host must not redirect the write.
     const onGitHub = ['--hostname', 'github.com'];
@@ -166,7 +201,7 @@ export function githubSource(url: string, cacheDir: string): PrSource {
       commitMessages: commitPages.flat().map((c) => c.commit.message),
       headInBaseRepo: !view.isCrossRepository,
       dir,
-      readFile: (side, path) => show(side === 'new' ? pr.head : pr.base, path),
+      ...commitReader(dir, pr.base, pr.head),
       current: async () => {
         const out = await ghForReview(['api', ...onGitHub, pull, '--jq', '[.head.sha, .base.ref]']);
         const [head, baseRef] = JSON.parse(out) as [string, string];
@@ -186,6 +221,7 @@ export function githubSource(url: string, cacheDir: string): PrSource {
         // The link is shown to the reviewer, so it must be GitHub's.
         return { url: typeof url === 'string' && url.startsWith(`${pr.url}#`) ? url : pr.url };
       },
+      headFiles: () => gitHeadFiles(dir, pr.head),
     };
   };
 }
@@ -216,6 +252,99 @@ async function ensureCheckout(dir: string, repo: string, pr: PrInfo): Promise<vo
 }
 
 /**
+ * Reads files and the tree from git's objects at two pinned commits, never from the working tree.
+ * A symlink is only ever its link text, so nothing outside the repo can be reached. Paths match
+ * literally, and only regular files are read, after their size is checked.
+ */
+export function commitReader(
+  dir: string,
+  base: CommitSha,
+  head: CommitSha,
+  maxTreeEntries = MAX_TREE_ENTRIES,
+): Pick<Workspace, 'readFile' | 'open' | 'tree'> {
+  const blob = async (sha: CommitSha, path: string, maxBytes: number): Promise<RepoFile> => {
+    if (!isSafeRepoPath(path)) return { kind: 'missing' };
+    let entry: string;
+    try {
+      // `<mode> blob <oid> <size>\t<path>\0` for exactly this path, or nothing.
+      ({ stdout: entry } = await git(dir, [
+        '-c',
+        'core.precomposeunicode=false',
+        '--literal-pathspecs',
+        'ls-tree',
+        '-z',
+        '--long',
+        sha,
+        '--',
+        path,
+      ]));
+    } catch {
+      return { kind: 'missing' };
+    }
+    const match = /^(\d{6}) blob ([0-9a-f]{40,64}) +(\d+)\t([^\0]*)\0$/.exec(entry);
+    if (!match || match[4] !== path) return { kind: 'missing' };
+    const [, mode = '', oid = '', size = ''] = match;
+    const bytes = Number(size);
+    if (mode === '120000') {
+      if (bytes > 4096) return { kind: 'missing' };
+      const { stdout } = await git(dir, ['cat-file', 'blob', oid]);
+      return { kind: 'symlink', target: stdout };
+    }
+    if (mode !== '100644' && mode !== '100755') return { kind: 'missing' };
+    if (bytes > maxBytes) return { kind: 'too_large', bytes };
+    const { stdout } = await git(dir, ['cat-file', 'blob', oid], { maxBuffer: maxBytes + 1 });
+    return stdout.includes('\0') ? { kind: 'binary' } : { kind: 'text', text: stdout };
+  };
+  const at = (side: 'old' | 'new') => (side === 'new' ? head : base);
+  let listing: Promise<RepoTree> | null = null;
+  return {
+    // The guide's own reads may be bigger than what the browser is sent.
+    readFile: async (side, path) => {
+      const file = await blob(at(side), path, 64 * 1024 * 1024);
+      if (file.kind === 'text') return file.text;
+      return file.kind === 'symlink' ? file.target : null;
+    },
+    open: (side, path) => blob(at(side), path, MAX_FILE_BYTES),
+    tree: () => {
+      // A failed listing isn't kept, so the next request tries again.
+      listing ??= listTree(dir, head, maxTreeEntries).catch((error: unknown) => {
+        listing = null;
+        throw error;
+      });
+      return listing;
+    },
+  };
+}
+
+/** Every file, symlink and submodule at a commit, up to `max` of them. */
+async function listTree(dir: string, sha: CommitSha, max: number): Promise<RepoTree> {
+  let stdout: string;
+  let cut = false;
+  try {
+    ({ stdout } = await git(dir, ['ls-tree', '-r', '-z', '--full-tree', sha], {
+      maxBuffer: 16 * 1024 * 1024,
+    }));
+  } catch (error) {
+    // A listing too big to buffer is cut short: git is stopped, and what arrived is kept.
+    const failure = error as { code?: unknown; stdout?: unknown };
+    if (failure.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || typeof failure.stdout !== 'string')
+      throw error;
+    stdout = failure.stdout.slice(0, failure.stdout.lastIndexOf('\0') + 1);
+    cut = true;
+  }
+  const entries: TreeEntry[] = [];
+  for (const record of stdout.split('\0')) {
+    const tab = record.indexOf('\t');
+    if (tab === -1) continue;
+    if (entries.length === max) return { entries, truncated: true };
+    const mode = record.slice(0, 6);
+    const kind = mode === '160000' ? 'submodule' : mode === '120000' ? 'symlink' : 'file';
+    entries.push({ path: record.slice(tab + 1), kind });
+  }
+  return { entries, truncated: cut };
+}
+
+/**
  * Git over code we don't trust. The checkout is read by an agent and served to the browser, so:
  * - no user or system config (no aliases, hooks, filters or helpers from the machine), except
  *   `gh` as the credential helper, so private repos still fetch;
@@ -224,38 +353,56 @@ async function ensureCheckout(dir: string, repo: string, pr: PrInfo): Promise<vo
  *   checkout.
  */
 export function git(dir: string, args: readonly string[], options: { maxBuffer?: number } = {}) {
-  return run(
-    'git',
-    [
-      '-C',
-      dir,
-      '-c',
-      'core.symlinks=false',
-      '-c',
-      'core.hooksPath=/dev/null',
-      '-c',
-      'submodule.recurse=false',
-      '-c',
-      'protocol.file.allow=never',
-      '-c',
-      'advice.detachedHead=false',
-      '-c',
-      'credential.helper=',
-      '-c',
-      'credential.helper=!gh auth git-credential',
-      ...args,
-    ],
-    {
-      maxBuffer: options.maxBuffer ?? 1 << 26,
-      env: {
-        ...process.env,
-        GIT_CONFIG_GLOBAL: '/dev/null',
-        GIT_CONFIG_NOSYSTEM: '1',
-        GIT_LFS_SKIP_SMUDGE: '1',
-        GIT_TERMINAL_PROMPT: '0',
-      },
-    },
-  );
+  return run('git', hardenedGitArgs(dir, args), {
+    maxBuffer: options.maxBuffer ?? 1 << 26,
+    env: hardenedGitEnv(),
+  });
+}
+
+/** `git()`'s arguments, for callers that need to stream its output. */
+export function hardenedGitArgs(dir: string, args: readonly string[]): string[] {
+  return [
+    '-C',
+    dir,
+    '-c',
+    'core.symlinks=false',
+    '-c',
+    'core.hooksPath=/dev/null',
+    '-c',
+    'submodule.recurse=false',
+    '-c',
+    'protocol.file.allow=never',
+    '-c',
+    'advice.detachedHead=false',
+    '-c',
+    'credential.helper=',
+    '-c',
+    'credential.helper=!gh auth git-credential',
+    ...args,
+  ];
+}
+
+/** `git()`'s environment. `offline` forbids fetching missing objects, so nothing is downloaded. */
+export function hardenedGitEnv({ offline = false } = {}): NodeJS.ProcessEnv {
+  // These would override `-C` and point git at another repository or object store.
+  const {
+    GIT_DIR: _dir,
+    GIT_WORK_TREE: _workTree,
+    GIT_INDEX_FILE: _index,
+    GIT_OBJECT_DIRECTORY: _objects,
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: _alternates,
+    GIT_COMMON_DIR: _common,
+    GIT_NAMESPACE: _namespace,
+    ...inherited
+  } = process.env;
+  return {
+    ...inherited,
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_LFS_SKIP_SMUDGE: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    ...(offline ? { GIT_NO_LAZY_FETCH: '1', GIT_NO_REPLACE_OBJECTS: '1' } : {}),
+  };
 }
 
 async function gh(args: string[]): Promise<string> {
@@ -315,7 +462,7 @@ function githubErrors(body: string | undefined): string[] {
   }
 }
 
-/** A relative path inside the repo: no absolute paths, no `..`, no NUL, no option-like names. */
+/** A relative path inside the repo: no absolute paths, no `.` or `..`, no NUL, no option-like names. */
 export function isSafeRepoPath(path: string): boolean {
   return (
     path.length > 0 &&
@@ -323,6 +470,6 @@ export function isSafeRepoPath(path: string): boolean {
     !path.startsWith('/') &&
     !path.startsWith('-') &&
     !path.includes('\0') &&
-    !path.split('/').some((part) => part === '..' || part === '')
+    !path.split('/').some((part) => part === '..' || part === '.' || part === '')
   );
 }

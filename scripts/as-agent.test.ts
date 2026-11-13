@@ -1,10 +1,13 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { generateKeyPairSync, verify } from 'node:crypto';
+import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { asAgent, type Deps } from './as-agent.ts';
+import { asAgent, type Deps, keyEnvName, ROLES } from './as-agent.ts';
 
 const NOW = 1_800_000_000;
 const TOKEN = 'ghs_faketoken0123456789';
@@ -18,6 +21,12 @@ const REAL_GIT =
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 const KEY_ENV = Buffer.from(pem).toString('base64');
+/** Every role's key variable, so no role's test can fall through to the Keychain. */
+const KEYS = Object.fromEntries(ROLES.map((role) => [keyEnvName(role), KEY_ENV]));
+/** Tests never read the real Keychain: a test that needs it stubs this hook itself. */
+const noKeychain = (service: string): never => {
+  throw new Error(`a test reached the real Keychain for ${service}; stub deps.keychain`);
+};
 
 const filled = {
   builder: { slug: 'docent-builder' },
@@ -109,7 +118,7 @@ function setup(
     env: {
       HOME: process.env.HOME,
       PATH: `/caller/controlled/bin:${process.env.PATH}`,
-      DOCENT_BUILDER_APP_KEY: KEY_ENV,
+      ...KEYS,
       GIT_TRACE: '1',
       GIT_CURL_VERBOSE: '1',
       GH_DEBUG: 'api',
@@ -122,6 +131,7 @@ function setup(
     // The fakes live in a user-owned temp dir; one test below checks the real ownership rule.
     trustTool: () => true,
     now: () => NOW,
+    keychain: noKeychain,
   };
   // A clean repo by default, so the tests don't depend on how this checkout is configured.
   deps.cwd = opts.cwd ?? CLEAN_REPO;
@@ -249,14 +259,15 @@ describe('as-agent', () => {
 
   test.each([
     [['config', 'http.proxy', 'http://evil:8080'], 'http.proxy'],
-    [['config', 'include.path', '/tmp/x'], 'include.path'],
+    // A path that can't exist: an include of a real file would list that file's keys instead.
+    [['config', 'include.path', '<dir>/never-created'], 'include.path'],
     [['config', 'alias.push', '!evil'], 'alias.push'],
     [['config', 'core.sshCommand', 'evil'], 'core.sshcommand'],
     [['remote', 'add', 'origin', 'https://github.com/someone/else.git'], 'origin must be'],
   ])('refuses a repo whose git config sets %j', async (gitArgs, message) => {
     const repo = join(dir, 'repo');
     execFileSync(REAL_GIT, ['init', '-q', repo]);
-    execFileSync(REAL_GIT, ['-C', repo, ...gitArgs]);
+    execFileSync(REAL_GIT, ['-C', repo, ...gitArgs.map((arg) => arg.replace('<dir>', dir))]);
     const { deps, calls, logs } = setup({ cwd: repo });
     expect(await asAgent(['builder', '--', ...VIEW], deps)).toBe(1);
     expect(calls).toEqual([]);
@@ -346,6 +357,30 @@ describe('as-agent', () => {
     expect(logs()[0]).toContain('docs/process/agent-identities.md');
   });
 
+  test('reads the key from the Keychain when no key variable is set', async () => {
+    const { deps } = setup();
+    delete deps.env[keyEnvName('builder')];
+    const asked: string[] = [];
+    deps.keychain = (service) => {
+      asked.push(service);
+      return KEY_ENV;
+    };
+    expect(await asAgent(['builder', '--', ...VIEW], deps)).toBe(0);
+    expect(asked).toEqual(['docent-builder-app-key']);
+  });
+
+  test('says where to put the key when neither the env nor the Keychain has it', async () => {
+    const { deps, calls, logs } = setup();
+    delete deps.env[keyEnvName('builder')];
+    deps.keychain = () => undefined;
+    expect(await asAgent(['builder', '--', ...VIEW], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain(
+      `no private key for the builder app: set ${keyEnvName('builder')}, or store it in the ` +
+        'macOS Keychain as "docent-builder-app-key"',
+    );
+  });
+
   test('shows usage for a bad role or a missing --', async () => {
     const { deps, logs } = setup();
     expect(await asAgent(['admin', '--', ...VIEW], deps)).toBe(1);
@@ -411,6 +446,23 @@ describe('as-agent allowlist', () => {
     ['reviewer', 'gh pr merge 3 --squash'],
     ['reviewer', 'gh pr merge 3 --squash --auto'],
     ['reviewer', 'gh pr create --title x'],
+    ['builder', 'gh issue delete 4'],
+    ['builder', 'gh issue transfer 4 other/repo'],
+    ['builder', 'gh issue create --web'],
+    ['builder', 'gh issue comment 4 -e'],
+    ['builder', 'gh issue view 4 --json body --jq .body'],
+    ['reviewer', 'gh issue create --title x'],
+    // Agents never approve, in any spelling, as either role.
+    ['reviewer', 'gh pr review 3 --approve'],
+    ['reviewer', 'gh pr review 3 --approve=true'],
+    ['reviewer', 'gh pr review 3 -a'],
+    ['reviewer', 'gh pr review 3 -ab lgtm'],
+    ['reviewer', 'gh pr review 3 --comment -cab x'],
+    ['builder', 'gh pr review 3 --approve'],
+    ['builder', 'gh pr review 3 -a'],
+    // gh accepts -w bundled with other short flags, so -wl opens a browser too.
+    ['builder', 'gh issue create --title x -wl bug'],
+    ['builder', 'gh pr create --title x -wl bug'],
   ];
 
   test.each(refused)('%s refuses: %s', async (role, command) => {
@@ -421,9 +473,29 @@ describe('as-agent allowlist', () => {
     expect(logs().join('\n')).toContain(`The ${role} may run:`);
   });
 
+  test('refuses to approve a PR, and says to post a comment instead', async () => {
+    const { deps, calls, logs } = setup({ config: { reviewer: { slug: 'docent-builder' } } });
+    expect(await asAgent(['reviewer', '--', 'gh', 'pr', 'review', '3', '--approve'], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain('--approve approves the PR, and agents never approve');
+
+    // The builder can't review at all, but hears the same reason first.
+    const builder = setup();
+    expect(await asAgent(['builder', '--', 'gh', 'pr', 'review', '3', '-ca'], builder.deps)).toBe(
+      1,
+    );
+    expect(builder.logs()[0]).toContain('-ca approves the PR, and agents never approve');
+
+    const ok = setup({ config: { reviewer: { slug: 'docent-builder' } } });
+    // A glued body value that happens to contain an "a" is a body, not an approval.
+    const review = ['gh', 'pr', 'review', '3', '--comment', '-bdata', '-Rhartz89/docent'];
+    expect(await asAgent(['reviewer', '--', ...review], ok.deps)).toBe(0);
+    expect(ok.ran()).toEqual([review.join(' ')]);
+  });
+
   const allowed: [string, string][] = [
     ['git push origin feat/x', 'git push origin refs/heads/feat/x:refs/heads/feat/x'],
-    ['gh pr create --title x --body-file body.md', 'gh pr create --title x --body-file body.md'],
+    ['gh pr create --title x --body short', 'gh pr create --title x --body short'],
     ['gh pr merge 3 --squash', 'gh pr merge 3 --squash'],
     ['gh pr merge 3 --squash --auto', 'gh pr merge 3 --squash --auto'],
     [
@@ -436,5 +508,507 @@ describe('as-agent allowlist', () => {
     const { deps, ran } = setup();
     expect(await asAgent(['builder', '--', ...command.split(' ')], deps)).toBe(0);
     expect(ran()).toEqual([expected]);
+  });
+
+  // Issues access is requested only for the commands that need it, so every other command keeps
+  // working on an app that hasn't been granted the Issues permission.
+  const scoped: [string, Record<string, string>][] = [
+    ['gh issue create --title x --label backlog', { issues: 'write' }],
+    ['gh issue edit 4 --add-label backlog', { issues: 'write' }],
+    ['gh issue edit 4 --remove-label backlog', { issues: 'write' }],
+    ['gh issue comment 4 --body-file triage.md', { issues: 'write' }],
+    ['gh issue list --label backlog', { issues: 'read' }],
+    ['gh issue view 4', { issues: 'read' }],
+    ['gh api /repos/hartz89/docent/issues/4/comments', { issues: 'read' }],
+    ['gh pr view 3', {}],
+    ['gh api /repos/hartz89/docent/pulls', {}],
+  ];
+
+  test.each(scoped)('builder token for "%s" adds %o', async (command, extra) => {
+    const { deps, calls, ran } = setup();
+    expect(await asAgent(['builder', '--', ...command.split(' ')], deps)).toBe(0);
+    expect(ran()).toEqual([command]);
+    const exchange = calls.find((call) => call.url.endsWith('/access_tokens'));
+    expect(exchange?.body).toEqual({
+      repositories: ['docent'],
+      permissions: { contents: 'write', pull_requests: 'write', checks: 'read', ...extra },
+    });
+  });
+});
+
+describe('as-agent review and reply forms', () => {
+  const REVIEWS = '/repos/hartz89/docent/pulls/7/reviews';
+  const REPLIES = '/repos/hartz89/docent/pulls/7/comments/123/replies';
+  const review = {
+    body: 'Verdict: fix two things.',
+    event: 'COMMENT',
+    commit_id: 'a'.repeat(40),
+    comments: [
+      { path: 'scripts/as-agent.ts', line: 12, side: 'RIGHT', body: '**Bug · must-fix:** x' },
+      { path: 'a.ts', start_line: 3, start_side: 'RIGHT', line: 5, side: 'RIGHT', body: 'y' },
+    ],
+  };
+  const reviewerConfig = { ...filled, reviewer: { slug: 'docent-builder' } };
+  const comment = (extra: object) => ({
+    ...review,
+    comments: [{ path: 'a', line: 1, body: 'x', ...extra }],
+  });
+
+  /** Writes the JSON body to a file and returns the command that posts it. */
+  function post(endpoint: string, body: unknown): string[] {
+    const path = join(dir, 'body.json');
+    writeFileSync(path, typeof body === 'string' ? body : JSON.stringify(body));
+    return ['gh', 'api', '--method', 'POST', endpoint, '--input', path];
+  }
+
+  test('the reviewer posts a review: gh reads the checked JSON on stdin', async () => {
+    const { deps, ran } = setup({ config: reviewerConfig, extra: `cat > "${dir}/stdin"` });
+    expect(await asAgent(['reviewer', '--', ...post(REVIEWS, review)], deps)).toBe(0);
+    expect(ran()).toEqual([`gh api --method POST ${REVIEWS} --input -`]);
+    expect(JSON.parse(readFileSync(join(dir, 'stdin'), 'utf8'))).toEqual(review);
+  });
+
+  test('the builder replies to a review comment', async () => {
+    const { deps, ran } = setup({ extra: `cat > "${dir}/stdin"` });
+    const reply = { body: 'Fixed in abc1234.' };
+    expect(await asAgent(['builder', '--', ...post(REPLIES, reply)], deps)).toBe(0);
+    expect(ran()).toEqual([`gh api --method POST ${REPLIES} --input -`]);
+    expect(JSON.parse(readFileSync(join(dir, 'stdin'), 'utf8'))).toEqual(reply);
+  });
+
+  test('sends the bytes it checked, even if the file changes after', async () => {
+    // The fake gh rewrites the file before reading stdin, as a racing agent might.
+    const command = post(REVIEWS, review);
+    const evil = JSON.stringify({ ...review, event: 'APPROVE', extra: 1 });
+    const { deps } = setup({
+      config: reviewerConfig,
+      extra: `printf '%s' '${evil}' > "${command[6]}"; cat > "${dir}/stdin"`,
+    });
+    expect(await asAgent(['reviewer', '--', ...command], deps)).toBe(0);
+    expect(JSON.parse(readFileSync(join(dir, 'stdin'), 'utf8'))).toEqual(review);
+  });
+
+  test('reads a relative input path from the working directory', async () => {
+    const repo = join(dir, 'repo');
+    execFileSync(REAL_GIT, ['init', '-q', repo]);
+    writeFileSync(join(repo, 'reply.json'), JSON.stringify({ body: 'Fixed in abc1234.' }));
+    const { deps } = setup({ cwd: repo, extra: `cat > "${dir}/stdin"` });
+    const command = ['gh', 'api', '--method', 'POST', REPLIES, '--input', 'reply.json'];
+    expect(await asAgent(['builder', '--', ...command], deps)).toBe(0);
+    expect(readFileSync(join(dir, 'stdin'), 'utf8')).toBe('{"body":"Fixed in abc1234."}');
+  });
+
+  test('passes on the exit code when gh fails without reading the body', async () => {
+    const { deps, calls } = setup({ config: reviewerConfig, exit: 1 });
+    const big = { ...review, body: 'x'.repeat(900_000) };
+    expect(await asAgent(['reviewer', '--', ...post(REVIEWS, big)], deps)).toBe(1);
+    expect(calls.at(-1)?.method).toBe('DELETE');
+  });
+
+  test('sends one value per key, so a duplicate key cannot hide an unchecked one', async () => {
+    const { deps } = setup({ extra: `cat > "${dir}/stdin"` });
+    const command = post(REPLIES, '{"body": "first", "body": "second"}');
+    expect(await asAgent(['builder', '--', ...command], deps)).toBe(0);
+    expect(readFileSync(join(dir, 'stdin'), 'utf8')).toBe('{"body":"second"}');
+  });
+
+  const badReviews: [string, unknown, string][] = [
+    ['an unknown top-level key', { ...review, path: 'x' }, 'may not have "path"'],
+    ['a missing event', { body: 'x' }, 'needs "event"'],
+    ['a pending event', { ...review, event: 'PENDING' }, 'bad "event"'],
+    ['a lowercase event', { ...review, event: 'comment' }, 'bad "event"'],
+    ['an approval: agents never approve', { ...review, event: 'APPROVE' }, 'bad "event"'],
+    ['a short commit_id', { ...review, commit_id: 'abc' }, 'bad "commit_id"'],
+    ['a non-string body', { ...review, body: 1 }, 'bad "body"'],
+    ['comments that are not a list', { ...review, comments: {} }, 'bad "comments"'],
+    ['an unknown comment key', comment({ position: 2 }), 'may not have "position"'],
+    ['a comment with no line', comment({ line: undefined }), 'needs "line"'],
+    ['a comment with a string line', comment({ line: '1' }), 'bad "line"'],
+    ['a comment with line 0', comment({ line: 0 }), 'bad "line"'],
+    ['a comment with a fractional line', comment({ line: 1.5 }), 'bad "line"'],
+    ['a comment with a bad side', comment({ side: 'UP' }), 'bad "side"'],
+    ['a comment with an empty path', comment({ path: '' }), 'bad "path"'],
+    ['a comment that is not an object', { ...review, comments: ['x'] }, 'must be a JSON object'],
+    ['a __proto__ key', '{"event":"COMMENT","__proto__":{"x":1}}', 'may not have "__proto__"'],
+    ['a list', [review], 'must be a JSON object'],
+    ['invalid JSON', '{"event":', "isn't valid JSON"],
+  ];
+
+  test.each(badReviews)('refuses a review with %s', async (_, body, reason) => {
+    const { deps, calls, logs } = setup({ config: reviewerConfig });
+    expect(await asAgent(['reviewer', '--', ...post(REVIEWS, body)], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain(reason);
+  });
+
+  test.each([
+    ['an extra key', { body: 'x', in_reply_to: 1 }, 'may not have "in_reply_to"'],
+    ['no body', {}, 'needs "body"'],
+    ['a non-string body', { body: ['x'] }, 'bad "body"'],
+  ])('refuses a reply with %s', async (_, body, reason) => {
+    const { deps, calls, logs } = setup();
+    expect(await asAgent(['builder', '--', ...post(REPLIES, body)], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain(reason);
+  });
+
+  const ENDPOINT = "can't POST to";
+  const SHAPE = 'gh api --input only as';
+  /** gh api arguments around a valid body file, so only the command's shape is wrong. */
+  const shapes: [string, string, (file: string) => string[], string][] = [
+    [
+      'reviewer',
+      'another repo',
+      (f) => ['--method', 'POST', '/repos/evil/docent/pulls/7/reviews', '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'reviewer',
+      'an {owner} placeholder',
+      (f) => ['--method', 'POST', 'repos/{owner}/{repo}/pulls/7/reviews', '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'reviewer',
+      'a query string',
+      (f) => ['--method', 'POST', `${REVIEWS}?x=1`, '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'reviewer',
+      'a full URL',
+      (f) => ['--method', 'POST', `https://api.github.com${REVIEWS}`, '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'reviewer',
+      'a dot segment',
+      (f) => [
+        '--method',
+        'POST',
+        '/repos/hartz89/docent/pulls/7/../../issues/7/comments',
+        '--input',
+        f,
+      ],
+      ENDPOINT,
+    ],
+    [
+      'reviewer',
+      'pull 0',
+      (f) => ['--method', 'POST', '/repos/hartz89/docent/pulls/0/reviews', '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'reviewer',
+      'a review events endpoint',
+      (f) => ['--method', 'POST', `${REVIEWS}/1/events`, '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'reviewer',
+      'the reply endpoint',
+      (f) => ['--method', 'POST', REPLIES, '--input', f],
+      ENDPOINT,
+    ],
+    ['reviewer', 'PUT', (f) => ['--method', 'PUT', REVIEWS, '--input', f], SHAPE],
+    ['reviewer', 'a lowercase post', (f) => ['--method', 'post', REVIEWS, '--input', f], SHAPE],
+    ['reviewer', '-X POST', (f) => ['-X', 'POST', REVIEWS, '--input', f], SHAPE],
+    ['reviewer', '--method=POST', (f) => ['--method=POST', REVIEWS, '--input', f], SHAPE],
+    [
+      'reviewer',
+      '--input=',
+      (f) => ['--method', 'POST', REVIEWS, `--input=${f}`],
+      'gh api method POST',
+    ],
+    ['reviewer', 'the endpoint first', (f) => [REVIEWS, '--method', 'POST', '--input', f], SHAPE],
+    [
+      'reviewer',
+      'an extra -f',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f, '-f', 'event=APPROVE'],
+      SHAPE,
+    ],
+    [
+      'reviewer',
+      'an extra -F',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f, '-F', 'x=@/etc/passwd'],
+      SHAPE,
+    ],
+    [
+      'reviewer',
+      'an extra --raw-field',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f, '--raw-field', 'x=y'],
+      SHAPE,
+    ],
+    [
+      'reviewer',
+      'a method override header',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f, '-H', 'X-HTTP-Method-Override: DELETE'],
+      SHAPE,
+    ],
+    [
+      'reviewer',
+      '--hostname',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f, '--hostname', 'evil.example'],
+      SHAPE,
+    ],
+    [
+      'reviewer',
+      'two inputs',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f, '--input', f],
+      SHAPE,
+    ],
+    [
+      'reviewer',
+      'stdin as the input',
+      () => ['--method', 'POST', REVIEWS, '--input', '-'],
+      '--input needs a file',
+    ],
+    [
+      'reviewer',
+      'no input file',
+      () => ['--method', 'POST', REVIEWS, '--input'],
+      '--input needs a file',
+    ],
+    [
+      'reviewer',
+      '--jq',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f, '--jq', '.'],
+      'scrubber',
+    ],
+    [
+      'builder',
+      'the review endpoint',
+      (f) => ['--method', 'POST', REVIEWS, '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'builder',
+      'another repo',
+      (f) => ['--method', 'POST', '/repos/evil/docent/pulls/7/comments/1/replies', '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'builder',
+      'a new review comment',
+      (f) => ['--method', 'POST', '/repos/hartz89/docent/pulls/7/comments', '--input', f],
+      ENDPOINT,
+    ],
+    [
+      'builder',
+      'an issue comment',
+      (f) => ['--method', 'POST', '/repos/hartz89/docent/issues/7/comments', '--input', f],
+      ENDPOINT,
+    ],
+  ];
+
+  test.each(shapes)('%s refuses %s', async (role, _, build, reason) => {
+    const file = join(dir, 'body.json');
+    writeFileSync(file, JSON.stringify(role === 'reviewer' ? review : { body: 'x' }));
+    const { deps, calls, logs } = setup({ config: reviewerConfig });
+    expect(await asAgent([role, '--', 'gh', 'api', ...build(file)], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain(reason);
+  });
+
+  test('refuses an input that is not a regular file, without hanging on it', async () => {
+    const fifo = join(dir, 'fifo');
+    execFileSync('/usr/bin/mkfifo', [fifo]);
+    const { deps, calls, logs } = setup({ config: reviewerConfig });
+    const command = ['gh', 'api', '--method', 'POST', REVIEWS, '--input'];
+    for (const path of [fifo, dir, join(dir, 'missing.json')]) {
+      expect(await asAgent(['reviewer', '--', ...command, path], deps)).toBe(1);
+    }
+    expect(calls).toEqual([]);
+    expect(logs().filter((line) => /isn't a regular file|couldn't read/.test(line))).toHaveLength(
+      3,
+    );
+  });
+
+  test('refuses an oversized input', async () => {
+    const { deps, calls, logs } = setup({ config: reviewerConfig });
+    const big = { ...review, body: 'x'.repeat(1_000_001) };
+    expect(await asAgent(['reviewer', '--', ...post(REVIEWS, big)], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain('is over 1000000 bytes');
+  });
+});
+
+describe('as-agent PR descriptions', () => {
+  const words = (n: number) => Array.from({ length: n }, (_, i) => `w${i}`).join(' ');
+  /** Writes a description file and returns its path. */
+  function description(text: string): string {
+    const path = join(dir, 'body.md');
+    writeFileSync(path, text);
+    return path;
+  }
+
+  test('refuses a description over the budget, and says to move detail into <details>', async () => {
+    const { deps, calls, logs } = setup();
+    const file = description(`## Intent\n\n${words(349)}\n`);
+    const command = ['gh', 'pr', 'create', '--title', 'x', '--body-file', file];
+    expect(await asAgent(['builder', '--', ...command], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain('has 351 visible words, over the limit of 350');
+    expect(logs()[0]).toContain('about 300 visible words');
+    expect(logs()[0]).toContain('collapsed <details> sections');
+  });
+
+  test('counts only what sits outside <details>', async () => {
+    const { deps, ran } = setup();
+    const hidden = `<details>\n<summary>Known gaps</summary>\n\n${words(2000)}\n</details>`;
+    const file = description(`${words(300)}\n\n${hidden}\n\n${words(40)}`);
+    const command = ['gh', 'pr', 'create', '--title', 'x', '--body-file', file];
+    expect(await asAgent(['builder', '--', ...command], deps)).toBe(0);
+    expect(ran()).toEqual([command.join(' ')]);
+  });
+
+  test('counts a <details> tag written as code, since it hides nothing', async () => {
+    const { deps, logs } = setup();
+    const file = description(`Put gaps in \`<details>\`.\n\n${words(400)}\n\n\`</details>\``);
+    const command = ['gh', 'pr', 'create', '--body-file', file];
+    expect(await asAgent(['builder', '--', ...command], deps)).toBe(1);
+    expect(logs()[0]).toContain('over the limit of 350');
+  });
+
+  test.each([
+    ['gh pr edit 3 --body <long>', ['edit', '3', '--body', words(400)]],
+    ['gh pr edit 3 --body=<long>', ['edit', '3', `--body=${words(400)}`]],
+    ['gh pr create -dF <long file>', ['create', '-dF', '<file>']],
+    ['gh pr create --body-file=<long file>', ['create', '--body-file=<file>']],
+    // gh issue edit resolves a PR number to the PR, so it can rewrite a PR description too.
+    ['gh issue edit 3 --body-file <long file>', ['<issue>', 'edit', '3', '--body-file', '<file>']],
+    // gh would read "--body" as the title and send the file; the runner checks the file anyway.
+    [
+      'gh pr create --title --body --body-file <long file>',
+      ['create', '--title', '--body', '--body-file', '<file>'],
+    ],
+  ])('refuses a long description however it is passed: %s', async (_, args) => {
+    const { deps, calls, logs } = setup();
+    const file = description(words(400));
+    const filled = args.map((arg) => arg.replace('<file>', file));
+    const command = filled[0] === '<issue>' ? ['issue', ...filled.slice(1)] : ['pr', ...filled];
+    expect(await asAgent(['builder', '--', 'gh', ...command], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain('400 visible words');
+  });
+
+  test.each([
+    ['open details', (w: string) => `<details open><summary>s</summary>\n\n${w}\n</details>`],
+    ['details tags in comments', (w: string) => `<!-- <details> -->\n${w}\n<!-- </details> -->`],
+    [
+      'details tags in a ~~~ fence',
+      (w: string) => `~~~\n<details>\n~~~\n${w}\n~~~\n</details>\n~~~`,
+    ],
+    ['escaped details tags', (w: string) => `\\<details>\n${w}\n\\</details>`],
+    ['comment markers written as code', (w: string) => `Start with \`<!--\`.\n${w}\nEnd: \`-->\``],
+  ])('counts text that GitHub shows: %s', async (_, wrap) => {
+    const { deps, logs } = setup();
+    const file = description(wrap(words(400)));
+    expect(await asAgent(['builder', '--', 'gh', 'pr', 'create', '--body-file', file], deps)).toBe(
+      1,
+    );
+    expect(logs()[0]).toContain('over the limit of 350');
+  });
+
+  test.each([
+    ['no description', ['create', '--title', 'x'], 'needs --body-file'],
+    [
+      'a recovered description',
+      ['create', '--body', 'x', '--recover', 'state.json'],
+      "can't check",
+    ],
+    ['a description on stdin', ['create', '--body-file', '-'], 'needs a file path'],
+  ])('refuses a create with %s, since it cannot check it', async (_, args, reason) => {
+    const { deps, calls, logs } = setup();
+    expect(await asAgent(['builder', '--', 'gh', 'pr', ...args], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain(reason);
+  });
+});
+
+describe('as-agent as a process', () => {
+  /**
+   * The real runner, launched the way agents launch it, with nothing real behind it. The key is
+   * the throwaway one above. A preload swaps the global fetch for one that only reaches a fake
+   * GitHub on localhost, so the runner itself is unchanged. The command is a real git push, but
+   * "origin" isn't configured, so git reads it as a local path, refuses that transport, and exits
+   * 128 without touching the network.
+   */
+  async function launch(command: string[]) {
+    const calls: string[] = [];
+    const server = createServer((req, res) => {
+      calls.push(`${req.method} ${req.url}`);
+      const reply = (status: number, body?: object) => {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(body && JSON.stringify(body));
+      };
+      if (req.url === '/repos/hartz89/docent/installation') reply(200, { id: 222 });
+      else if (req.url === '/app/installations/222/access_tokens') reply(201, { token: TOKEN });
+      else if (req.url?.startsWith('/users/')) reply(200, BOT);
+      else if (req.url === '/installation/token') reply(204);
+      else reply(404, { message: 'Not Found' });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const preload = join(dir, 'fake-github.mjs');
+    writeFileSync(
+      preload,
+      [
+        'const real = globalThis.fetch;',
+        'globalThis.fetch = (input, init) => {',
+        '  const url = String(input);',
+        "  const api = 'https://api.github.com/';",
+        '  if (!url.startsWith(api)) throw new Error("test refuses to fetch " + url);',
+        `  return real('http://127.0.0.1:${port}/' + url.slice(api.length), init);`,
+        '};',
+      ].join('\n'),
+    );
+    const repo = join(dir, 'repo');
+    // A repo with branch x, made without the developer's git config (signing, hooks and the like).
+    const git = (args: string[]) =>
+      execFileSync(REAL_GIT, args, {
+        env: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+      });
+    git(['init', '-q', '-b', 'x', repo]);
+    const who = ['-c', 'user.name=test', '-c', 'user.email=test@example.com'];
+    git(['-C', repo, ...who, 'commit', '-q', '--allow-empty', '-m', 'x']);
+    const runner = join(import.meta.dirname, 'as-agent.ts');
+    const child = spawn(process.execPath, ['--import', preload, runner, ...command], {
+      cwd: repo,
+      // Every role's key, so no role launched here can reach the real Keychain.
+      env: {
+        HOME: dir,
+        PATH: '/usr/bin:/bin',
+        ...Object.fromEntries(ROLES.map((role) => [keyEnvName(role), pem])),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Under vitest's own 5s limit, so a hung runner is killed rather than left behind. SIGKILL,
+      // because the runner catches SIGTERM and would wait on a hung revoke.
+      timeout: 4_000,
+      killSignal: 'SIGKILL',
+    });
+    // Whoever reads the output goes away at once, as `| head` does after its lines.
+    child.stdout.destroy();
+    child.stderr.destroy();
+    try {
+      const [code, signal] = await once(child, 'close');
+      return { code, signal, calls };
+    } finally {
+      server.close();
+    }
+  }
+
+  test('revokes the token and exits normally when its output reader closes early', async () => {
+    const { code, signal, calls } = await launch(['builder', '--', 'git', 'push', 'origin', 'x']);
+    // git's own exit code. A crash on the closed pipe would exit 1, before the revoke.
+    expect({ code, signal }).toEqual({ code: 128, signal: null });
+    // The runner reads the real .github/agent-apps.json: its appId skips the /apps lookup, and
+    // its slug names the bot.
+    expect(calls).toEqual([
+      'GET /repos/hartz89/docent/installation',
+      'POST /app/installations/222/access_tokens',
+      'GET /users/docent-builder-hartz89%5Bbot%5D',
+      'DELETE /installation/token',
+    ]);
   });
 });
