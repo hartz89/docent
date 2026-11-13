@@ -613,6 +613,10 @@ Question: ${question}`,
         this.#log.event('author', {
           found: found.found,
           ...(found.found ? { session: found.id, via: found.via } : { reason: found.reason }),
+          // A subagent's `session` is its throwaway copy; these name the real one.
+          ...(found.found && found.subagent
+            ? { parentSession: found.subagent.session, agentId: found.subagent.agentId }
+            : {}),
           ...(author.found ? { contextTokens: author.contextTokens } : {}),
           ...this.#forkEstimateFields(),
           forkBudgetUsd: this.#forkBudgetUsd(),

@@ -296,7 +296,13 @@ function describe(e: RunEvent): string[] {
       ];
     case 'author':
       return e.found
-        ? [`questions go to the author's session ${clean(str(e.session))} (${clean(str(e.via))})`]
+        ? [
+            `questions go to the author's session ${clean(str(e.session))}${
+              e.parentSession
+                ? `, a copy of subagent ${clean(str(e.agentId))} of session ${clean(str(e.parentSession))}`
+                : ''
+            } (${clean(str(e.via))})`,
+          ]
         : [`questions go to the guide: ${clean(str(e.reason))}`];
     case 'tour.cache':
       return [

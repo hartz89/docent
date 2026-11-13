@@ -28,6 +28,8 @@ export type AuthorSession =
        * transcript, converted so it forks like a top-level session. The original is never touched.
        */
       transcript?: string;
+      /** For a subagent: the linked session it ran under, and its own agent id. `id` is the copy's. */
+      subagent?: { session: SessionId; agentId: string };
     }
   | { found: false; reason: string };
 
@@ -233,6 +235,7 @@ async function fromRecords(
     via: "the hook's record of the subagent that wrote the code",
     contextTokens: summary.contextTokens,
     transcript: copy.path,
+    subagent: { session: sessionId(record.sessionId), agentId: record.agentId ?? '' },
   };
 }
 

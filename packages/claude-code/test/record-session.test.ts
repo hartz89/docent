@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, readdir, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -135,6 +135,25 @@ test('outside a git checkout, branch and origin are null', async () => {
   expect(await records(dataDir)).toEqual([
     expect.objectContaining({ cwd: dir, branch: null, origin: null }),
   ]);
+});
+
+test('a sessions folder that is a link to somewhere else gets nothing written through it', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'docent-data-'));
+  const elsewhere = await mkdtemp(join(tmpdir(), 'docent-elsewhere-'));
+  await symlink(elsewhere, join(dataDir, 'sessions'));
+
+  const result = runHook(
+    {
+      hook_event_name: 'SessionStart',
+      session_id: SESSION,
+      transcript_path: `${PROJECT}/${SESSION}.jsonl`,
+      cwd: elsewhere,
+    },
+    dataDir,
+  );
+
+  expect(result).toMatchObject({ status: 0, stdout: '', stderr: '' });
+  expect(await readdir(elsewhere)).toEqual([]);
 });
 
 test('bad input writes nothing, prints nothing and still exits 0', async () => {

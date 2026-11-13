@@ -386,6 +386,8 @@ test('narrows the linked session to the subagent that wrote the code', async () 
     cwd: WORKTREE,
     via: viaSubagent,
     contextTokens: 40_005,
+    // The run log names the real session and subagent, not just the copy.
+    subagent: { session: AUTHOR, agentId: SUBAGENT },
   });
   if (!found.found || !found.transcript) throw new Error('expected a copy of the transcript');
   // The fork reads a converted copy: a top-level session under a fresh id.

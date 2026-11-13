@@ -26,6 +26,12 @@ describe('tour prompt versions', () => {
     expect(sha(TOUR_PROMPTS[3](workspace.pr, diff))).toBe(
       'f62bda8b9f6694ee41d3a11347f95dcb66f268c897a3aa372e008239cf9eff1a',
     );
+    expect(sha(TOUR_PROMPTS[4](workspace.pr, diff))).toBe(
+      '5c47b5a3540d1ec33dbe4b084465925962dfe08869e648d4d546d53c92b84e8e',
+    );
+    expect(sha(TOUR_PROMPTS[5](workspace.pr, diff))).toBe(
+      '12bce81ab564511949e170e6f8819fde6745cb6e77599aad3c36f3c52ce793a9',
+    );
   });
 
   test('new tours use the current prompt, and an eval run can pick an older one', async () => {
