@@ -2,7 +2,7 @@
 // the whole-repo word lookups answered by `git grep`, and the tour checked without requiring
 // every changed line to be cited.
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -352,5 +352,23 @@ describe('the skip ledger, from a real repo', () => {
       workspace.readFile,
     );
     expect(byPath(ledger.files).get('src/clock.ts')).toMatchObject({ place: 'not_on_route' });
+  });
+});
+
+describe('word lookups', () => {
+  test('a blob git grep cannot read leaves the word unknown, never "found nowhere"', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'docent-grep-'));
+    await sh(repo, 'init', '--quiet', '--initial-branch=main');
+    await write(repo, { 'a.ts': 'export const kept = 1;\n', 'b.ts': 'export const other = 2;\n' });
+    await sh(repo, 'add', '-A');
+    await sh(repo, 'commit', '--quiet', '-m', 'base');
+    const head = commitSha((await sh(repo, 'rev-parse', 'HEAD')).trim());
+    const reader = commitReader(repo, head, head);
+    expect(await reader.findWords('new', ['missing'])).toEqual(new Map([['missing', []]]));
+
+    // Lose one blob, as a partial clone that can't fetch would: grep exits 1 and says why.
+    const blob = (await sh(repo, 'rev-parse', `${head}:b.ts`)).trim();
+    await rm(join(repo, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+    expect(await reader.findWords('new', ['missing'])).toEqual(new Map());
   });
 });

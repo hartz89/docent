@@ -84,14 +84,16 @@ export async function proveForReview(
   const texts = await fileTexts(workspace, diff);
   const lookups = renameLookups(diff, texts);
   const none = new Map<string, string[]>();
-  const words = Promise.all([
-    lookups.atBase.length ? workspace.findWords('old', lookups.atBase) : none,
-    lookups.atHead.length ? workspace.findWords('new', lookups.atHead) : none,
-  ]);
-  const [[base, head], attributes] = await Promise.all([
-    withDeadline(words, deadlineMs, [none, none] as const),
+  // Past the deadline the lookups stop, git included, and their answers count for nothing.
+  const deadline = AbortSignal.timeout(deadlineMs);
+  const [found, attributes] = await Promise.all([
+    Promise.all([
+      lookups.atBase.length ? workspace.findWords('old', lookups.atBase, deadline) : none,
+      lookups.atHead.length ? workspace.findWords('new', lookups.atHead, deadline) : none,
+    ]),
     workspace.baseGitattributes(),
   ]);
+  const [base, head] = deadline.aborted ? [none, none] : found;
   const proofs = proveSkips(diff, {
     texts,
     baseGitattributes: attributes ?? new Map(),
@@ -100,16 +102,6 @@ export async function proveForReview(
   return attributes
     ? proofs
     : proofs.filter((p) => p.evidence.label !== 'generated' && p.evidence.label !== 'vendored');
-}
-
-/** The promise's value, or `fallback` once `ms` pass. A late answer is ignored. */
-function withDeadline<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<T>((resolve) => {
-    timer = setTimeout(() => resolve(fallback), ms);
-    timer.unref();
-  });
-  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
 /** Files read at once while gathering text for the proofs. */

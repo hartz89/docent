@@ -21,14 +21,14 @@ Total spend: $6.10 ($2.20 before, $2.14 first wording, $1.76 final wording).
 |---|---|---|---|
 | Fixtures | 9 | 9 | 8 (yargs-766 failed in the judge) |
 | Tours that retried | 3 of 9 | 0 of 9 | 0 of 8 |
-| Tour cost, the same 8 fixtures | $1.07 | $0.94 | $0.96 |
+| Tour cost, the same 8 fixtures | $1.07 | $0.95 | $0.96 |
 | Changed lines not on the route | 3 of 1,314 (0.2%) | 85 of 1,314 (6.5%), 10 proven | 6 of 532 (1.1%), 3 proven |
 | Important lines not on the route (target 0) | 0 of 108 | 0 of 108 | 0 of 104 |
 | Defects explained (judge) | 4 of 7 | 4 of 7 | 4 of 6 judged |
 | Expected danger flags missed | 2 of 2 | 0 of 2 | 0 of 2 |
 | Unfounded opinions | 0 | 0 | 0 |
 
-**Retries are gone.** The three tours that retried under v3 (hono-5205, ky-536, yargs-766) each paid for a second call. With the ledger, none of 17 tours retried. Cost per tour fell about 12% on the same 8 fixtures, but the run-to-run noise is about as large (vite-15365 went from $0.157 to $0.095 on one attempt in both runs), so read the cost line loosely. Most of the earlier −13% headline was that noise plus the retries.
+**Retries are gone.** The three tours that retried under v3 (hono-5205, ky-536, yargs-766) each paid for a second call. With the ledger, none of 17 tours retried. Cost fell about 11% (first wording) and 10% (final) on the same 8 fixtures, but the run-to-run noise is about as large (vite-15365 went from $0.157 to $0.095 on one attempt in both runs), so read the cost line loosely. Most of the earlier −13% headline was that noise plus the retries.
 
 **Attention saved is modest, and smaller under the final wording.** Without yargs-766, the first wording left 8 of 532 lines off the route (1.5%), against 6 (1.1%) for the final one: the guide still cites nearly everything. Most of the first wording's 85 lines were in yargs-766, a large PR with a big test file. The ledger makes room to skip more, so a later prompt can push harder. The safety number held in every run: no line a fixture marks as important left the route.
 

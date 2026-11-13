@@ -64,7 +64,11 @@ export type Workspace = {
    * whole repo (`git grep -lw`). Rename proofs ask these (core's P9). A word the answer leaves
    * out is unknown, and proves nothing.
    */
-  findWords: (side: 'old' | 'new', words: readonly string[]) => Promise<Map<string, string[]>>;
+  findWords: (
+    side: 'old' | 'new',
+    words: readonly string[],
+    signal?: AbortSignal,
+  ) => Promise<Map<string, string[]>>;
 };
 
 /** One path in the repo at head. Folders are implied by the paths under them. */
@@ -319,13 +323,14 @@ export function commitReader(
       }
       return found;
     },
-    findWords: async (side, words) => {
+    findWords: async (side, words, signal) => {
       const found = new Map<string, string[]>();
       if (words.length > MAX_WORD_LOOKUPS) return found;
       const queue = [...words];
       const worker = async () => {
         for (let word = queue.shift(); word !== undefined; word = queue.shift()) {
-          const paths = await grepWord(dir, at(side), word);
+          if (signal?.aborted) return;
+          const paths = await grepWord(dir, at(side), word, signal);
           if (paths !== null) found.set(word, paths);
         }
       };
@@ -344,13 +349,18 @@ const GREP_CONCURRENCY = 4;
  * The paths that contain `word` as a whole word at a commit, or null when git couldn't say (a
  * timeout, say), which callers must treat as unknown. The word is a fixed string, never a pattern.
  */
-async function grepWord(dir: string, sha: CommitSha, word: string): Promise<string[] | null> {
+async function grepWord(
+  dir: string,
+  sha: CommitSha,
+  word: string,
+  signal?: AbortSignal,
+): Promise<string[] | null> {
   if (!/^[\w$]+$/.test(word)) return null;
   try {
     const { stdout } = await git(
       dir,
       ['grep', '-l', '-z', '-w', '-F', '--no-color', '-e', word, sha, '--'],
-      { timeout: 30_000 },
+      { timeout: 30_000, ...(signal ? { signal } : {}) },
     );
     // `-l` with a commit names each file `<sha>:<path>`.
     return stdout
@@ -410,12 +420,13 @@ async function listTree(dir: string, sha: CommitSha, max: number): Promise<RepoT
 export function git(
   dir: string,
   args: readonly string[],
-  options: { maxBuffer?: number; timeout?: number } = {},
+  options: { maxBuffer?: number; timeout?: number; signal?: AbortSignal } = {},
 ) {
   return run('git', hardenedGitArgs(dir, args), {
     maxBuffer: options.maxBuffer ?? 1 << 26,
     env: hardenedGitEnv(),
     ...(options.timeout ? { timeout: options.timeout } : {}),
+    ...(options.signal ? { signal: options.signal } : {}),
   });
 }
 

@@ -49,8 +49,8 @@ type Viewing = {
   /** A line to scroll to without marking it cited, like the first line not on the route. */
   at?: number;
 };
-/** Opens a file on one side, optionally scrolled to a line. */
-type OpenFile = (path: string, side: 'old' | 'new', at?: number) => void;
+/** Opens a file on one side (by default head, or base if the PR deleted it), at a line if given. */
+type OpenFile = (path: string, side?: 'old' | 'new', at?: number) => void;
 
 const KIND_LABELS: Record<StopView['kind'], string> = {
   intent: 'Intent',
@@ -237,8 +237,10 @@ export function TourScreen({ snapshot, tour }: Props) {
     const map = new Map<string, ReadonlySet<number>>();
     for (const file of ledger?.files ?? []) {
       if (!file.notOnRoute) continue;
-      map.set(`new:${file.path}`, new Set(file.notOnRoute.added));
-      map.set(`old:${file.oldPath}`, new Set(file.notOnRoute.removed));
+      const { added, removed } = file.notOnRoute;
+      // Only sides with lines: a new file at a moved file's old path mustn't wipe its base side.
+      if (added.length) map.set(`new:${file.path}`, new Set(added));
+      if (removed.length) map.set(`old:${file.oldPath}`, new Set(removed));
     }
     return map;
   }, [ledger]);
@@ -295,7 +297,7 @@ export function TourScreen({ snapshot, tour }: Props) {
             closeRoute();
           }}
           onOpenFile={(path, side, at) => {
-            setViewing({ path, side, ...(at ? { at } : {}) });
+            setViewing({ path, side: side ?? sideFor(diff, path), ...(at ? { at } : {}) });
             closeRoute();
           }}
           tour={ready}
@@ -819,11 +821,7 @@ function LedgerGroups({ ledger, onOpen }: { ledger: LedgerView; onOpen: OpenFile
           <ul className="ledger-files">
             {proven.map((file) => (
               <li key={file.path}>
-                <button
-                  type="button"
-                  className="ledger-file"
-                  onClick={() => onOpen(file.path, 'new')}
-                >
+                <button type="button" className="ledger-file" onClick={() => onOpen(file.path)}>
                   <FilePath path={file.path} />
                   <span className="ledger-lines">{plural(file.proven.lines, 'line')}</span>
                   <span className="proofs">
