@@ -11,6 +11,7 @@ export type { CostRecord } from '@docent/core';
 export type { CorrectionView } from './answer-check.ts';
 export type { AppType } from './app.ts';
 export type { PrInfo, ReviewEvent } from './github.ts';
+export type { LedgerFileView, LedgerView, ProofLabel } from './ledger.ts';
 export type {
   AnswerView,
   AuthorView,
@@ -20,7 +21,7 @@ export type {
   Step,
   TourState,
 } from './review.ts';
-export type { AnchorView, SkipView, StopView, TourOutcome, TourView } from './tour.ts';
+export type { AnchorView, NoteView, StopView, TourOutcome, TourView } from './tour.ts';
 
 // Resolves from both src/ and dist/, which sit at the same depth.
 const packageJson = new URL('../package.json', import.meta.url);

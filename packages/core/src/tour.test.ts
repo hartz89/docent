@@ -27,7 +27,6 @@ const tourOf = (kinds: readonly StopKind[]): Tour => ({
   review: reviewId('r'),
   head,
   stops: kinds.map(stop),
-  skips: [],
 });
 
 const rank = (kind: StopKind) => STOP_KINDS.indexOf(kind);

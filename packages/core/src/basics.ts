@@ -15,7 +15,7 @@ export type Result<T, Reason extends string> =
 export type CommitSha = Brand<string, 'CommitSha'>;
 export const commitSha = (sha: string): CommitSha => sha as CommitSha;
 
-/** One line of text: not blank, no line breaks (S2). Only `oneLine()` makes one. */
+/** One line of text: not blank, no line breaks (B2). Only `oneLine()` makes one. */
 export type OneLine = Brand<string, 'OneLine'>;
 
 /** Returns the trimmed text as a OneLine, or null if it's blank or spans several lines. */

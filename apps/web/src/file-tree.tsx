@@ -8,10 +8,19 @@ type Diff = NonNullable<ReviewSnapshot['diff']>;
 /** What the PR did to one file, from the diff. */
 export type Change = { added: number; removed: number; isNew: boolean };
 
+/** Where a changed file stands in the ledger, for its dot. */
+export type Place = 'on_route' | 'proven_skip' | 'not_on_route';
+
+const DOTS: Record<Place, { className: string; title: string }> = {
+  on_route: { className: 'on', title: 'On the route' },
+  proven_skip: { className: 'proven', title: 'Proven skip' },
+  not_on_route: { className: 'off', title: 'Not on the route' },
+};
+
 type Props = {
   diff: Diff;
-  /** Paths a stop cites: the files on the route. */
-  onRoute: ReadonlySet<string>;
+  /** Each changed file's place. A changed file missing here is not on the route. */
+  places: ReadonlyMap<string, Place>;
   /** The file in the code view, highlighted in the tree. */
   selected: string | null;
   onOpen: (path: string) => void;
@@ -24,7 +33,7 @@ type Folder = { name: string; path: string; folders: Folder[]; files: string[]; 
 const MAX_MATCHES = 100;
 
 /** The whole repo at the PR's head, with changed files marked. Any file opens in the code view. */
-export function FileTree({ diff, onRoute, selected, onOpen, filterRef }: Props) {
+export function FileTree({ diff, places, selected, onOpen, filterRef }: Props) {
   const tree = useQuery({
     queryKey: ['tree'],
     queryFn: async () => {
@@ -73,7 +82,7 @@ export function FileTree({ diff, onRoute, selected, onOpen, filterRef }: Props) 
   const fileRow = (path: string, depth: number, label: string) => {
     const change = changes.get(path);
     const submodule = submodules.has(path);
-    const dot = !change ? null : onRoute.has(path) ? 'on' : 'off';
+    const dot = change ? DOTS[places.get(path) ?? 'not_on_route'] : null;
     return (
       <li key={path}>
         <button
@@ -87,10 +96,7 @@ export function FileTree({ diff, onRoute, selected, onOpen, filterRef }: Props) 
         >
           <span className="tree-twisty" aria-hidden="true" />
           {dot ? (
-            <span
-              className={`route-dot ${dot}`}
-              title={dot === 'on' ? 'On the route' : 'Not on the route'}
-            />
+            <span className={`route-dot ${dot.className}`} title={dot.title} />
           ) : (
             <span className="route-dot none" aria-hidden="true" />
           )}
@@ -190,6 +196,10 @@ export function FileTree({ diff, onRoute, selected, onOpen, filterRef }: Props) 
           <span>
             <i className="route-dot on" />
             on the route
+          </span>
+          <span>
+            <i className="route-dot proven" />
+            proven skip
           </span>
           <span>
             <i className="route-dot off" />

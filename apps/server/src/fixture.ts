@@ -63,8 +63,46 @@ export function fixtureSource(dir: string, record: ReviewRecorder = printReview)
         return { url: `${pr.url}#pullrequestreview-0` };
       },
       headFiles: () => recordedHeadFiles(join(dir, 'files', 'head')),
+      // Only what was recorded: a replay's proofs read the recorded files, never a real repo.
+      baseGitattributes: async () => {
+        const found = new Map<string, string>();
+        for (const path of await recordedPaths(join(dir, 'files', 'base'))) {
+          if (path === '.gitattributes' || path.endsWith('/.gitattributes')) {
+            found.set(path, await readFileText(join(dir, 'files', 'base', path), 'utf8'));
+          }
+        }
+        return found;
+      },
+      findWords: async (side, words) => {
+        const root = join(dir, 'files', side === 'new' ? 'head' : 'base');
+        const texts = await Promise.all(
+          (await recordedPaths(root)).map(async (path) => ({
+            path,
+            text: await readFileText(join(root, path), 'utf8'),
+          })),
+        );
+        return new Map(
+          words.map((word) => [
+            word,
+            texts.filter(({ text }) => wholeWord(word).test(text)).map(({ path }) => path),
+          ]),
+        );
+      },
     };
   };
+}
+
+/** `git grep -w`'s idea of a whole word: not touching a letter, digit or underscore. */
+const wholeWord = (word: string) =>
+  new RegExp(`(?<![A-Za-z0-9_])${word.replace(/[$]/g, '\\$')}(?![A-Za-z0-9_])`);
+
+/** Every recorded file under a folder, as repo paths. */
+async function recordedPaths(root: string): Promise<string[]> {
+  if (!existsSync(root)) return [];
+  const found = await readdir(root, { recursive: true, withFileTypes: true });
+  return found
+    .filter((entry) => entry.isFile())
+    .map((entry) => relative(root, join(entry.parentPath, entry.name)).split(sep).join('/'));
 }
 
 /**
@@ -89,12 +127,7 @@ const replayedPrimer = (request: AgentRequest): AgentReply => ({
 /** The recorded head files, from disk: a fixture is trusted test data, not a PR's code. */
 async function recordedHeadFiles(root: string): Promise<HeadFiles> {
   const entries: HeadFile[] = [];
-  const found = existsSync(root)
-    ? await readdir(root, { recursive: true, withFileTypes: true })
-    : [];
-  for (const entry of found) {
-    if (!entry.isFile()) continue;
-    const path = relative(root, join(entry.parentPath, entry.name)).split(sep).join('/');
+  for (const path of await recordedPaths(root)) {
     entries.push({ path, bytes: (await stat(join(root, path))).size });
   }
   return {
