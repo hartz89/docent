@@ -59,6 +59,8 @@ Each time you run `docent review`, Docent keeps a short diary of that run on you
 
 **Turning it off:** pass `--no-run-log`, or set `DOCENT_RUN_LOG=off` to turn it off for good. You can also delete the folder any time.
 
+**Your questions are kept too.** Each answered question, with who answered, why, what it cost and the guide's note, is saved per PR under `questions/` in the same data folder. Reload the page or reopen the PR and they're still there; ones asked at an older commit say so. The files are readable only by you, secrets are scrubbed first, each PR keeps its newest 200 questions, and files untouched for 90 days are removed. A replayed `--fixture` keeps them for that launch only.
+
 ## Developing
 
 You need Node 24 and pnpm 10.
