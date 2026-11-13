@@ -16,6 +16,7 @@ export type {
   AnswerView,
   AuthorView,
   PostedReview,
+  QuestionView,
   ReviewSnapshot,
   Step,
   TourState,

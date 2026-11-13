@@ -7,6 +7,7 @@ import type {
   LedgerView,
   PostedReview,
   ProofLabel,
+  QuestionView,
   ReviewSnapshot,
   StopView,
 } from '@docent/server';
@@ -74,48 +75,94 @@ export function TourScreen({ snapshot, tour }: Props) {
   // A reviewer who opened the review while the tour was still being written is reading the PR's
   // description. Stops arriving don't take the code column away from it; moving does.
   const [overviewFirst, setOverviewFirst] = useState(tour.state !== 'ready');
-  // Each stop's questions and answers, kept here so they survive moving between stops.
+  // Each stop's questions and answers, kept here so they survive moving between stops. The server
+  // keeps the answered ones too, so a reload or a relaunch reads them back.
   const [threads, setThreads] = useState<Record<string, Exchange[]>>({});
+  // Questions open once the earlier threads are in, so a new one never lands above them.
+  const [threadsLoaded, setThreadsLoaded] = useState(false);
   // The review posted to GitHub from here, if any. A reload gets it from the snapshot.
   const [posted, setPosted] = useState<PostedReview | null>(snapshot.posted);
-  const ask = useCallback(async (stopId: string, question: string) => {
-    // Each exchange has its own id, so an answer always lands on the question it answers.
-    const id = crypto.randomUUID();
-    const settle = (patch: Partial<Exchange>) =>
+  const settle = useCallback(
+    (stopId: string, id: string, patch: Partial<Exchange>) =>
       setThreads((all) => ({
         ...all,
         [stopId]: (all[stopId] ?? []).map((e) => (e.id === id ? { ...e, ...patch } : e)),
+      })),
+    [],
+  );
+  // The guide's check of an author answer comes after it, and only ever adds a correction. If it
+  // fails, or the check was lost with an earlier launch, it says nothing.
+  const followCheck = useCallback(
+    async (stopId: string, id: string, checkId: string) => {
+      try {
+        const res = await api['answer-checks'][':id'].$get({ param: { id: checkId } });
+        if (res.status !== 200) return;
+        const { correction } = await res.json();
+        if (correction) settle(stopId, id, { correction });
+      } catch {
+        // Silence, as when the answer holds up.
+      }
+    },
+    [settle],
+  );
+  const isReady = ready !== null;
+  useEffect(() => {
+    if (!isReady) return;
+    let live = true;
+    void (async () => {
+      try {
+        const res = await api.questions.$get();
+        if (res.status !== 200 || !live) return;
+        const { questions } = await res.json();
+        if (!live) return;
+        const loaded: Record<string, Exchange[]> = {};
+        for (const q of questions) loaded[q.stopId] = [...(loaded[q.stopId] ?? []), fromStored(q)];
+        setThreads(loaded);
+        for (const q of questions) {
+          if (q.answer.source === 'author_session' && !q.checked && !q.correction) {
+            void followCheck(q.stopId, q.id, q.answer.checkId);
+          }
+        }
+      } catch (error) {
+        report({
+          kind: 'client.error',
+          source: 'api',
+          message: `Couldn't load earlier questions: ${String(error)}`,
+        });
+      } finally {
+        if (live) setThreadsLoaded(true);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [isReady, followCheck]);
+  const ask = useCallback(
+    async (stopId: string, question: string) => {
+      // Each exchange has its own id, so an answer always lands on the question it answers.
+      const id = crypto.randomUUID();
+      setThreads((all) => ({
+        ...all,
+        [stopId]: [
+          ...(all[stopId] ?? []),
+          { id, question, answer: null, error: null, correction: null, earlier: null },
+        ],
       }));
-    setThreads((all) => ({
-      ...all,
-      [stopId]: [
-        ...(all[stopId] ?? []),
-        { id, question, answer: null, error: null, correction: null },
-      ],
-    }));
-    let checkId: string | null = null;
-    try {
-      const res = await api.questions.$post({ json: { stopId, question } });
-      const body = await res.json();
-      if ('answer' in body) {
-        settle({ answer: body.answer });
-        if (body.answer.source === 'author_session') checkId = body.answer.checkId;
-      } else settle({ error: body.error });
-    } catch (error) {
-      settle({ error: error instanceof Error ? error.message : String(error) });
-    }
-    // The guide's check of the author's answer comes after it, and only ever adds a correction.
-    // If it fails, it says nothing.
-    if (!checkId) return;
-    try {
-      const res = await api['answer-checks'][':id'].$get({ param: { id: checkId } });
-      if (res.status !== 200) return;
-      const { correction } = await res.json();
-      if (correction) settle({ correction });
-    } catch {
-      // Silence, as when the answer holds up.
-    }
-  }, []);
+      let checkId: string | null = null;
+      try {
+        const res = await api.questions.$post({ json: { stopId, question } });
+        const body = await res.json();
+        if ('answer' in body) {
+          settle(stopId, id, { answer: body.answer });
+          if (body.answer.source === 'author_session') checkId = body.answer.checkId;
+        } else settle(stopId, id, { error: body.error });
+      } catch (error) {
+        settle(stopId, id, { error: error instanceof Error ? error.message : String(error) });
+      }
+      if (checkId) await followCheck(stopId, id, checkId);
+    },
+    [settle, followCheck],
+  );
 
   // Under 1200px wide the route leaves its column for a drawer; under 800px the layout stacks,
   // and a bottom bar moves between stops.
@@ -402,6 +449,8 @@ export function TourScreen({ snapshot, tour }: Props) {
               stop={stop}
               author={snapshot.author}
               exchanges={threads[stop.id] ?? []}
+              threadsLoaded={threadsLoaded}
+              head={snapshot.pr?.head ?? ''}
               onAsk={(question) => void ask(stop.id, question)}
               onOpenCite={(cite) =>
                 setViewing({
@@ -1013,7 +1062,26 @@ type Exchange = {
   error: string | null;
   /** The guide's note when the code contradicts the author's answer. Usually never set. */
   correction: CorrectionView | null;
+  /** Set for a question asked at another head commit, or at a stop this tour doesn't have. */
+  earlier: QuestionView['earlier'];
 };
+
+const fromStored = (q: QuestionView): Exchange => ({
+  id: q.id,
+  question: q.question,
+  answer: q.answer,
+  error: null,
+  correction: q.correction,
+  earlier: q.earlier,
+});
+
+/** Where an earlier question was asked, when that isn't this commit and this stop. */
+function earlierNote({ commit, stopTitle }: NonNullable<Exchange['earlier']>, head: string) {
+  const at = stopTitle ? ` at the stop “${stopTitle}”` : '';
+  return commit === head
+    ? `Asked earlier${at}, in another tour of this commit`
+    : `Asked at an earlier commit, ${commit.slice(0, 7)}${at}`;
+}
 
 /** Who answered, and what it cost: the author's session, or the guide and why. */
 function answerSource(answer: AnswerView): string {
@@ -1030,6 +1098,8 @@ function Narration({
   stop,
   author,
   exchanges,
+  threadsLoaded,
+  head,
   onAsk,
   onOpenCite,
   activeAnchor,
@@ -1043,6 +1113,10 @@ function Narration({
   stop: StopView;
   author: AuthorView;
   exchanges: readonly Exchange[];
+  /** False until the questions kept from before this page load are in. */
+  threadsLoaded: boolean;
+  /** The head commit this tour covers. */
+  head: string;
   onAsk: (question: string) => void;
   onOpenCite: (cite: AnchorView) => void;
   activeAnchor: number;
@@ -1114,10 +1188,15 @@ function Narration({
 
         {!finished ? (
           <p className="waiting-note">Questions open once the whole tour is written and checked.</p>
+        ) : !threadsLoaded ? (
+          <p className="waiting-note">Loading earlier questions…</p>
         ) : (
           <div className="question">
             {exchanges.map((exchange, i) => (
               <div className="exchange fade-in" key={exchange.id}>
+                {exchange.earlier && (
+                  <div className="exchange-earlier">{earlierNote(exchange.earlier, head)}</div>
+                )}
                 <p
                   className="exchange-question"
                   ref={i === exchanges.length - 1 ? newest : undefined}
