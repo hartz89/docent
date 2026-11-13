@@ -78,12 +78,15 @@ const RANK_LABELS: Record<Candidate['rank'], string> = {
 export function DefinitionPopover({
   found,
   at,
+  name,
   onPick,
   onClose,
 }: {
   found: Found;
-  /** The clicked name's box, in viewport coordinates. */
+  /** The clicked name's box, in viewport coordinates, when it was clicked. */
   at: { left: number; top: number; bottom: number };
+  /** The clicked name in the page. Once it moves from `at`, the popover closes. */
+  name: globalThis.Range;
   onPick: (to: JumpTo) => void;
   onClose: () => void;
 }) {
@@ -110,7 +113,8 @@ export function DefinitionPopover({
   }, []);
   const hasCandidates = found.kind === 'candidates' && found.candidates.length > 0;
   useEffect(() => {
-    if (hasCandidates) box.current?.querySelector<HTMLElement>('button')?.focus();
+    if (hasCandidates)
+      box.current?.querySelector<HTMLElement>('button')?.focus({ preventScroll: true });
   }, [hasCandidates]);
 
   useEffect(() => {
@@ -134,13 +138,23 @@ export function DefinitionPopover({
     const onPointer = (event: PointerEvent) => {
       if (!box.current?.contains(event.target as Node)) onClose();
     };
+    // A scroll or a resize that moves the name would leave the popover pointing at nothing.
+    // Scroll events arrive a frame late, so the name's place decides, not the event itself.
+    const onMove = () => {
+      const now = name.getBoundingClientRect();
+      if (Math.abs(now.left - at.left) > 1 || Math.abs(now.top - at.top) > 1) onClose();
+    };
     window.addEventListener('keydown', onKey, true);
     document.addEventListener('pointerdown', onPointer, true);
+    document.addEventListener('scroll', onMove, true);
+    window.addEventListener('resize', onMove);
     return () => {
       window.removeEventListener('keydown', onKey, true);
       document.removeEventListener('pointerdown', onPointer, true);
+      document.removeEventListener('scroll', onMove, true);
+      window.removeEventListener('resize', onMove);
     };
-  }, [onClose]);
+  }, [onClose, name, at]);
 
   return (
     <dialog

@@ -122,25 +122,30 @@ export function CodeView({ path, side, cited, focus, changed, onStep, onJump }: 
   // Jump to definition. A ⌘-click (Ctrl-click elsewhere) on a name or an import looks it up, and
   // so do Enter and F12 with the caret or selection on one. Plain clicks are left alone, so text
   // still selects as usual.
-  const [popover, setPopover] = useState<{ found: Found; at: Box } | null>(null);
-  const closePopover = useCallback(() => setPopover(null), []);
+  const [popover, setPopover] = useState<{ found: Found; hit: Hit } | null>(null);
   const [hovering, setHovering] = useState(false);
   const lookups = useRef(0);
-  // A new file closes the old file's popover.
+  // Closing also drops a lookup still under way, so its answer can't land after the reviewer
+  // has moved on.
+  const closePopover = useCallback(() => {
+    lookups.current += 1;
+    setPopover(null);
+  }, []);
+  // A new file, a new stop or leaving the code view closes the popover and its lookup.
   // biome-ignore lint/correctness/useExhaustiveDependencies: path and side are the triggers.
-  useEffect(() => setPopover(null), [path, side]);
+  useEffect(() => closePopover, [path, side, closePopover]);
 
   const jump = async (hit: Hit) => {
     const id = ++lookups.current;
     const name = hit.target.kind === 'symbol' ? hit.target.name : hit.target.spec;
-    setPopover({ found: { kind: 'loading', name }, at: hit.box });
+    setPopover({ found: { kind: 'loading', name }, hit });
     const found = await lookUp(hit.target, { path, side, line: hit.line });
     if (id !== lookups.current) return;
     if ('path' in found) {
       setPopover(null);
       onJump(found);
     } else {
-      setPopover({ found, at: hit.box });
+      setPopover({ found, hit });
     }
   };
 
@@ -210,7 +215,6 @@ export function CodeView({ path, side, cited, focus, changed, onStep, onJump }: 
         onMouseMove={onMouseMove}
         onMouseLeave={clearHover}
         onKeyDown={onKeyDown}
-        onScroll={closePopover}
       >
         {!lines && !text.isError && <p className="code-message">Opening {path}…</p>}
         {text.isError && (
@@ -268,7 +272,8 @@ export function CodeView({ path, side, cited, focus, changed, onStep, onJump }: 
       {popover && (
         <DefinitionPopover
           found={popover.found}
-          at={popover.at}
+          at={popover.hit.box}
+          name={popover.hit.range}
           onPick={(to) => {
             setPopover(null);
             onJump(to);

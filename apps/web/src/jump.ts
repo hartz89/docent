@@ -18,15 +18,14 @@ const IMPORT_STRING = /\b(?:from|import|require)\s*\(?\s*(['"])([^'"\n]{1,1000})
 
 /**
  * What the character at `column` of a line points at: an import specifier, a name, or nothing.
- * A column just past the end of a name still counts, since a click on a name's last half lands
- * there.
+ * A column just past the end of either still counts, since a click on its last half lands there.
  */
 export function targetAt(text: string, column: number): JumpTarget | null {
   for (const match of text.matchAll(IMPORT_STRING)) {
     const spec = match[2] ?? '';
     const start = match.index + match[0].length - spec.length - 1;
     const end = start + spec.length;
-    if (column >= start && column < end) return { kind: 'import', spec, start, end };
+    if (column >= start && column <= end) return { kind: 'import', spec, start, end };
   }
   let at = column;
   if (!NAME_PART.test(text[at] ?? '')) at -= 1;

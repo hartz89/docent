@@ -1910,6 +1910,11 @@ kbd {
    code below it in a window of its own, and a bottom bar moves between stops and opens the
    route. */
 @media (max-width: 799px) {
+  /* No room in the code header: Esc and "Back to stop" still return to the tour. */
+  .trail-nav {
+    display: none;
+  }
+
   .app {
     grid-template-rows: auto minmax(0, 1fr) auto;
   }

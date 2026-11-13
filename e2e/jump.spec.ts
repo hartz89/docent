@@ -39,6 +39,27 @@ test('⌘-click follows a name to its definition, and the reviewer returns to th
       await expect(page.getByRole('button', { name: /Back to stop/ })).toHaveCount(0);
     });
 
+    await test.step('Alt+← with nothing behind it stays in the review', async () => {
+      const at = page.url();
+      await page.keyboard.press('Alt+ArrowLeft');
+      await expect(page.getByText(/^Stop 1 of/)).toBeVisible();
+      expect(page.url()).toBe(at);
+    });
+
+    await test.step('Esc during a slow lookup drops it: nothing opens later', async () => {
+      await page.route('**/api/definition?*', async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        await route.continue();
+      });
+      const answered = page.waitForResponse('**/api/definition?*');
+      await token(page, 63, 'CORSOptions').click({ modifiers: ['ControlOrMeta'] });
+      await page.keyboard.press('Escape');
+      await answered;
+      await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
+      await expect(page.locator('.code-range')).toHaveText(citation ?? '');
+      await page.unroute('**/api/definition?*');
+    });
+
     await test.step('from the keyboard: select a name, then Enter', async () => {
       await page.locator('[data-line="63"]').scrollIntoViewIfNeeded();
       await token(page, 63, 'CORSOptions').dblclick();
@@ -114,6 +135,25 @@ test('an ambiguous name lists its candidates; imports, history and Esc', async (
       await expect(page.locator('.code-path')).toHaveText('src/middleware/cors/index.test.ts');
       await expect(page.getByRole('button', { name: /Back to stop/ })).toHaveCount(0);
       await expect(page.getByText(/^Stop 5 of/)).toBeVisible();
+    });
+  } finally {
+    await docent.stop();
+  }
+});
+
+test('at phone width, the code header still fits after a jump', async ({ page }) => {
+  const docent = await launch('cli.js', ['review', '--fixture', fixture]);
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(docent.url);
+    await page.locator('[data-line="63"]').scrollIntoViewIfNeeded();
+    await token(page, 63, 'CORSOptions').click({ modifiers: ['ControlOrMeta'] });
+    await expect(page.locator('.code-range')).toHaveText('line 9 · definition of CORSOptions');
+    const header = page.locator('.code-header');
+    const spill = await header.evaluate((el) => el.scrollWidth - el.clientWidth);
+    expect(spill).toBeLessThanOrEqual(0);
+    await expect(page.getByRole('button', { name: 'Back to stop 1' })).toBeInViewport({
+      ratio: 1,
     });
   } finally {
     await docent.stop();

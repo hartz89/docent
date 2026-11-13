@@ -24,6 +24,8 @@ describe('what a click in a line points at', () => {
       start: line.indexOf('../'),
       end: line.length - 1,
     });
+    // Just past its last character, where a click on that character's right half lands.
+    expect(targetAt(line, line.length - 1)).toMatchObject({ kind: 'import' });
     expect(targetAt("const x = require('./a')", 19)).toMatchObject({ spec: './a' });
     expect(targetAt("await import('./b.js')", 15)).toMatchObject({ spec: './b.js' });
   });

@@ -240,13 +240,11 @@ export function TourScreen({ snapshot, tour }: Props) {
         event.preventDefault();
         toTour();
       } else if (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
-        if (event.key === 'ArrowLeft' && canGoBack(trail)) {
-          event.preventDefault();
-          setTrail(back);
-        } else if (event.key === 'ArrowRight' && canGoForward(trail)) {
-          event.preventDefault();
-          setTrail(forward);
-        }
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        // Always kept from the browser: elsewhere than macOS, Alt+← is its own Back, and one
+        // press too many would leave the review.
+        event.preventDefault();
+        setTrail(event.key === 'ArrowLeft' ? back : forward);
       }
     };
     window.addEventListener('keydown', onKey);
