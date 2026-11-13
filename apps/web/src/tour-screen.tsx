@@ -21,6 +21,16 @@ import {
 import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
 import { FileTree } from './file-tree.tsx';
+import {
+  back,
+  canGoBack,
+  canGoForward,
+  current,
+  emptyTrail,
+  forward,
+  type Trail,
+  visit,
+} from './jump.ts';
 import { Markdown } from './markdown.tsx';
 import type { Ready, Working } from './review-page.tsx';
 import {
@@ -39,7 +49,20 @@ import { postedLabel, VerdictForm } from './verdict.tsx';
 type Props = { snapshot: ReviewSnapshot; tour: Ready | Working };
 type Diff = NonNullable<ReviewSnapshot['diff']>;
 /** A file opened outside the stop's citations, at the lines in focus if any. */
-type Viewing = { path: string; side: 'old' | 'new'; focus?: AnchorView; label?: string };
+type Viewing = {
+  path: string;
+  side: 'old' | 'new';
+  focus?: { startLine: number; endLine: number };
+  label?: string;
+};
+
+const sameView = (a: Viewing, b: Viewing) =>
+  a.path === b.path && a.side === b.side && a.focus?.startLine === b.focus?.startLine;
+
+/** Alt+← and Alt+→ move through explored files, as an editor's back and forward do. */
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+const BACK_KEYS = isMac ? '⌥←' : 'Alt+←';
+const FORWARD_KEYS = isMac ? '⌥→' : 'Alt+→';
 
 const KIND_LABELS: Record<StopView['kind'], string> = {
   intent: 'Intent',
@@ -56,8 +79,12 @@ export function TourScreen({ snapshot, tour }: Props) {
   const writing = ready ? null : (tour as Working);
   const [index, setIndex] = useState(0);
   const [anchorIndex, setAnchorIndex] = useState(0);
-  // A file opened from the skip list, the overview or the file tree, in place of the stop's citation.
-  const [viewing, setViewing] = useState<Viewing | null>(null);
+  // Files opened from the skip list, the overview, the file tree or a jump to definition, in place
+  // of the stop's citation. Back and forward move along the trail; the stop is always its start.
+  const [trail, setTrail] = useState<Trail<Viewing>>(emptyTrail);
+  const viewing = current(trail);
+  const explore = useCallback((view: Viewing) => setTrail((t) => visit(t, view, sameView)), []);
+  const toTour = useCallback(() => setTrail(emptyTrail()), []);
   // The left pane shows the route or the whole repo's files.
   const [pane, setPane] = useState<'route' | 'files'>('route');
   const goToFile = useRef<HTMLInputElement>(null);
@@ -207,7 +234,7 @@ export function TourScreen({ snapshot, tour }: Props) {
       setIndex(Math.max(0, Math.min(stops.length - 1, next)));
       setAnchorIndex(0);
       setOverviewFirst(false);
-      setViewing(null);
+      setTrail(emptyTrail());
     },
     [stop, stops.length],
   );
@@ -250,6 +277,26 @@ export function TourScreen({ snapshot, tour }: Props) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [go, index]);
+
+  // Esc leaves explored files for the tour; Alt+← and Alt+→ go back and forward among them.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], dialog')) return;
+      if (event.key === 'Escape' && !event.altKey && trail.at >= 0) {
+        event.preventDefault();
+        toTour();
+      } else if (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        // Always kept from the browser: elsewhere than macOS, Alt+← is its own Back, and one
+        // press too many would leave the review.
+        event.preventDefault();
+        setTrail(event.key === 'ArrowLeft' ? back : forward);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [trail, toTour]);
 
   // ⌘P (Ctrl+P elsewhere) jumps to "Go to file", as in an editor.
   useEffect(() => {
@@ -313,7 +360,7 @@ export function TourScreen({ snapshot, tour }: Props) {
           }}
           skips={skips}
           onOpenSkip={(path) => {
-            setViewing({ path, side: sideFor(diff, path) });
+            explore({ path, side: sideFor(diff, path) });
             closeRoute();
           }}
           tour={ready}
@@ -326,7 +373,7 @@ export function TourScreen({ snapshot, tour }: Props) {
           onRoute={onRoute}
           selected={shown?.side === 'new' ? shown.path : null}
           onOpen={(path) => {
-            setViewing({ path, side: 'new' });
+            explore({ path, side: 'new' });
             closeRoute();
           }}
           filterRef={goToFile}
@@ -375,11 +422,36 @@ export function TourScreen({ snapshot, tour }: Props) {
                       : ''}
                 </span>
                 <span className="code-side">{shown.side === 'new' ? 'head' : 'base'}</span>
+                {trail.entries.length > 0 && (
+                  <span className="trail-nav">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="Back"
+                      title={`Back (${BACK_KEYS})`}
+                      disabled={!canGoBack(trail)}
+                      onClick={() => setTrail(back)}
+                    >
+                      <span aria-hidden="true">‹</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="Forward"
+                      title={`Forward (${FORWARD_KEYS})`}
+                      disabled={!canGoForward(trail)}
+                      onClick={() => setTrail(forward)}
+                    >
+                      <span aria-hidden="true">›</span>
+                    </button>
+                  </span>
+                )}
                 {viewing && (
                   <button
                     type="button"
                     className="secondary-button back-to-stop"
-                    onClick={() => setViewing(null)}
+                    title="Back to the tour (Esc)"
+                    onClick={toTour}
                   >
                     <span aria-hidden="true">←</span>{' '}
                     {stop && !overviewFirst ? `Back to stop ${index + 1}` : 'Back to the overview'}
@@ -393,10 +465,18 @@ export function TourScreen({ snapshot, tour }: Props) {
                 focus={viewing ? (viewing.focus ?? null) : anchor}
                 changed={changes.get(`${shown.side}:${shown.path}`) ?? new Set()}
                 onStep={viewing ? undefined : stepAnchor}
+                onJump={(to) =>
+                  explore({
+                    path: to.path,
+                    side: 'new',
+                    ...(to.line ? { focus: { startLine: to.line, endLine: to.line } } : {}),
+                    label: to.line ? `line ${to.line} · ${to.label}` : to.label,
+                  })
+                }
               />
             </>
           ) : (
-            <Overview snapshot={snapshot} diff={diff} onOpen={setViewing} />
+            <Overview snapshot={snapshot} diff={diff} onOpen={explore} />
           )}
         </section>
         <aside className="column" aria-label="The guide" ref={guide}>
@@ -416,7 +496,7 @@ export function TourScreen({ snapshot, tour }: Props) {
               head={snapshot.pr?.head ?? ''}
               onAsk={(question) => void ask(stop.id, question)}
               onOpenCite={(cite) =>
-                setViewing({
+                explore({
                   path: cite.path,
                   side: cite.side,
                   focus: cite,
@@ -427,7 +507,7 @@ export function TourScreen({ snapshot, tour }: Props) {
               onAnchor={(i) => {
                 setOverviewFirst(false);
                 setAnchorIndex(i);
-                setViewing(null);
+                toTour();
               }}
               isLast={index === stops.length - 1}
               onNext={() => go(index + 1)}

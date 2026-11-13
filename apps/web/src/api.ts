@@ -31,6 +31,23 @@ export const api: Client['api'] = hc<AppType>(window.location.origin, {
 }).api;
 
 /**
+ * A file's text at head (`new`) or base (`old`). Shared, so the code view and the definition
+ * popover's previews read one cached copy.
+ */
+export const fileTextQuery = (path: string, side: 'old' | 'new') => ({
+  queryKey: ['file', side, path],
+  queryFn: async (): Promise<string> => {
+    const res = await api.file.$get({ query: { path, side } });
+    if (res.status !== 200) {
+      const body = (await res.json()) as { error?: string };
+      throw new Error(body.error ?? `The server answered ${res.status}`);
+    }
+    return (await res.json()).text;
+  },
+  staleTime: Number.POSITIVE_INFINITY,
+});
+
+/**
  * Follows the tour's progress over server-sent events. EventSource can't send the bearer token,
  * so this reads the stream through fetch instead. Resolves when the server closes the stream.
  */
