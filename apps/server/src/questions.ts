@@ -118,6 +118,9 @@ export class QuestionStore {
       // A file we can't read is left as it is, never overwritten: a newer Docent may have
       // written it, or the reviewer may want it back. Threads are kept for this launch only.
       options.onError?.('question threads', error);
+      console.error(
+        `Docent couldn't read earlier questions from ${path}, so this launch keeps them until it ends. Move the file aside to start fresh. (${error instanceof Error ? error.message : String(error)})`,
+      );
       return new QuestionStore(null, [], secrets, options.onError);
     }
   }
