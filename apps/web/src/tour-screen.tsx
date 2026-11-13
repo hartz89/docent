@@ -485,7 +485,14 @@ export function TourScreen({ snapshot, tour }: Props) {
         finished={ready !== null}
         posted={posted}
         pending={drafts.current.length}
-        onOpenBatch={verdictIndex >= 0 ? () => go(verdictIndex) : undefined}
+        onOpenBatch={() => {
+          if (verdictIndex >= 0) return go(verdictIndex);
+          // While the tour streams there's no verdict stop yet: open the tray where you are.
+          setTrayOpen(true);
+          requestAnimationFrame(() =>
+            document.querySelector('.tray')?.scrollIntoView({ block: 'nearest' }),
+          );
+        }}
         drawer={drawer ? { open: routeOpen, onOpen: openRoute } : null}
       />
       <div className="columns" ref={columns}>
@@ -731,7 +738,8 @@ function TopBar({
   posted: PostedReview | null;
   /** Comments in the batch, not yet posted. */
   pending: number;
-  onOpenBatch: (() => void) | undefined;
+  /** Goes to the verdict stop's list, or opens the tray while the tour is still being written. */
+  onOpenBatch: () => void;
   /** How to open the route when it's a drawer; null when it has its own column. */
   drawer: { open: boolean; onOpen: () => void } | null;
 }) {
