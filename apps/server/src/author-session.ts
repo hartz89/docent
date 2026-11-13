@@ -4,12 +4,13 @@ import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createReadStream, createWriteStream, existsSync, rmSync } from 'node:fs';
 import { mkdtemp, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { basename, join, relative, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { finished } from 'node:stream/promises';
 import { type SessionId, sessionId } from '@docent/core';
-import { git } from './github.ts';
+import { claudeProjectsDir } from './agent.ts';
+import { defaultDataDir, git } from './github.ts';
 
 /** The author's session, or why questions go to the guide instead. */
 export type AuthorSession =
@@ -81,7 +82,7 @@ export function localSessions(
     repoOf?: (dir: string) => Promise<string | null>;
   } = {},
 ): SessionLocator {
-  const projectsDir = options.projectsDir ?? join(homedir(), '.claude', 'projects');
+  const projectsDir = options.projectsDir ?? claudeProjectsDir();
   const dataDir = options.dataDir ?? defaultDataDir();
   const repoOf = options.repoOf ?? originRepo;
   return async (handoff) => {
@@ -152,21 +153,6 @@ async function fromLinks(
     }
   }
   return { found: false, reason: NO_MATCH };
-}
-
-/**
- * Docent's data folder, where the Claude Code hook writes its records. The hook
- * (packages/claude-code/hooks/record-session.mjs) computes the same path; keep the two in step.
- */
-export function defaultDataDir(): string {
-  if (process.env.DOCENT_DATA_DIR) return process.env.DOCENT_DATA_DIR;
-  if (process.platform === 'darwin') {
-    return join(homedir(), 'Library', 'Application Support', 'docent');
-  }
-  if (process.platform === 'win32') {
-    return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'docent');
-  }
-  return join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'docent');
 }
 
 /** What the hook records when a session or subagent starts. */
@@ -682,6 +668,33 @@ async function originRepo(dir: string): Promise<string | null> {
 function githubRepo(url: string): string | null {
   const match = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(url);
   return match ? `${match[1]}/${match[2]}` : null;
+}
+
+/**
+ * A question's place in line, taken the moment its request arrives. Setup that comes before the
+ * question can join its session's queue (auth, reading the body and the stop's code, finding the
+ * session) takes a different time for each question, so without a place a later question could
+ * overtake an earlier one. `ready` settles once every question ahead of this one has joined its
+ * queue or given up its place. Call `leave()` once this question has joined, or won't: after that
+ * the next one may go. Leaving twice is harmless.
+ */
+export type Place = { ready: Promise<void>; leave(): void };
+
+/** Hands out places in arrival order. */
+export class Arrivals {
+  #last: Promise<void> = Promise.resolve();
+
+  take(): Place {
+    const ready = this.#last;
+    let leave = () => {};
+    const left = new Promise<void>((resolve) => {
+      leave = resolve;
+    });
+    // The next place waits for this one and everything ahead of it, so leaving early never lets
+    // the next question overtake one further up.
+    this.#last = Promise.all([ready, left]).then(() => undefined);
+    return { ready, leave };
+  }
 }
 
 /** The author's session is busy: too many questions are already waiting for it. */

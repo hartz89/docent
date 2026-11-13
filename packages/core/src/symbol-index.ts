@@ -1,0 +1,392 @@
+// Jump to definition and imports over a whole repo, from each file's symbols (N2–N5).
+// Search-based: a name is looked up, never type-checked, so a jump can be ambiguous. Then every
+// candidate comes back, ranked, and the reviewer picks. Nothing is guessed.
+import type { DefinitionKind, Export, FileSymbols } from './symbols.ts';
+
+/** How a candidate was found, best first: in the file itself, through its imports, or anywhere. */
+export type CandidateRank = 'same_file' | 'import' | 'repo';
+
+/**
+ * A place a symbol may be defined. `kind` is `'export'` for an anonymous `export default`, and
+ * `'module'` when a namespace import leads to a whole file.
+ */
+export type Candidate = {
+  path: string;
+  line: number;
+  kind: DefinitionKind | 'export';
+  rank: CandidateRank;
+};
+
+/** `paths` from the repo's root `tsconfig.json`, with `baseUrl` already applied. */
+export type TsconfigPaths = ReadonlyArray<{ pattern: string; targets: readonly string[] }>;
+
+const SCRIPT_EXTENSIONS = ['.ts', '.tsx', '.d.ts', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'];
+/** TypeScript lets `./a.js` name `./a.ts`, since that's what it compiles to. */
+const COMPILED_FROM: Record<string, string[]> = {
+  '.js': ['.ts', '.tsx'],
+  '.jsx': ['.tsx'],
+  '.mjs': ['.mts'],
+  '.cjs': ['.cts'],
+};
+/** tsconfig `paths` beyond these are ignored. */
+const MAX_PATH_PATTERNS = 100;
+const MAX_PATH_TARGETS = 3;
+/** A longer `baseUrl`, pattern or target is ignored. */
+const MAX_PATH_CHARS = 1_024;
+/**
+ * Import resolutions one lookup may make. A real file needs tens; past this, the lookup returns
+ * what it has, marked truncated.
+ */
+const MAX_LOOKUP_STEPS = 2_000;
+
+/** One `definitions()` call: what it found, where it's been, and the work it has done. */
+type Lookup = {
+  add: (candidate: Candidate) => void;
+  visited: Set<string>;
+  steps: number;
+  /** The candidate limit was reached: nothing more is added. */
+  truncated: boolean;
+  /** The work budget ran out: no more imports are followed, but the repo-wide pass still runs. */
+  exhausted: boolean;
+};
+
+/** Re-export chains longer than this stop; real ones are a few steps. */
+const MAX_HOPS = 16;
+
+export class SymbolIndex {
+  readonly #paths: ReadonlySet<string>;
+  readonly #files: ReadonlyMap<string, FileSymbols>;
+  readonly #tsconfig: TsconfigPaths;
+  /** Name → every file that defines it. */
+  readonly #byName = new Map<string, string[]>();
+  /** The longest path in the repo. Anything longer can't name a file, so it isn't tried. */
+  #longest = 0;
+
+  /**
+   * `paths` is every file in the repo, indexed or not, so an import of `./styles.css` still
+   * resolves. `files` holds the symbols of those that were indexed.
+   */
+  constructor(
+    paths: ReadonlySet<string>,
+    files: ReadonlyMap<string, FileSymbols>,
+    tsconfig: TsconfigPaths = [],
+  ) {
+    this.#paths = paths;
+    this.#files = files;
+    this.#tsconfig = tsconfig;
+    for (const path of paths) this.#longest = Math.max(this.#longest, path.length);
+    for (const [path, symbols] of files) {
+      for (const name of new Set(symbols.definitions.map((d) => d.name))) {
+        const list = this.#byName.get(name);
+        if (list) list.push(path);
+        else this.#byName.set(name, [path]);
+      }
+    }
+    for (const list of this.#byName.values()) list.sort();
+  }
+
+  /** Resolved specifiers, by the importing folder (for relative ones) and specifier. */
+  readonly #resolved = new Map<string, string | null>();
+
+  get fileCount(): number {
+    return this.#files.size;
+  }
+
+  /**
+   * N4: the repo file an import specifier names, or null. Only relative specifiers and the root
+   * tsconfig's `paths` resolve; a package name or anything else is left unresolved.
+   */
+  resolveImport(from: string, spec: string): string | null {
+    // A specifier in the PR's code can be any length; one this long names no file.
+    if (spec.length > MAX_PATH_CHARS) return null;
+    const relative =
+      spec.startsWith('./') || spec.startsWith('../') || spec === '.' || spec === '..';
+    const key = relative ? `${dirName(from)}\0${spec}` : `\0${spec}`;
+    const cached = this.#resolved.get(key);
+    if (cached !== undefined) return cached;
+    const found = relative ? this.#resolveRelative(from, spec) : this.#resolvePaths(spec);
+    this.#resolved.set(key, found);
+    return found;
+  }
+
+  #resolveRelative(from: string, spec: string): string | null {
+    const target = normalize(`${dirName(from)}/${spec}`);
+    return target === null ? null : this.#withExtension(target);
+  }
+
+  #resolvePaths(spec: string): string | null {
+    // Like TypeScript: an exact pattern wins; otherwise only the matching pattern with the
+    // longest prefix is tried, with no fallback to a shorter one.
+    const exact = this.#tsconfig.find((p) => p.pattern === spec && !p.pattern.includes('*'));
+    let best: { prefix: number; middle: string; targets: readonly string[] } | null = exact
+      ? { prefix: Number.POSITIVE_INFINITY, middle: '', targets: exact.targets }
+      : null;
+    for (const { pattern, targets } of this.#tsconfig) {
+      const star = pattern.indexOf('*');
+      const prefix = star === -1 ? pattern : pattern.slice(0, star);
+      const suffix = star === -1 ? '' : pattern.slice(star + 1);
+      const matches =
+        star === -1
+          ? spec === pattern
+          : spec.length >= prefix.length + suffix.length &&
+            spec.startsWith(prefix) &&
+            spec.endsWith(suffix);
+      if (!matches || (best && best.prefix >= prefix.length)) continue;
+      const middle = star === -1 ? '' : spec.slice(prefix.length, spec.length - suffix.length);
+      best = { prefix: prefix.length, middle, targets };
+    }
+    for (const target of best?.targets ?? []) {
+      // A function, so `$&` and the like in the import text stay literal.
+      const path = normalize(target.replace('*', () => best?.middle ?? ''));
+      const found = path === null ? null : this.#withExtension(path);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /**
+   * N2: every place `symbol` may be defined, best first. With `from`, definitions in that file
+   * come first (nearest `line` first), then those its imports lead to, then the rest of the repo
+   * by path. Each place appears once (N5). At most `limit` come back. Following imports has a
+   * work budget, so a file built to fan out can't stall a lookup. `truncated` says some places
+   * may be missing, or ranked as `repo` when the import that leads there wasn't followed.
+   */
+  definitions(
+    symbol: string,
+    from?: { path: string; line?: number },
+    limit = Number.POSITIVE_INFINITY,
+  ): { candidates: Candidate[]; truncated: boolean } {
+    const found: Candidate[] = [];
+    const seen = new Set<string>();
+    const lookup: Lookup = {
+      visited: new Set(),
+      steps: 0,
+      truncated: false,
+      exhausted: false,
+      add: (candidate) => {
+        if (lookup.truncated) return;
+        const key = `${candidate.path}:${candidate.line}`;
+        if (seen.has(key)) return;
+        if (found.length === limit) {
+          lookup.truncated = true;
+          return;
+        }
+        seen.add(key);
+        found.push(candidate);
+      },
+    };
+    const add = lookup.add;
+
+    const own = from ? this.#files.get(from.path) : undefined;
+    if (from && own) {
+      const line = from.line;
+      const here = own.definitions.filter((d) => d.name === symbol);
+      if (line !== undefined) {
+        here.sort((a, b) => Math.abs(a.line - line) - Math.abs(b.line - line) || a.line - b.line);
+      }
+      for (const d of here) add({ path: from.path, line: d.line, kind: d.kind, rank: 'same_file' });
+
+      // N3: an imported name leads to its definition, through any re-exports.
+      for (const binding of own.imports.filter((i) => i.local === symbol)) {
+        const target = this.#resolveWithin(lookup, from.path, binding.spec);
+        if (target) this.#follow(target, binding.imported, 0, lookup);
+      }
+      // `ns.symbol()` after `import * as ns`: the symbol is followed through that module.
+      // The files the clicked file imports, each once: a file can repeat an import many times.
+      const specs = new Set([
+        ...own.imports.map((i) => i.spec),
+        ...own.exports.flatMap((e) => (e.kind === 'from' ? [e.spec] : [])),
+        ...own.exportsAll,
+      ]);
+      const namespaces = new Set(own.imports.filter((i) => i.imported === '*').map((i) => i.spec));
+      for (const spec of namespaces) {
+        const target = this.#resolveWithin(lookup, from.path, spec);
+        if (target && this.#files.has(target)) this.#follow(target, symbol, 0, lookup);
+      }
+      // Then any file this one imports that defines the name, like a method on an imported class.
+      // Only worth resolving when some file defines it at all.
+      if (this.#byName.has(symbol)) {
+        const scanned = new Set<string>();
+        for (const spec of specs) {
+          const target = this.#resolveWithin(lookup, from.path, spec);
+          const symbols = target ? this.#files.get(target) : undefined;
+          // Many spellings can name one file; it's scanned once.
+          if (!target || !symbols || scanned.has(target)) continue;
+          scanned.add(target);
+          for (const d of symbols.definitions) {
+            if (d.name === symbol)
+              add({ path: target, line: d.line, kind: d.kind, rank: 'import' });
+          }
+        }
+      }
+    }
+
+    for (const path of this.#byName.get(symbol) ?? []) {
+      if (lookup.truncated) break;
+      for (const d of this.#files.get(path)?.definitions ?? []) {
+        if (d.name === symbol) add({ path, line: d.line, kind: d.kind, rank: 'repo' });
+      }
+    }
+    // Either way, some candidates may be missing.
+    return { candidates: found, truncated: lookup.truncated || lookup.exhausted };
+  }
+
+  /**
+   * Resolves within the lookup's budget. Past it, nothing more resolves, so a file the PR built
+   * to fan out can't stall the server.
+   */
+  #resolveWithin(lookup: Lookup, from: string, spec: string): string | null {
+    if (lookup.truncated || lookup.exhausted) return null;
+    if (++lookup.steps > MAX_LOOKUP_STEPS) {
+      lookup.exhausted = true;
+      return null;
+    }
+    return this.resolveImport(from, spec);
+  }
+
+  /** Finds where `path`'s export `name` is defined. `'*'` means the module itself. */
+  #follow(path: string, name: string, hops: number, lookup: Lookup): void {
+    const key = `${path}\0${name}`;
+    if (hops > MAX_HOPS || lookup.truncated || lookup.exhausted || lookup.visited.has(key)) return;
+    lookup.visited.add(key);
+    const add = lookup.add;
+    const symbols = this.#files.get(path);
+    if (name === '*' || !symbols) {
+      // A namespace import, or a file that wasn't indexed: the file is the best answer.
+      add({ path, line: 1, kind: 'module', rank: 'import' });
+      return;
+    }
+    const exports = symbols.exports.filter((e) => e.name === name);
+    for (const entry of exports) this.#followExport(path, entry, hops, lookup);
+    if (exports.length > 0) return;
+    // CommonJS and scripts don't declare exports: there, a top-level definition will do.
+    const isModule = symbols.exports.length > 0 || symbols.exportsAll.length > 0;
+    if (!isModule) {
+      const defined = symbols.definitions.filter((d) => d.name === name && d.topLevel);
+      for (const d of defined) add({ path, line: d.line, kind: d.kind, rank: 'import' });
+      return;
+    }
+    if (name === 'default') return;
+    for (const spec of symbols.exportsAll) {
+      const next = this.#resolveWithin(lookup, path, spec);
+      if (next) this.#follow(next, name, hops + 1, lookup);
+    }
+  }
+
+  #followExport(path: string, entry: Export, hops: number, lookup: Lookup): void {
+    const add = lookup.add;
+    if (entry.kind === 'from') {
+      const next = this.#resolveWithin(lookup, path, entry.spec);
+      if (next) this.#follow(next, entry.imported, hops + 1, lookup);
+      return;
+    }
+    const symbols = this.#files.get(path);
+    const local = entry.local;
+    if (local === null || !symbols) {
+      add({ path, line: entry.line, kind: 'export', rank: 'import' });
+      return;
+    }
+    // Only a top-level definition can be exported; a nested one of the same name isn't it.
+    const defined = symbols.definitions.filter((d) => d.name === local && d.topLevel);
+    for (const d of defined) add({ path, line: d.line, kind: d.kind, rank: 'import' });
+    if (defined.length > 0) return;
+    // `import { a } from './x'; export { a }`: keep following the import.
+    const bindings = symbols.imports.filter((i) => i.local === local);
+    for (const binding of bindings) {
+      const next = this.#resolveWithin(lookup, path, binding.spec);
+      if (next) this.#follow(next, binding.imported, hops + 1, lookup);
+    }
+    if (bindings.length === 0) add({ path, line: entry.line, kind: 'export', rank: 'import' });
+  }
+
+  /** The file a module path names, trying TypeScript's and Node's extensions and index files. */
+  #withExtension(path: string): string | null {
+    if (path.length > this.#longest) return null;
+    const has = (p: string) => this.#paths.has(p);
+    // Like TypeScript, `./a.js` means `./a.ts` when both exist.
+    const dot = path.lastIndexOf('.');
+    const extension = dot > path.lastIndexOf('/') ? path.slice(dot) : '';
+    for (const replacement of COMPILED_FROM[extension] ?? []) {
+      const candidate = path.slice(0, dot) + replacement;
+      if (has(candidate)) return candidate;
+    }
+    if (has(path)) return path;
+    for (const ext of SCRIPT_EXTENSIONS) if (has(path + ext)) return path + ext;
+    const base = path === '' ? 'index' : `${path}/index`;
+    for (const ext of SCRIPT_EXTENSIONS) if (has(base + ext)) return base + ext;
+    return null;
+  }
+}
+
+/**
+ * Reads `compilerOptions.paths` from a root `tsconfig.json`, which may have comments and trailing
+ * commas. `extends` isn't followed. Anything unexpected gives no paths.
+ */
+export function tsconfigPaths(text: string): TsconfigPaths {
+  let config: unknown;
+  try {
+    config = JSON.parse(stripJsonComments(text));
+  } catch {
+    return [];
+  }
+  const options = (config as { compilerOptions?: unknown } | null)?.compilerOptions;
+  if (typeof options !== 'object' || options === null) return [];
+  const { baseUrl, paths } = options as { baseUrl?: unknown; paths?: unknown };
+  if (typeof paths !== 'object' || paths === null) return [];
+  const base = typeof baseUrl === 'string' ? baseUrl : '.';
+  // The file comes from the PR, so it's capped, in count and length: a real one has a handful
+  // of short entries.
+  if (base.length > MAX_PATH_CHARS) return [];
+  const short = (s: string) => s.length <= MAX_PATH_CHARS && (s.match(/\*/g)?.length ?? 0) <= 1;
+  const result: { pattern: string; targets: string[] }[] = [];
+  for (const [pattern, targets] of Object.entries(paths).slice(0, MAX_PATH_PATTERNS)) {
+    if (!Array.isArray(targets) || !short(pattern)) continue;
+    const usable = targets
+      .filter((t): t is string => typeof t === 'string' && short(t))
+      .slice(0, MAX_PATH_TARGETS);
+    result.push({ pattern, targets: usable.map((t) => `${base}/${t}`) });
+  }
+  return result;
+}
+
+/** JSON with `//` and block comments and trailing commas, as tsconfig allows, made plain. */
+function stripJsonComments(text: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '"') {
+      const start = i;
+      i++;
+      while (i < text.length && text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
+      out += text.slice(start, ++i);
+    } else if (c === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+    } else if (c === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      i = end === -1 ? text.length : end + 2;
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out.replace(/,(\s*[}\]])/g, '$1');
+}
+
+function dirName(path: string): string {
+  const slash = path.lastIndexOf('/');
+  return slash === -1 ? '' : path.slice(0, slash);
+}
+
+/** A repo-relative path with `.` and `..` worked out, or null if it climbs out of the repo. */
+function normalize(path: string): string | null {
+  const parts: string[] = [];
+  for (const part of path.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      if (parts.length === 0) return null;
+      parts.pop();
+    } else parts.push(part);
+  }
+  return parts.join('/');
+}

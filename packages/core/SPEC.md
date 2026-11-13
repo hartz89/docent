@@ -35,32 +35,22 @@ An anchor is the code a claim cites: the exact text of one or more whole lines, 
 
 ## Tour
 
-A tour is the docent's walk through the diff: ordered stops, plus the parts it skipped.
+A tour is the docent's walk through the diff: ordered stops that cite the code they explain. It doesn't list what it leaves out: the ledger does that (L1–L4).
 
-- **T1.** A tour belongs to a review and was written for one head commit. It has a list of stops and a list of skips.
+- **T1.** A tour belongs to a review and was written for one head commit. It has a list of stops.
 - **T2.** Every stop has an id, a kind, a title, a body, anchors and flags. The kinds are `intent`, `map`, `core_change`, `edge` and `verdict_prompt`.
 - **T3.** `core_change` and `edge` stops cite at least one anchor. (type) The other kinds may cite none.
 - **T4.** Stops appear in kind order: intent, map, core change, edge, verdict prompt. A kind may repeat or be absent, except that the tour ends with exactly one `verdict_prompt`.
-- **T5.** A stop's flags mark what it surfaces beyond the change itself: `mismatch` (the handoff or description disagrees with the code) and `danger` (an obvious, dangerous problem). Any kind may carry flags, and flags play no part in coverage. (type)
+- **T5.** A stop's flags mark what it surfaces beyond the change itself: `mismatch` (the handoff or description disagrees with the code) and `danger` (an obvious, dangerous problem). Any kind may carry flags, and flags play no part in which lines it explains. (type)
 
-## Skip
+## Explained lines
 
-- **S1.** A skip targets either one file (by `path`) or one hunk (by hunk id), carries a reason, and records the head commit it was judged at. (type)
-- **S2.** The reason is a single line of text: not blank, no line breaks. (type: only `oneLine()` makes one)
+Which changed lines a tour's stops explain. These are the lines on the route (L2). A tour doesn't have to explain every changed line: the rest land in the ledger as proven skips or "not on the route", so nothing is hidden.
 
-## Coverage
-
-Every changed line has to be explained or visibly skipped, and never both. Nothing slips through.
-
-- **C1.** A changed line is **skipped** by each skip whose target is its file or its hunk. It is **explained** by each `core_change` or `edge` stop with a current anchor that covers it. An anchor at the diff's head commit covers the added lines in its range, in its file. An anchor at the base commit covers removed lines the same way.
-- **C2.** `intent`, `map` and `verdict_prompt` stops explain nothing. A map or intent stop may cite any lines, but citing them doesn't count, so a broad map can't hide gaps.
-- **C3.** Stale judgments count for nothing. Anchors that are out of date or at any other commit explain nothing, and skips judged at another head skip nothing. So a stale tour shows up as unexplained lines, not as false coverage.
-- **C4.** Several stops may explain the same line, and several skips may skip it. Both are fine: overlap isn't a contradiction.
-- **C5.** The invariant: every changed line is skipped or explained, and **not both**. A coverage check reports lines that are neither as **unexplained**, and lines that are both as **conflicts**, naming the skips and stops involved. A tour is complete when both lists are empty.
-- **C6.** A skip whose target isn't in the diff is reported as **unknown**. It skips nothing.
-- **C7.** A tour written for a different head than the diff's is not checked line by line. The check reports it as **stale**, with both commits.
-
-The ledger (below) is built to replace C5. Once the server and the tour schema are wired to it, an uncited line no longer fails a tour: it lands in the ledger as a proven skip or "not on the route", and the model stops writing skips. Until then both exist side by side, and the server still runs this check.
+- **C1.** A changed line is **explained** by each `core_change` or `edge` stop with a current anchor that covers it. An anchor at the diff's head commit covers the added lines in its range, in its file. An anchor at the base commit covers removed lines the same way.
+- **C2.** `intent`, `map` and `verdict_prompt` stops explain nothing. A map or intent stop may cite any lines, but citing them doesn't count, so a broad map can't put lines on the route.
+- **C3.** Stale citations count for nothing. Anchors that are out of date or at any other commit explain nothing. So a stale tour shows up as lines not on the route, not as a false route.
+- **C4.** Several stops may explain the same line. Each of them is listed.
 
 ## Proven skip
 
@@ -81,9 +71,9 @@ A script's proof that some changed lines can't change behavior, with a label to 
 Where every changed line stands, computed by a script from the stops' citations and the proofs. The model doesn't write it.
 
 - **L1.** Every changed line has exactly one place: **on the route**, **proven skip** or **not on the route**. The ledger lists every changed line once, in diff order, so nothing is lost or counted twice. (type)
-- **L2.** A line is on the route when a stop explains it, by the same rules as coverage (C1–C3). The route wins over any proof.
+- **L2.** A line is on the route when a stop explains it, by the rules for explained lines (C1–C4). The route wins over any proof.
 - **L3.** Otherwise, a line is a proven skip when at least one proof covers it, keeping every such proof. A proof counts only if it was judged at the diff's head. A lockfile proof also needs a changed line of one of its manifests on the route.
-- **L4.** Every other line is not on the route. The tour's skips play no part.
+- **L4.** Every other line is not on the route. Nothing the model writes, other than a stop's citations, moves a line out of this group.
 - **L5.** A tour written for a different head than the diff's isn't placed line by line. The ledger reports it as **stale**, with both commits.
 
 Known limits, accepted with the 2026-11-09 decision: a rename proof is lexical, so names read by reflection, string building or code outside the repository can still change meaning; the label shows the mapping so the reviewer can judge it at a glance. A generated or vendored proof says where a file lives, not that it matches its sources. A lockfile proof doesn't check that the lockfile matches its manifest, beyond its sources. Pure file moves, mode changes and binary files have no changed lines, so they're not in the ledger.
@@ -116,3 +106,13 @@ One model call, logged by job.
 - **K2.** Cost is a whole, non-negative number of micro-dollars (millionths of a US dollar), so sums are exact. Only `microUsd()` makes one, and it refuses anything else. (type)
 - **K3.** Summing records per job gives, for each job with at least one record, the number of calls and the totals of every token count, cost and latency. Jobs with no records are left out.
 - **K4.** Summing is order-independent, and summing two sets of records separately then adding the totals gives the same result as summing them together.
+
+## Symbol navigation
+
+Jump to definition and imports, search-based, the way GitHub's code view does it: each file is parsed with a Tree-sitter grammar and its tag queries, and nothing in the repo is ever run. A jump looks a name up; it isn't type-checked. So it can be ambiguous, and then every candidate comes back.
+
+- **N1.** A file's definitions come from its grammar's own `tags.scm`, plus type aliases, enums, namespaces and top-level constants. Each has a name, a kind and the line of its name. Every overload signature is a definition of its own. TypeScript and JavaScript (with JSX and TSX) also record their imports and exports; Python and Go record definitions only.
+- **N2.** Definitions of a symbol come ranked: those in the file it was clicked in (nearest the clicked line first), then those the file's imports lead to, then every other definition in the repo, by path. Within the imports, the import binding of that name comes first. Nothing is dropped to break a tie. A lookup may set a limit; then it keeps the best ones and says that more exist. Following imports has a work budget, so a file built to fan out can't stall a lookup; when it runs out, the lookup says so too, and the repo-wide pass still runs. When an import binding is followed, only a top-level definition can stand for the export, and a file with ESM exports is searched only through its exports. After that binding's results, any definition of the name in a file the clicked file imports, like a method on an imported class, also ranks as an import.
+- **N3.** An imported name is followed to its definition through default, named and namespace imports, `export { a as b }`, `export … from`, `export *` and `export default`. A namespace import leads to the module file. A cycle stops, and so does a chain of more than 16 steps.
+- **N4.** An import specifier resolves to a file in the repo only when it's relative, or matches the root `tsconfig.json`'s `paths`. It tries TypeScript's extensions, `.js` naming a `.ts` file, and `index` files. Anything else, like a package name or a path out of the repo, is unresolved, never guessed.
+- **N5.** Each place (path and line) appears once in a list of candidates, at its best rank.

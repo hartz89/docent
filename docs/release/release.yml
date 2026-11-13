@@ -1,0 +1,69 @@
+# Publishes Docent to npm with provenance, when a version tag is pushed.
+#
+# This file lives in docs/ on purpose: agents can't push workflows. The maintainer copies it to
+# .github/workflows/release.yml at release time. See docs/release/checklist.md.
+#
+# How it signs: npm trusted publishing. GitHub Actions hands npm a short-lived OIDC token for
+# this exact repo, workflow and environment, so there's no npm token stored anywhere. npm then
+# publishes a provenance statement, signed through Sigstore, saying which commit and workflow
+# built the tarball. Anyone can check it with `npm audit signatures`.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+# Actions are pinned by commit SHA, the same pins as ci.yml. The comment names the tag.
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Holds the job until the maintainer approves it, if the environment requires a reviewer.
+    # npm's trusted publisher settings name this environment too, so no other job can publish.
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write # The OIDC token for trusted publishing and provenance. Nothing else.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+          # No pnpm cache here: a release builds from a clean install.
+
+      - name: Check npm can do trusted publishing (11.5.1 or newer)
+        run: |
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number);
+            const ok = major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1)));
+            if (!ok) { console.error(`npm ${process.argv[1]} is too old for trusted publishing`); process.exit(1); }
+          ' "$(npm --version)"
+
+      - name: Check the tag matches the version
+        run: |
+          version="v$(node -p 'require("./apps/server/package.json").version')"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match apps/server/package.json ($version)."
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify
+      - run: pnpm pack:cli
+      - name: Install the tarball from scratch and replay a review
+        run: node scripts/pack-smoke.ts dist/*.tgz
+
+      - name: Publish with provenance
+        run: npm publish dist/*.tgz --provenance --access public

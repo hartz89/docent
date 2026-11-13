@@ -71,7 +71,7 @@ It records nothing else: no prompts, no code, no transcript text.
 
 ### Where
 
-One file per session or subagent, in Docent's data folder:
+One file per session or subagent, in Docent's data folder, beside its run logs (`runs/`) and question threads (`questions/`):
 
 | System | Folder |
 | --- | --- |
@@ -79,7 +79,7 @@ One file per session or subagent, in Docent's data folder:
 | Linux | `$XDG_DATA_HOME/docent/sessions/`, or `~/.local/share/docent/sessions/` |
 | Windows | `%LOCALAPPDATA%\docent\sessions\` |
 
-Set `DOCENT_DATA_DIR` to use another folder; the hook and Docent both read it. The folder is readable only by you, and so is each file. Delete the folder at any time; nothing else depends on it.
+Set `DOCENT_DATA_DIR` to use another folder; the hook and Docent both read it. The folder is readable only by you, and so is each file. If `sessions` is a link rather than a real folder, the hook writes nothing. Delete the folder at any time; nothing else depends on it.
 
 ### What it doesn't do
 

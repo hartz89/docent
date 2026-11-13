@@ -2,7 +2,9 @@ import { commitSha, parseUnifiedDiff } from '@docent/core';
 import { expect, test } from 'vitest';
 import { findHandoff, MAX_HANDOFF_CHARS, type PrComment } from './author-handoff.ts';
 import type { PrInfo } from './github.ts';
-import { tourPrompt } from './tour.ts';
+import { TOUR_PROMPT_VERSION, TOUR_PROMPTS } from './tour.ts';
+
+const tourPrompt = TOUR_PROMPTS[TOUR_PROMPT_VERSION];
 
 const HEAD = 'a'.repeat(40);
 const OLDER = 'b'.repeat(40);

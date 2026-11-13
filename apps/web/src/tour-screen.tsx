@@ -2,7 +2,12 @@ import type {
   AnchorView,
   AnswerView,
   AuthorView,
+  CorrectionView,
+  LedgerFileView,
+  LedgerView,
   PostedReview,
+  ProofLabel,
+  QuestionView,
   ReviewSnapshot,
   StopView,
 } from '@docent/server';
@@ -18,14 +23,35 @@ import {
 } from 'react';
 import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
+import { FileTree, type Place } from './file-tree.tsx';
 import { Markdown } from './markdown.tsx';
-import type { Ready } from './review-page.tsx';
+import type { Ready, Working } from './review-page.tsx';
+import {
+  DRAWER_QUERY,
+  RouteDrawer,
+  RouteIcon,
+  STACKED_QUERY,
+  useMediaQuery,
+} from './route-drawer.tsx';
+import { report } from './run-log.ts';
+import { TourProgress } from './status-screen.tsx';
 import { ThemeToggle } from './theme.tsx';
 import { postedLabel, VerdictForm } from './verdict.tsx';
 
-type Props = { snapshot: ReviewSnapshot; tour: Ready };
+/** The finished tour, or the stops written and checked so far while the guide writes the rest. */
+type Props = { snapshot: ReviewSnapshot; tour: Ready | Working };
 type Diff = NonNullable<ReviewSnapshot['diff']>;
-type Viewing = { path: string; side: 'old' | 'new' };
+/** A file opened outside the stop's citations, at the lines in focus if any. */
+type Viewing = {
+  path: string;
+  side: 'old' | 'new';
+  focus?: AnchorView;
+  label?: string;
+  /** A line to scroll to without marking it cited, like the first line not on the route. */
+  at?: number;
+};
+/** Opens a file on one side (by default head, or base if the PR deleted it), at a line if given. */
+type OpenFile = (path: string, side?: 'old' | 'new', at?: number) => void;
 
 const KIND_LABELS: Record<StopView['kind'], string> = {
   intent: 'Intent',
@@ -36,47 +62,162 @@ const KIND_LABELS: Record<StopView['kind'], string> = {
 };
 
 export function TourScreen({ snapshot, tour }: Props) {
-  const { stops, skips } = tour.tour;
+  const ready = tour.state === 'ready' ? tour : null;
+  const stops = ready ? ready.tour.stops : (tour as Working).stops;
+  const writing = ready ? null : (tour as Working);
   const [index, setIndex] = useState(0);
   const [anchorIndex, setAnchorIndex] = useState(0);
-  // A file opened from the skip list or the overview, in place of the stop's citation.
+  // A file opened from the ledger, the overview or the file tree, in place of the stop's citation.
   const [viewing, setViewing] = useState<Viewing | null>(null);
-  // Each stop's questions and answers, kept here so they survive moving between stops.
+  // The left pane shows the route or the whole repo's files.
+  const [pane, setPane] = useState<'route' | 'files'>('route');
+  const goToFile = useRef<HTMLInputElement>(null);
+  // A reviewer who opened the review while the tour was still being written is reading the PR's
+  // description. Stops arriving don't take the code column away from it; moving does.
+  const [overviewFirst, setOverviewFirst] = useState(tour.state !== 'ready');
+  // Each stop's questions and answers, kept here so they survive moving between stops. The server
+  // keeps the answered ones too, so a reload or a relaunch reads them back.
   const [threads, setThreads] = useState<Record<string, Exchange[]>>({});
+  // Questions open once the earlier threads are in, so a new one never lands above them.
+  const [threadsLoaded, setThreadsLoaded] = useState(false);
   // The review posted to GitHub from here, if any. A reload gets it from the snapshot.
   const [posted, setPosted] = useState<PostedReview | null>(snapshot.posted);
-  const ask = useCallback(async (stopId: string, question: string) => {
-    // Each exchange has its own id, so an answer always lands on the question it answers.
-    const id = crypto.randomUUID();
-    const settle = (patch: Partial<Exchange>) =>
+  const settle = useCallback(
+    (stopId: string, id: string, patch: Partial<Exchange>) =>
       setThreads((all) => ({
         ...all,
         [stopId]: (all[stopId] ?? []).map((e) => (e.id === id ? { ...e, ...patch } : e)),
+      })),
+    [],
+  );
+  // The guide's check of an author answer comes after it, and only ever adds a correction. If it
+  // fails, or the check was lost with an earlier launch, it says nothing.
+  const followCheck = useCallback(
+    async (stopId: string, id: string, checkId: string) => {
+      try {
+        const res = await api['answer-checks'][':id'].$get({ param: { id: checkId } });
+        if (res.status !== 200) return;
+        const { correction } = await res.json();
+        if (correction) settle(stopId, id, { correction });
+      } catch {
+        // Silence, as when the answer holds up.
+      }
+    },
+    [settle],
+  );
+  const isReady = ready !== null;
+  useEffect(() => {
+    if (!isReady) return;
+    let live = true;
+    void (async () => {
+      try {
+        const res = await api.questions.$get();
+        if (res.status !== 200 || !live) return;
+        const { questions } = await res.json();
+        if (!live) return;
+        const loaded: Record<string, Exchange[]> = {};
+        for (const q of questions) loaded[q.stopId] = [...(loaded[q.stopId] ?? []), fromStored(q)];
+        setThreads(loaded);
+        for (const q of questions) {
+          if (q.answer.source === 'author_session' && !q.checked && !q.correction) {
+            void followCheck(q.stopId, q.id, q.answer.checkId);
+          }
+        }
+      } catch (error) {
+        report({
+          kind: 'client.error',
+          source: 'api',
+          message: `Couldn't load earlier questions: ${String(error)}`,
+        });
+      } finally {
+        if (live) setThreadsLoaded(true);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [isReady, followCheck]);
+  const ask = useCallback(
+    async (stopId: string, question: string) => {
+      // Each exchange has its own id, so an answer always lands on the question it answers.
+      const id = crypto.randomUUID();
+      setThreads((all) => ({
+        ...all,
+        [stopId]: [
+          ...(all[stopId] ?? []),
+          { id, question, answer: null, error: null, correction: null, earlier: null },
+        ],
       }));
-    setThreads((all) => ({
-      ...all,
-      [stopId]: [...(all[stopId] ?? []), { id, question, answer: null, error: null }],
-    }));
-    try {
-      const res = await api.questions.$post({ json: { stopId, question } });
-      const body = await res.json();
-      if ('answer' in body) settle({ answer: body.answer });
-      else settle({ error: body.error });
-    } catch (error) {
-      settle({ error: error instanceof Error ? error.message : String(error) });
-    }
-  }, []);
+      let checkId: string | null = null;
+      try {
+        const res = await api.questions.$post({ json: { stopId, question } });
+        const body = await res.json();
+        if ('answer' in body) {
+          settle(stopId, id, { answer: body.answer });
+          if (body.answer.source === 'author_session') checkId = body.answer.checkId;
+        } else settle(stopId, id, { error: body.error });
+      } catch (error) {
+        settle(stopId, id, { error: error instanceof Error ? error.message : String(error) });
+      }
+      if (checkId) await followCheck(stopId, id, checkId);
+    },
+    [settle, followCheck],
+  );
+
+  // Under 1200px wide the route leaves its column for a drawer; under 800px the layout stacks,
+  // and a bottom bar moves between stops.
+  const drawer = useMediaQuery(DRAWER_QUERY);
+  const stacked = useMediaQuery(STACKED_QUERY);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const routeOpen = drawer && drawerOpen;
+  const openRoute = useCallback(() => setDrawerOpen(true), []);
+  const closeRoute = useCallback(() => setDrawerOpen(false), []);
+  // Widening past 1200px with the drawer open (a rotated tablet, a zoom) takes the drawer and its
+  // opener away. Forget it was open, so narrowing again doesn't reopen it, and move focus to the
+  // current stop in the route's column rather than leaving it on the page body.
+  useEffect(() => {
+    if (drawer || !drawerOpen) return;
+    setDrawerOpen(false);
+    document
+      .querySelector<HTMLElement>('nav[aria-label="Route and files"] [aria-current="step"]')
+      ?.focus();
+  }, [drawer, drawerOpen]);
 
   const stop = stops[index];
-  // The guide column outlives each stop, so it would keep the last stop's scroll position.
-  // A stop seen for the first time opens at the top; a revisited stop opens where it was left.
+  // When the finished tour replaces the streamed stops, a repair may have added a stop before
+  // this one. Follow the stop the reviewer was reading, by its title, not its number.
+  const reading = useRef<{ stops: readonly StopView[]; title: string | null } | null>(null);
+  // A layout effect, so the wrong stop never shows for a frame.
+  useLayoutEffect(() => {
+    const was = reading.current;
+    const title = stops[index]?.title ?? null;
+    // Only a new list of stops re-selects; the reviewer moving changes the title on purpose.
+    if (was && was.stops !== stops && was.title !== null && title !== was.title) {
+      const moved = stops.findIndex((s) => s.title === was.title);
+      // A whole new tour may have dropped that stop: stay as close as the new route allows.
+      const next = moved !== -1 ? moved : Math.min(index, Math.max(0, stops.length - 1));
+      if (next !== index) {
+        reading.current = { stops, title: stops[next]?.title ?? null };
+        setIndex(next);
+        return;
+      }
+    }
+    reading.current = { stops, title };
+  }, [stops, index]);
+  // The guide outlives each stop, so it would keep the last stop's scroll position. A stop seen
+  // for the first time opens at the top; a revisited stop opens where it was left. The guide
+  // scrolls in its own column, or, in the stacked phone layout, the columns scroll together.
   const guide = useRef<HTMLElement>(null);
-  const scrollByStop = useRef(new Map<string, number>());
+  const columns = useRef<HTMLDivElement>(null);
+  const scrollByStop = useRef(new Map<string, [number, number]>());
   const go = useCallback(
     (next: number) => {
-      if (stop && guide.current) scrollByStop.current.set(stop.id, guide.current.scrollTop);
+      if (stop && guide.current && columns.current) {
+        scrollByStop.current.set(stop.id, [guide.current.scrollTop, columns.current.scrollTop]);
+      }
       setIndex(Math.max(0, Math.min(stops.length - 1, next)));
       setAnchorIndex(0);
+      setOverviewFirst(false);
       setViewing(null);
     },
     [stop, stops.length],
@@ -93,14 +234,21 @@ export function TourScreen({ snapshot, tour }: Props) {
     [anchorIndex, anchorCount],
   );
   const stopId = stop?.id;
+  useEffect(() => {
+    if (stopId) report({ kind: 'ui.stop', stop: index + 1, stopId });
+  }, [stopId, index]);
   useLayoutEffect(() => {
-    if (guide.current && stopId) guide.current.scrollTop = scrollByStop.current.get(stopId) ?? 0;
+    if (!guide.current || !columns.current || !stopId) return;
+    const [guideTop, columnsTop] = scrollByStop.current.get(stopId) ?? [0, 0];
+    guide.current.scrollTop = guideTop;
+    columns.current.scrollTop = columnsTop;
   }, [stopId]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      // In the route drawer, keys belong to the drawer.
+      if (target?.closest('input, textarea, select, [contenteditable="true"], dialog')) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (event.key === 'ArrowRight') {
         event.preventDefault();
@@ -114,51 +262,173 @@ export function TourScreen({ snapshot, tour }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [go, index]);
 
+  // ⌘P (Ctrl+P elsewhere) jumps to "Go to file", as in an editor.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'p' || !(event.metaKey || event.ctrlKey) || event.altKey) return;
+      event.preventDefault();
+      setPane('files');
+      if (drawer) setDrawerOpen(true);
+      requestAnimationFrame(() => goToFile.current?.focus());
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [drawer]);
+
   const diff = snapshot.diff as Diff;
   const changes = useMemo(() => changedLines(diff), [diff]);
-  if (!stop || !snapshot.pr) return null;
+  // The ledger places each file once the tour is checked; until then, a cited file is on the route.
+  const ledger = ready?.ledger ?? null;
+  // Changed lines not on the route per `side:path`, so the code view marks them where they are.
+  const offRoute = useMemo(() => {
+    const map = new Map<string, ReadonlySet<number>>();
+    for (const file of ledger?.files ?? []) {
+      if (!file.notOnRoute) continue;
+      const { added, removed } = file.notOnRoute;
+      // Only sides with lines: a new file at a moved file's old path mustn't wipe its base side.
+      if (added.length) map.set(`new:${file.path}`, new Set(added));
+      if (removed.length) map.set(`old:${file.oldPath}`, new Set(removed));
+    }
+    return map;
+  }, [ledger]);
+  const places = useMemo(
+    (): ReadonlyMap<string, Place> =>
+      ledger
+        ? new Map(ledger.files.map((f) => [f.path, f.place]))
+        : new Map(
+            stops
+              .filter((s) => s.kind === 'core_change' || s.kind === 'edge')
+              .flatMap((s) => s.anchors.map((a) => [a.path, 'on_route'] as const)),
+          ),
+    [ledger, stops],
+  );
+  if (!snapshot.pr) return null;
 
-  const anchor = stop.anchors[anchorIndex] ?? null;
+  const anchor = stop?.anchors[anchorIndex] ?? null;
   const shown: Viewing | null =
-    viewing ?? (anchor ? { path: anchor.path, side: anchor.side } : null);
-  const cited = shown
-    ? stop.anchors.filter((a) => a.path === shown.path && a.side === shown.side)
-    : [];
+    viewing ?? (anchor && !overviewFirst ? { path: anchor.path, side: anchor.side } : null);
+  const cited =
+    shown && stop ? stop.anchors.filter((a) => a.path === shown.path && a.side === shown.side) : [];
+
+  // The route and the file tree, as tabs: in their own column, or in the drawer.
+  const leftPane = (
+    <>
+      <div className="pane-switch" role="tablist" aria-label="Left pane">
+        <button
+          type="button"
+          role="tab"
+          id="tab-route"
+          aria-selected={pane === 'route'}
+          aria-controls="pane-route"
+          onClick={() => setPane('route')}
+        >
+          Route <span className="pane-count">{stops.length} stops</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-files"
+          aria-selected={pane === 'files'}
+          aria-controls="pane-files"
+          onClick={() => setPane('files')}
+        >
+          Files <span className="pane-count">{diff.files.length} changed</span>
+        </button>
+      </div>
+      <div role="tabpanel" id="pane-route" aria-labelledby="tab-route" hidden={pane !== 'route'}>
+        <Route
+          stops={stops}
+          index={index}
+          onSelect={(i) => {
+            go(i);
+            closeRoute();
+          }}
+          onOpenFile={(path, side, at) => {
+            setViewing({ path, side: side ?? sideFor(diff, path), ...(at ? { at } : {}) });
+            closeRoute();
+          }}
+          tour={ready}
+          writing={writing}
+        />
+      </div>
+      <div role="tabpanel" id="pane-files" aria-labelledby="tab-files" hidden={pane !== 'files'}>
+        <FileTree
+          diff={diff}
+          places={places}
+          selected={shown?.side === 'new' ? shown.path : null}
+          onOpen={(path) => {
+            setViewing({ path, side: 'new' });
+            closeRoute();
+          }}
+          filterRef={goToFile}
+        />
+      </div>
+    </>
+  );
 
   return (
     <div className="app">
-      <TopBar snapshot={snapshot} diff={diff} index={index} total={stops.length} posted={posted} />
-      <div className="columns">
-        <nav className="column" aria-label="The route">
-          <Route
-            stops={stops}
-            index={index}
-            onSelect={go}
-            skips={skips}
-            onOpenSkip={(path) => setViewing({ path, side: sideFor(diff, path) })}
-            tour={tour}
-          />
-        </nav>
+      <TopBar
+        snapshot={snapshot}
+        diff={diff}
+        index={index}
+        total={stops.length}
+        finished={ready !== null}
+        posted={posted}
+        drawer={drawer ? { open: routeOpen, onOpen: openRoute } : null}
+      />
+      <div className="columns" ref={columns}>
+        {drawer ? (
+          <RouteDrawer open={routeOpen} onClose={closeRoute}>
+            {leftPane}
+          </RouteDrawer>
+        ) : (
+          <nav className="column left-column" aria-label="Route and files">
+            {leftPane}
+          </nav>
+        )}
         <section className="column code-column" aria-label="Code">
           {shown ? (
             <>
               <div className="code-header">
-                <span className="code-path">{shown.path}</span>
+                {/* Truncates from the start, so the file name stays in view. */}
+                <span className="code-path" title={shown.path}>
+                  <bdi>{shown.path}</bdi>
+                </span>
                 <span className="code-range">
                   {viewing
-                    ? 'opened from the route'
+                    ? (viewing.label ??
+                      (diff.files.some((f) => f.path === shown.path)
+                        ? 'changed in this PR'
+                        : 'not changed by this PR · read-only'))
                     : anchor
                       ? `lines ${anchor.startLine}–${anchor.endLine} · cited by this stop`
                       : ''}
                 </span>
                 <span className="code-side">{shown.side === 'new' ? 'head' : 'base'}</span>
+                {viewing && (
+                  <button
+                    type="button"
+                    className="secondary-button back-to-stop"
+                    onClick={() => setViewing(null)}
+                  >
+                    <span aria-hidden="true">←</span>{' '}
+                    {stop && !overviewFirst ? `Back to stop ${index + 1}` : 'Back to the overview'}
+                  </button>
+                )}
               </div>
               <CodeView
                 path={shown.path}
                 side={shown.side}
-                cited={viewing ? [] : cited}
-                focus={viewing ? null : anchor}
+                cited={viewing ? (viewing.focus ? [viewing.focus] : []) : cited}
+                focus={
+                  viewing
+                    ? (viewing.focus ??
+                      (viewing.at ? { startLine: viewing.at, endLine: viewing.at } : null))
+                    : anchor
+                }
                 changed={changes.get(`${shown.side}:${shown.path}`) ?? new Set()}
+                offRoute={offRoute.get(`${shown.side}:${shown.path}`) ?? new Set()}
                 onStep={viewing ? undefined : stepAnchor}
               />
             </>
@@ -167,33 +437,116 @@ export function TourScreen({ snapshot, tour }: Props) {
           )}
         </section>
         <aside className="column" aria-label="The guide" ref={guide}>
-          <Narration
-            key={stop.id}
-            stop={stop}
-            author={snapshot.author}
-            exchanges={threads[stop.id] ?? []}
-            onAsk={(question) => void ask(stop.id, question)}
-            activeAnchor={viewing ? -1 : anchorIndex}
-            onAnchor={(i) => {
-              setAnchorIndex(i);
-              setViewing(null);
-            }}
-            isLast={index === stops.length - 1}
-            onNext={() => go(index + 1)}
-            verdict={
-              stop.kind === 'verdict_prompt' ? (
-                <VerdictForm pr={snapshot.pr} posted={posted} onPosted={setPosted} />
-              ) : null
-            }
-            handoff={
-              snapshot.pr?.handoff && stop === stops.find((s) => s.kind === 'intent') ? (
-                <HandoffNote handoff={snapshot.pr.handoff} head={snapshot.pr.head} />
-              ) : null
-            }
-          />
+          {!stop ? (
+            <div className="narration">
+              <div className="narration-body fade-in">
+                <TourProgress tour={writing} />
+              </div>
+            </div>
+          ) : (
+            <Narration
+              key={stop.id}
+              stop={stop}
+              author={snapshot.author}
+              exchanges={threads[stop.id] ?? []}
+              threadsLoaded={threadsLoaded}
+              head={snapshot.pr?.head ?? ''}
+              onAsk={(question) => void ask(stop.id, question)}
+              onOpenCite={(cite) =>
+                setViewing({
+                  path: cite.path,
+                  side: cite.side,
+                  focus: cite,
+                  label: `lines ${cite.startLine}–${cite.endLine} · cited by the guide's note`,
+                })
+              }
+              activeAnchor={viewing || overviewFirst ? -1 : anchorIndex}
+              onAnchor={(i) => {
+                setOverviewFirst(false);
+                setAnchorIndex(i);
+                setViewing(null);
+              }}
+              isLast={index === stops.length - 1}
+              onNext={() => go(index + 1)}
+              finished={ready !== null}
+              waiting={
+                writing?.attempt === 1 &&
+                writing.steps.find((s) => s.status === 'active')?.id === 'writing'
+                  ? 'Writing the next stop…'
+                  : 'Checking the whole tour…'
+              }
+              verdict={
+                stop.kind !== 'verdict_prompt' ? null : ready ? (
+                  <VerdictForm pr={snapshot.pr} posted={posted} onPosted={setPosted} />
+                ) : (
+                  <p className="waiting-note">
+                    Your verdict opens once the whole tour is written and checked.
+                  </p>
+                )
+              }
+              handoff={
+                snapshot.pr?.handoff && stop === stops.find((s) => s.kind === 'intent') ? (
+                  <HandoffNote handoff={snapshot.pr.handoff} head={snapshot.pr.head} />
+                ) : null
+              }
+            />
+          )}
         </aside>
       </div>
+      {stacked && (
+        <StopBar
+          index={index}
+          total={stops.length}
+          finished={ready !== null}
+          onGo={go}
+          onOpenRoute={openRoute}
+        />
+      )}
     </div>
+  );
+}
+
+/** The phone layout's bottom bar: the route, and the way between stops. */
+function StopBar({
+  index,
+  total,
+  finished,
+  onGo,
+  onOpenRoute,
+}: {
+  index: number;
+  total: number;
+  finished: boolean;
+  onGo: (index: number) => void;
+  onOpenRoute: () => void;
+}) {
+  return (
+    <nav className="stop-bar" aria-label="Stops">
+      <button type="button" className="stop-bar-route" aria-haspopup="dialog" onClick={onOpenRoute}>
+        <RouteIcon /> Route
+      </button>
+      <div className="stop-bar-steps">
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Previous stop"
+          disabled={index === 0}
+          onClick={() => onGo(index - 1)}
+        >
+          <span aria-hidden="true">←</span>
+        </button>
+        <span className="stop-bar-count">{progressText(index, total, finished)}</span>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Next stop"
+          disabled={index >= total - 1}
+          onClick={() => onGo(index + 1)}
+        >
+          <span aria-hidden="true">→</span>
+        </button>
+      </div>
+    </nav>
   );
 }
 
@@ -202,13 +555,19 @@ function TopBar({
   diff,
   index,
   total,
+  finished,
   posted,
+  drawer,
 }: {
   snapshot: ReviewSnapshot;
   diff: Diff;
   index: number;
   total: number;
+  /** False while stops are still being written, so the total isn't known yet. */
+  finished: boolean;
   posted: PostedReview | null;
+  /** How to open the route when it's a drawer; null when it has its own column. */
+  drawer: { open: boolean; onOpen: () => void } | null;
 }) {
   const pr = snapshot.pr;
   const lines = diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
@@ -216,13 +575,27 @@ function TopBar({
   const removed = lines.filter((l) => l.kind === 'removed').length;
   return (
     <header className="topbar">
+      {drawer && (
+        <button
+          type="button"
+          className="icon-button route-toggle"
+          aria-label="Open the route"
+          title="Open the route"
+          aria-haspopup="dialog"
+          aria-expanded={drawer.open}
+          onClick={drawer.onOpen}
+        >
+          <RouteIcon />
+        </button>
+      )}
       <span className="brand">Docent</span>
       <div className="pr-heading">
         <h1 className="pr-title" title={pr?.title}>
           {pr?.title}
         </h1>
+        {/* Narrow windows drop meta items by priority: the commit first, then files, then repo. */}
         <div className="pr-meta">
-          <span>{pr?.repo}</span>
+          <span className="meta-repo">{pr?.repo}</span>
           <a
             href={pr?.url}
             target="_blank"
@@ -231,8 +604,8 @@ function TopBar({
           >
             #{pr?.number}
           </a>
-          <span className="mono">{pr?.head.slice(0, 7)}</span>
-          <span>
+          <span className="mono meta-head">{pr?.head.slice(0, 7)}</span>
+          <span className="meta-files">
             {diff.files.length} file{diff.files.length === 1 ? '' : 's'}
           </span>
           <span>
@@ -240,24 +613,37 @@ function TopBar({
           </span>
         </div>
       </div>
-      <div className="progress">
-        <span>
-          Stop {index + 1} of {total}
-        </span>
-        <div
-          className="progress-track"
-          role="progressbar"
-          aria-valuemin={1}
-          aria-valuemax={total}
-          aria-valuenow={index + 1}
-          aria-label="Tour progress"
+      {drawer ? (
+        <button
+          type="button"
+          className="progress progress-button"
+          aria-haspopup="dialog"
+          aria-expanded={drawer.open}
+          aria-label={`${progressText(index, total, finished)}. Open the route.`}
+          onClick={drawer.onOpen}
         >
-          <div className="progress-fill" style={{ width: `${((index + 1) / total) * 100}%` }} />
+          <span>
+            {progressText(index, total, finished)} <span aria-hidden="true">▾</span>
+          </span>
+          <ProgressTrack index={index} total={total} finished={finished} />
+        </button>
+      ) : (
+        <div className="progress">
+          <span>{progressText(index, total, finished)}</span>
+          <ProgressTrack index={index} total={total} finished={finished} />
         </div>
-      </div>
+      )}
+      {/* On narrow windows the label collapses to its icon; screen readers still hear it. */}
       {posted ? (
-        <a className="verdict-button posted" href={posted.url} target="_blank" rel="noreferrer">
-          <span aria-hidden="true">✓</span> {postedLabel(posted)}
+        <a
+          className="verdict-button posted"
+          href={posted.url}
+          target="_blank"
+          rel="noreferrer"
+          title={postedLabel(posted)}
+        >
+          <span aria-hidden="true">✓</span>{' '}
+          <span className="verdict-button-label">{postedLabel(posted)}</span>
         </a>
       ) : (
         <button
@@ -266,7 +652,7 @@ function TopBar({
           disabled
           title="Comes at the end of the tour"
         >
-          Verdict at the end
+          <FlagIcon /> <span className="verdict-button-label">Verdict at the end</span>
         </button>
       )}
       <ThemeToggle />
@@ -274,25 +660,78 @@ function TopBar({
   );
 }
 
+/** Where the reader is. While stops are still being written, the total so far. */
+function progressText(index: number, total: number, finished: boolean): string {
+  if (total === 0) return 'Preparing the tour';
+  return finished ? `Stop ${index + 1} of ${total}` : `Stop ${index + 1} of ${total} so far`;
+}
+
+function ProgressTrack({
+  index,
+  total,
+  finished,
+}: {
+  index: number;
+  total: number;
+  finished: boolean;
+}) {
+  // Same size, no fill: until the route is finished, a fraction would be a guess.
+  if (!finished) return <div className="progress-track" aria-hidden="true" />;
+  return (
+    <div
+      className="progress-track"
+      role="progressbar"
+      aria-valuemin={1}
+      aria-valuemax={total}
+      aria-valuenow={index + 1}
+      aria-label="Tour progress"
+    >
+      <div className="progress-fill" style={{ width: `${((index + 1) / total) * 100}%` }} />
+    </div>
+  );
+}
+
+/** The verdict button's icon, shown alone when the window is too narrow for its label. */
+function FlagIcon() {
+  return (
+    <svg
+      className="verdict-button-icon"
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3.5 14.5V2M3.5 2.5h8l-1.8 3 1.8 3h-8" />
+    </svg>
+  );
+}
+
 function Route({
   stops,
   index,
   onSelect,
-  skips,
-  onOpenSkip,
+  onOpenFile,
   tour,
+  writing,
 }: {
   stops: readonly StopView[];
   index: number;
   onSelect: (index: number) => void;
-  skips: Ready['tour']['skips'];
-  onOpenSkip: (path: string) => void;
-  tour: Ready;
+  onOpenFile: OpenFile;
+  /** The finished tour, or null while it's still being written. */
+  tour: Ready | null;
+  writing: Working | null;
 }) {
-  const spent = tour.costs.reduce((sum, c) => sum + c.costMicroUsd, 0);
+  const spent = tour?.costs.reduce((sum, c) => sum + c.costMicroUsd, 0) ?? 0;
   return (
     <div className="route">
-      <h2 className="section-label">The route</h2>
+      {tour && <LedgerSummary ledger={tour.ledger} />}
+      <h2 className="section-label">On the route</h2>
       <ol className="stops">
         {stops.map((stop, i) => {
           const state = i < index ? 'done' : i === index ? 'current' : 'upcoming';
@@ -322,30 +761,18 @@ function Route({
             </li>
           );
         })}
+        {writing && <UpcomingStop stops={stops} writing={writing} />}
       </ol>
 
-      <section className="skips" aria-label="Skipped">
-        <h2 className="section-label">Skipped, with reasons ({skips.length})</h2>
-        {skips.length === 0 ? (
-          <p className="empty-note">Nothing skipped: every changed line is on the route.</p>
-        ) : (
-          <ul className="skip-list">
-            {skips.map((skip) => (
-              <li key={`${skip.path}${skip.hunk ?? ''}`}>
-                <button type="button" className="skip-button" onClick={() => onOpenSkip(skip.path)}>
-                  <span className="skip-path">
-                    {skip.path}
-                    {skip.hunk ? ' (one hunk)' : ''}
-                  </span>
-                  <span className="skip-reason">{inline(skip.reason)}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      {tour ? (
+        <LedgerGroups ledger={tour.ledger} onOpen={onOpenFile} />
+      ) : (
+        <p className="empty-note ledger-pending">
+          Proven skips and the lines not on the route are listed once the whole tour is checked.
+        </p>
+      )}
 
-      {tour.problems.length > 0 && (
+      {tour && tour.problems.length > 0 && (
         <details className="checks">
           <summary>
             {tour.problems.length} unresolved check{tour.problems.length === 1 ? '' : 's'}
@@ -359,11 +786,237 @@ function Route({
       )}
 
       <p className="cost-line">
-        {tour.cached
-          ? `Loaded from cache · no model calls (first written for ${formatUsd(spent)})`
-          : `Tour written for ${formatUsd(spent)} · ${tour.attempts} attempt${tour.attempts === 1 ? '' : 's'} · ${tour.model}`}
+        {!tour
+          ? 'The guide is still writing. Its cost shows here when it finishes.'
+          : tour.cached
+            ? `Loaded from cache · no model calls (first written for ${formatUsd(spent)})`
+            : `Tour written for ${formatUsd(spent)} · ${tour.attempts} attempt${tour.attempts === 1 ? '' : 's'} · ${tour.model}`}
       </p>
     </div>
+  );
+}
+
+/** What a proof's label says, after the word "proven". Each one names what a script checked. */
+const PROOF_LABELS: Record<ProofLabel, string> = {
+  rename: 'rename',
+  whitespace: 'whitespace only',
+  blank_line: 'blank lines',
+  import_in_new_file: 'imports',
+  re_export: 're-exports only',
+  lockfile: 'lockfile',
+  generated: 'generated',
+  vendored: 'vendored',
+};
+
+/** Rename mappings shown per file before the rest are summed up. */
+const SHOWN_RENAMES = 3;
+
+const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+
+/** One bar for the three groups, so the reviewer sees at once that every changed line is shown. */
+function LedgerSummary({ ledger }: { ledger: LedgerView }) {
+  const { onRoute, provenSkip, notOnRoute } = ledger.lines;
+  const total = onRoute + provenSkip + notOnRoute;
+  const groups = [
+    { key: 'on', label: 'On the route', count: onRoute },
+    { key: 'proven', label: 'Proven skips', count: provenSkip },
+    { key: 'off', label: 'Not on the route', count: notOnRoute },
+  ];
+  return (
+    <section className="ledger" aria-label="Every changed line">
+      <div className="ledger-head">
+        <span>
+          <b>{total.toLocaleString()}</b> changed line{total === 1 ? '' : 's'}
+        </span>
+        <span className="ledger-ok">✓ every line shown</span>
+      </div>
+      <div className="ledger-bar" aria-hidden="true">
+        {groups.map((g) =>
+          g.count > 0 ? <i key={g.key} className={g.key} style={{ flexGrow: g.count }} /> : null,
+        )}
+      </div>
+      <dl className="ledger-key">
+        {groups.map((g) => (
+          <div key={g.key}>
+            <dt>
+              <i className={g.key} aria-hidden="true" />
+              {g.label}
+            </dt>
+            <dd>{g.count.toLocaleString()}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+/** The two groups off the route: what a script proved, then everything else, by file. */
+function LedgerGroups({ ledger, onOpen }: { ledger: LedgerView; onOpen: OpenFile }) {
+  const proven = ledger.files.filter(
+    (f): f is LedgerFileView & { proven: NonNullable<LedgerFileView['proven']> } =>
+      f.proven !== null,
+  );
+  const off = ledger.files.filter(
+    (f): f is LedgerFileView & { notOnRoute: NonNullable<LedgerFileView['notOnRoute']> } =>
+      f.notOnRoute !== null,
+  );
+  return (
+    <>
+      <section className="ledger-group" aria-label="Proven skips">
+        <h2 className="section-label">
+          Proven skips
+          <span className="group-count">
+            {plural(proven.length, 'file')} · {plural(ledger.lines.provenSkip, 'line')}
+          </span>
+        </h2>
+        {proven.length === 0 ? (
+          <p className="empty-note">Nothing here: no changed line was proven safe to skip.</p>
+        ) : (
+          <ul className="ledger-files">
+            {proven.map((file) => (
+              <li key={file.path}>
+                <button type="button" className="ledger-file" onClick={() => onOpen(file.path)}>
+                  <FilePath path={file.path} />
+                  <span className="ledger-lines">{plural(file.proven.lines, 'line')}</span>
+                  <span className="proofs">
+                    {file.proven.labels.map((label) => (
+                      <span key={label} className="proof">
+                        <span className="proof-word">proven</span> {PROOF_LABELS[label]}
+                      </span>
+                    ))}
+                  </span>
+                  {file.proven.renames.length > 0 && (
+                    <span className="renames">
+                      {file.proven.renames.slice(0, SHOWN_RENAMES).map(({ from, to }) => (
+                        <span key={`${from}\u0000${to}`} className="rename">
+                          {from} → {to}
+                        </span>
+                      ))}
+                      {file.proven.renames.length > SHOWN_RENAMES && (
+                        <span className="rename-more">
+                          and {file.proven.renames.length - SHOWN_RENAMES} more
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  {file.proven.rules.length > 0 && (
+                    <span className="proof-rules">by {file.proven.rules.join(', ')}</span>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="ledger-group" aria-label="Not on the route">
+        <h2 className="section-label">
+          Not on the route
+          <span className="group-count">
+            {plural(off.length, 'file')} · {plural(ledger.lines.notOnRoute, 'line')}
+          </span>
+        </h2>
+        {off.length === 0 ? (
+          <p className="empty-note">Nothing here: every changed line is on the route or proven.</p>
+        ) : (
+          <ul className="ledger-files">
+            {off.map((file) => (
+              <li key={file.path} className="ledger-row">
+                <OffRouteFile file={file} onOpen={onOpen} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </>
+  );
+}
+
+/**
+ * A file with lines not on the route. The row opens the file where those lines are; each count
+ * opens its own side, so removed lines are always one click away at base.
+ */
+function OffRouteFile({
+  file,
+  onOpen,
+}: {
+  file: LedgerFileView & { notOnRoute: NonNullable<LedgerFileView['notOnRoute']> };
+  onOpen: OpenFile;
+}) {
+  const { added, removed } = file.notOnRoute;
+  const openAdded = () => onOpen(file.path, 'new', added[0]);
+  const openRemoved = () => onOpen(file.oldPath, 'old', removed[0]);
+  return (
+    <>
+      <button
+        type="button"
+        className="ledger-file"
+        onClick={added.length > 0 ? openAdded : openRemoved}
+      >
+        <FilePath path={file.path} />
+        {file.note && (
+          <span className="guide-note">
+            <span className="guide-word">guide:</span> {file.note}
+          </span>
+        )}
+      </button>
+      <span className="ledger-sides">
+        {added.length > 0 && (
+          <button
+            type="button"
+            className="side-count added"
+            aria-label={`Open ${plural(added.length, 'added line')} at head`}
+            onClick={openAdded}
+          >
+            +{added.length}
+          </button>
+        )}
+        {removed.length > 0 && (
+          <button
+            type="button"
+            className="side-count removed"
+            aria-label={`Open ${plural(removed.length, 'removed line')} at base`}
+            onClick={openRemoved}
+          >
+            −{removed.length}
+          </button>
+        )}
+      </span>
+    </>
+  );
+}
+
+/** A path as its file name, with its folder underneath. */
+function FilePath({ path }: { path: string }) {
+  const slash = path.lastIndexOf('/');
+  return (
+    <span className="ledger-path" title={path}>
+      {path.slice(slash + 1)}
+      {slash > 0 && <span className="ledger-dir">{path.slice(0, slash)}</span>}
+    </span>
+  );
+}
+
+/** The route's next row while the guide writes: says what's happening, never how long it'll take. */
+function UpcomingStop({ stops, writing }: { stops: readonly StopView[]; writing: Working }) {
+  const step = writing.steps.find((s) => s.status === 'active')?.id;
+  const verdictIn = stops.at(-1)?.kind === 'verdict_prompt';
+  const label =
+    writing.attempt > 1
+      ? 'Fixing what the checker found'
+      : step === 'checking' || verdictIn
+        ? 'Checking the whole tour'
+        : step === 'writing'
+          ? `Writing stop ${Math.max(writing.writing, stops.length + 1)}`
+          : 'Planning the route';
+  return (
+    <li className="upcoming-stop" aria-live="polite">
+      <span className="upcoming-dot" aria-hidden="true" />
+      <span>
+        <span className="stop-kind">In progress</span>
+        <span className="upcoming-title">{label}…</span>
+      </span>
+    </li>
   );
 }
 
@@ -412,7 +1065,28 @@ type Exchange = {
   question: string;
   answer: AnswerView | null;
   error: string | null;
+  /** The guide's note when the code contradicts the author's answer. Usually never set. */
+  correction: CorrectionView | null;
+  /** Set for a question asked at another head commit, or at a stop this tour doesn't have. */
+  earlier: QuestionView['earlier'];
 };
+
+const fromStored = (q: QuestionView): Exchange => ({
+  id: q.id,
+  question: q.question,
+  answer: q.answer,
+  error: null,
+  correction: q.correction,
+  earlier: q.earlier,
+});
+
+/** Where an earlier question was asked, when that isn't this commit and this stop. */
+function earlierNote({ commit, stopTitle }: NonNullable<Exchange['earlier']>, head: string) {
+  const at = stopTitle ? ` at the stop “${stopTitle}”` : '';
+  return commit === head
+    ? `Asked earlier${at}, in another tour of this commit`
+    : `Asked at an earlier commit, ${commit.slice(0, 7)}${at}`;
+}
 
 /** Who answered, and what it cost: the author's session, or the guide and why. */
 function answerSource(answer: AnswerView): string {
@@ -429,22 +1103,36 @@ function Narration({
   stop,
   author,
   exchanges,
+  threadsLoaded,
+  head,
   onAsk,
+  onOpenCite,
   activeAnchor,
   onAnchor,
   isLast,
   onNext,
+  finished,
+  waiting,
   verdict,
   handoff,
 }: {
   stop: StopView;
   author: AuthorView;
   exchanges: readonly Exchange[];
+  /** False until the questions kept from before this page load are in. */
+  threadsLoaded: boolean;
+  /** The head commit this tour covers. */
+  head: string;
   onAsk: (question: string) => void;
+  onOpenCite: (cite: AnchorView) => void;
   activeAnchor: number;
   onAnchor: (index: number) => void;
   isLast: boolean;
   onNext: () => void;
+  /** False while the rest of the tour is still being written and checked. */
+  finished: boolean;
+  /** What the next-stop button says while the next stop isn't ready yet. */
+  waiting: string;
   /** The verdict form, on the verdict stop. */
   verdict: ReactNode;
   /** The author's handoff, on the first intent stop. */
@@ -508,77 +1196,132 @@ function Narration({
 
         {verdict}
 
-        <div className="question">
-          {exchanges.map((exchange, i) => (
-            <div className="exchange fade-in" key={exchange.id}>
-              <p
-                className="exchange-question"
-                ref={i === exchanges.length - 1 ? newest : undefined}
-              >
-                {exchange.question}
-              </p>
-              {exchange.answer ? (
-                <>
-                  <div className="exchange-answer">
-                    <Markdown text={exchange.answer.text} />
+        {!finished ? (
+          <p className="waiting-note">Questions open once the whole tour is written and checked.</p>
+        ) : !threadsLoaded ? (
+          <p className="waiting-note">Loading earlier questions…</p>
+        ) : (
+          <div className="question">
+            {exchanges.map((exchange, i) => (
+              <div className="exchange fade-in" key={exchange.id}>
+                {exchange.earlier && (
+                  <div className="exchange-earlier">{earlierNote(exchange.earlier, head)}</div>
+                )}
+                <p
+                  className="exchange-question"
+                  ref={i === exchanges.length - 1 ? newest : undefined}
+                >
+                  {exchange.question}
+                </p>
+                {exchange.answer ? (
+                  <>
+                    <div className="exchange-answer">
+                      <Markdown text={exchange.answer.text} />
+                    </div>
+                    <div className="exchange-source">{answerSource(exchange.answer)}</div>
+                    {exchange.answer.source === 'author_session' && (
+                      // Present before any note arrives, so a screen reader announces it.
+                      <div aria-live="polite">
+                        {exchange.correction && (
+                          <Correction correction={exchange.correction} onOpenCite={onOpenCite} />
+                        )}
+                      </div>
+                    )}
+                  </>
+                ) : exchange.error ? (
+                  <div className="exchange-source" role="alert">
+                    Couldn't answer: {exchange.error}
                   </div>
-                  <div className="exchange-source">{answerSource(exchange.answer)}</div>
-                </>
-              ) : exchange.error ? (
-                <div className="exchange-source" role="alert">
-                  Couldn't answer: {exchange.error}
-                </div>
-              ) : (
-                <div className="exchange-source" aria-live="polite">
-                  {author?.found
-                    ? "The author's session is thinking it over…"
-                    : 'The guide is reading the code…'}
-                </div>
-              )}
-            </div>
-          ))}
-          <label
-            htmlFor={`question-${stop.id}`}
-            className={exchanges.length > 0 ? 'follow-up' : undefined}
-          >
-            {exchanges.length > 0 ? 'Ask a follow-up' : 'Your question'}
-          </label>
-          <textarea
-            id={`question-${stop.id}`}
-            value={draft}
-            placeholder="Why is it built this way? What calls this?"
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-                event.preventDefault();
-                submit();
-              }
-            }}
-          />
-          <div className="question-actions">
-            <span>
-              <kbd>⌘</kbd> <kbd>Enter</kbd> to ask
-            </span>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={submit}
-              disabled={!draft.trim() || pending}
+                ) : (
+                  <div className="exchange-source" aria-live="polite">
+                    {author?.found
+                      ? "The author's session is thinking it over…"
+                      : 'The guide is reading the code…'}
+                  </div>
+                )}
+              </div>
+            ))}
+            <label
+              htmlFor={`question-${stop.id}`}
+              className={exchanges.length > 0 ? 'follow-up' : undefined}
             >
-              {pending ? 'Asking…' : author?.found ? 'Ask the author' : 'Ask the guide'}
-            </button>
+              {exchanges.length > 0 ? 'Ask a follow-up' : 'Your question'}
+            </label>
+            <textarea
+              id={`question-${stop.id}`}
+              value={draft}
+              placeholder="Why is it built this way? What calls this?"
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  submit();
+                }
+              }}
+            />
+            <div className="question-actions">
+              <span>
+                <kbd>⌘</kbd> <kbd>Enter</kbd> to ask
+              </span>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={submit}
+                disabled={!draft.trim() || pending}
+              >
+                {pending ? 'Asking…' : author?.found ? 'Ask the author' : 'Ask the guide'}
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       <footer className="narration-footer">
         <span className="batch-note">Pending batch · no changes yet</span>
-        {!isLast && (
+        {!isLast ? (
           <button type="button" className="primary-button" onClick={onNext}>
             Next stop <span aria-hidden="true">→</span>
           </button>
-        )}
+        ) : !finished && stop.kind !== 'verdict_prompt' ? (
+          <button type="button" className="primary-button" disabled>
+            {waiting}
+          </button>
+        ) : null}
       </footer>
+    </div>
+  );
+}
+
+/**
+ * The guide's note under an author answer the code contradicts. It says what the code does,
+ * with the lines; it doesn't grade the answer.
+ */
+function Correction({
+  correction,
+  onOpenCite,
+}: {
+  correction: CorrectionView;
+  onOpenCite: (cite: AnchorView) => void;
+}) {
+  const spent = correction.costs.reduce((sum, c) => sum + c.costMicroUsd, 0);
+  return (
+    <div className="callout correction fade-in" role="note">
+      <div className="callout-label">From the code</div>
+      <p>{inline(correction.text)}</p>
+      <div className="chips">
+        {correction.cites.map((cite) => (
+          <button
+            type="button"
+            key={`${cite.path}:${cite.startLine}-${cite.endLine}`}
+            className="chip"
+            onClick={() => onOpenCite(cite)}
+            title={`${cite.path} at head`}
+          >
+            {chipLabel(cite)}
+          </button>
+        ))}
+      </div>
+      <div className="correction-source">Noted by the guide, at head · {formatUsd(spent)}</div>
     </div>
   );
 }

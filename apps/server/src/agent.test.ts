@@ -1,10 +1,23 @@
-import { describe, expect, test } from 'vitest';
-import { costRecord, readOnlyOptions, sdkRunner } from './agent.ts';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import {
+  costRecord,
+  discardTranscript,
+  forkCostEstimate,
+  formatUsdRange,
+  keepTranscript,
+  readOnlyOptions,
+  sdkRunner,
+} from './agent.ts';
 
 describe('the guide session is read-only', () => {
   test('pins the exact options that keep the session read-only', () => {
     // If this fails, the change loosens the sandbox. Re-run `DOCENT_LIVE=1 pnpm exec vitest run
-    // --project server agent.live` and get a tier 2 review before updating it.
+    // --project server agent.live` before updating it. Loosening these options weakens a gate, so
+    // the PR escalates to the maintainer (docs/process/pull-requests.md).
     expect(readOnlyOptions({ cwd: '/checkout', model: 'claude-test' })).toEqual({
       cwd: '/checkout',
       model: 'claude-test',
@@ -15,6 +28,8 @@ describe('the guide session is read-only', () => {
       settingSources: [],
       maxTurns: 60,
       maxBudgetUsd: 2,
+      // Streams the output token by token. It adds events; it grants nothing.
+      includePartialMessages: true,
     });
   });
 
@@ -53,6 +68,16 @@ describe('the guide session is read-only', () => {
     ).toBe(5);
   });
 
+  test('a kept fork differs only in being saved, with one turn', () => {
+    expect(
+      readOnlyOptions({ cwd: '/checkout', model: 'claude-test', fork: 'author-1', keepIn: '/k' }),
+    ).toEqual({
+      ...readOnlyOptions({ cwd: '/checkout', model: 'claude-test', fork: 'author-1' }),
+      persistSession: true,
+      maxTurns: 1,
+    });
+  });
+
   test("forks the author's session with the same sandbox, and saves no copy", () => {
     // Fork, never resume in place: a resume would append to the author's own transcript.
     expect(readOnlyOptions({ cwd: '/checkout', model: 'claude-test', fork: 'author-1' })).toEqual({
@@ -84,5 +109,90 @@ describe('costRecord', () => {
 
     // $4 input + $20 output + $0.20 cache read + $5 (5m) + $8 (1h)
     expect(record.costMicroUsd).toBe(37_200_000);
+  });
+
+  test("prices Haiku 5.5 at its long-prompt rate once a request's prompt passes 100k", () => {
+    const usage = {
+      input_tokens: 0,
+      output_tokens: 1_000_000,
+      cache_read_input_tokens: 1_000_000,
+      cache_creation_input_tokens: 0,
+    };
+
+    // $0.50 output + $0.01 cache read, then $2.50 + $0.05 above 100k.
+    expect(costRecord('question', 'claude-haiku-5-5', usage, 1, 90_000).costMicroUsd).toBe(510_000);
+    expect(costRecord('question', 'claude-haiku-5-5', usage, 1, 200_000).costMicroUsd).toBe(
+      2_550_000,
+    );
+    // Opus has one price at any length.
+    expect(costRecord('question', 'claude-opus-5-5', usage, 1, 200_000).costMicroUsd).toBe(
+      20_200_000,
+    );
+  });
+
+  test('estimates priming and questions within what was measured', () => {
+    // docs/research/2026-11-11-cheaper-questions.md, a 263k-token session.
+    const opus = forkCostEstimate('claude-opus-5-5', 263_000);
+    expect(formatUsdRange(opus?.primeUsd ?? { low: 0, high: 0 })).toBe('$1.78–2.15'); // ~$1.87
+    expect(opus?.questionUsd.low).toBeLessThanOrEqual(0.15); // $0.15–0.22 measured
+    expect(opus?.questionUsd.high).toBeGreaterThanOrEqual(0.22);
+    // Haiku at its long-prompt rate: $0.23 to prime, $0.03 a question.
+    const haiku = forkCostEstimate('claude-haiku-5-5', 263_000);
+    expect(haiku?.primeUsd.low).toBeLessThanOrEqual(0.23);
+    expect(haiku?.primeUsd.high).toBeGreaterThanOrEqual(0.23);
+    expect(haiku?.questionUsd.low).toBeLessThanOrEqual(0.03);
+    // A 47k-token session on Opus: $0.16 measured to prime.
+    const small = forkCostEstimate('claude-opus-5-5', 47_000);
+    expect(small?.primeUsd.low).toBeLessThanOrEqual(0.16);
+    expect(small?.primeUsd.high).toBeGreaterThanOrEqual(0.16);
+    expect(forkCostEstimate('gpt-something', 47_000)).toBeNull();
+  });
+});
+
+describe("keeping a fork out of Claude Code's projects folder", () => {
+  const id = '0a1b2c3d-1111-4222-8333-444455556666';
+  afterEach(() => vi.unstubAllEnvs());
+
+  /** A config folder holding one saved session, with a tool-results folder beside it. */
+  async function saved() {
+    const config = await mkdtemp(join(tmpdir(), 'docent-config-'));
+    const project = join(config, 'projects', '-some-checkout');
+    await mkdir(join(project, id), { recursive: true });
+    await writeFile(join(project, `${id}.jsonl`), '{"type":"user"}\n');
+    await writeFile(join(project, id, 'result.txt'), 'output');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', config);
+    return project;
+  }
+
+  test('moves the transcript out, and deletes its tool results', async () => {
+    const project = await saved();
+    const kept = await mkdtemp(join(tmpdir(), 'docent-kept-'));
+
+    expect(await keepTranscript(id, kept)).toBe(true);
+
+    expect(await readdir(kept)).toEqual([`${id}.jsonl`]);
+    expect(await readdir(project)).toEqual([]);
+  });
+
+  test('a failed move throws, and discarding then removes the saved copy', async () => {
+    const project = await saved();
+
+    await expect(
+      keepTranscript(id, join(tmpdir(), 'docent-no-such-folder', 'x')),
+    ).rejects.toThrow();
+    await discardTranscript(id);
+
+    expect(await readdir(project)).toEqual([]);
+  });
+
+  test('ignores a missing transcript and an id that is not a UUID', async () => {
+    const project = await saved();
+    const kept = await mkdtemp(join(tmpdir(), 'docent-kept-'));
+
+    expect(await keepTranscript('9a1b2c3d-1111-4222-8333-444455556666', kept)).toBe(false);
+    expect(await keepTranscript('../-some-checkout', kept)).toBe(false);
+    await discardTranscript('../-some-checkout');
+
+    expect(existsSync(join(project, `${id}.jsonl`))).toBe(true);
   });
 });

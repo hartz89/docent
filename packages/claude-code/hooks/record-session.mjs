@@ -9,7 +9,15 @@
 // problem here never gets in the author's way.
 //
 // Plain JavaScript on purpose: Node starts it in about 30 ms, where a .ts file takes about 50.
-import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -34,8 +42,9 @@ const AGENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
  */
 
 /**
- * Docent's data folder. The server reads records from the same place (`defaultDataDir` in
- * apps/server/src/author-session.ts); keep the two in step.
+ * Docent's data folder: the same rules as `defaultDataDir` in apps/server/src/github.ts, which
+ * also keeps run logs and question threads there. The hook runs standalone and can't import it,
+ * so keep the two in step; a test in apps/server/src/github.test.ts checks they agree.
  * @param {NodeJS.ProcessEnv} env
  */
 function dataDir(env = process.env) {
@@ -98,6 +107,8 @@ function recordFor(input, now = new Date()) {
 function writeRecord(record, root) {
   const dir = join(root, 'sessions');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // A linked folder could point the write somewhere else; Docent's other folders refuse one too.
+  if (!lstatSync(dir).isDirectory()) return null;
   // The mode above only applies to a folder this call creates.
   chmodSync(dir, 0o700);
   const name = record.agentId

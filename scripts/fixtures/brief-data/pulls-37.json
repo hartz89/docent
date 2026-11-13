@@ -1,0 +1,18 @@
+{
+  "html_url": "https://github.com/hartz89/docent/pull/37",
+  "number": 37,
+  "title": "Decide: the skip ledger is computed, not written by the docent",
+  "user": {
+    "login": "docent-builder-hartz89[bot]",
+    "html_url": "https://github.com/apps/docent-builder-hartz89"
+  },
+  "body": "**Intent:** a maintainer decision. The skip ledger's value is a completeness guarantee: nothing in the diff can quietly vanish from the tour. That guarantee comes from the checker counting lines, not from the docent writing a ledger. Requiring the docent to cite or skip every line forced noise: cited import blocks, a stop on a barrel, retries. It also produced made-up skip reasons, which are the easiest thing for an injected comment to fake.\n\n**Behavior change:** none yet. This changes the plan and the brief:\n- **Backlog item 6** is rewritten around three places a changed line can be:\n  - **on the route:** cited freely by the stops; an uncited line no longer fails the tour;\n  - **a proven skip:** a script labels it (rename, whitespace, lockfile, generated, re-exports; imports in new files need no citation);\n  - **not on the route:** listed automatically, with an optional note shown as the guide's word.\n\n  The tour schema drops required skips (tier 2a when built). The eval metric becomes \"important code not on the route\".\n- **The brief** (\"Show what it skipped\") is updated, both the living doc on claude.ai and this repo's snapshot, along with the eval table and the risks line.\n- **`backlog/decisions.md`** records the decision.\n\n**Tier 0:** `backlog/` and `docs/brief.md`.\n\n**Known gaps:** none.\n\nhttps://claude.ai/code/session_01Y7vg9UqGBiUTxE4tVbdXiW\n",
+  "created_at": "2026-11-10T04:18:29Z",
+  "updated_at": "2026-11-10T04:20:01Z",
+  "merged_at": "2026-11-10T04:20:00Z",
+  "labels": [],
+  "draft": false,
+  "auto_merge": {},
+  "additions": 17,
+  "deletions": 13
+}

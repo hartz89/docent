@@ -186,3 +186,57 @@ test('the CLI opens a recorded PR, and the reviewer walks the tour by keyboard',
     await docent.stop();
   }
 });
+
+test('while the guide writes, the reviewer reads the PR, then the first stop before the tour is done', async ({
+  page,
+}) => {
+  // The recorded tour streams out over about nine seconds, like a live guide writing it.
+  const docent = await launch('cli.js', ['review', '--fixture', fixture, '--replay-pace', '80']);
+  try {
+    await test.step('the PR and honest progress show right away', async () => {
+      await page.goto(docent.url);
+      await expect(page.getByRole('heading', { level: 1 })).toContainText('cors');
+      await expect(page.locator('.overview .description')).toContainText(
+        'Access-Control-Allow-Origin',
+      );
+      await expect(page.locator('.upcoming-stop')).toContainText(
+        // Stop 1 may already be in by now; the row says what comes next either way.
+        /Planning the route|Writing stop \d+/,
+      );
+    });
+
+    await test.step('the first stop opens while later stops are still being written', async () => {
+      await expect(page.locator('.narration-title')).toHaveText(titles[0] ?? '');
+      await expect(page.getByText(/Stop 1 of \d+ so far/)).toBeVisible();
+      // The description the reviewer was reading stays put; the stop waits beside it.
+      await expect(page.locator('.overview .description')).toBeVisible();
+      await expect(page.locator('.upcoming-stop')).toBeVisible();
+      await expect(
+        page.getByText('Questions open once the whole tour is written and checked.'),
+      ).toBeVisible();
+    });
+
+    await test.step('a file opened over the overview goes back to the overview, not a stop', async () => {
+      await page.getByRole('tab', { name: /Files/ }).click();
+      await page.getByPlaceholder('Go to file').fill('powered-by/index');
+      await page
+        .getByRole('button', { name: 'src/middleware/powered-by/index.ts', exact: true })
+        .click();
+      await expect(page.locator('.code-path')).toHaveText('src/middleware/powered-by/index.ts');
+      await expect(page.getByRole('button', { name: /Back to stop/ })).toHaveCount(0);
+      await page.getByRole('button', { name: 'Back to the overview' }).click();
+      await expect(page.locator('.overview .description')).toBeVisible();
+    });
+
+    await test.step('the finished tour replaces the progress, and questions open', async () => {
+      await expect(page.getByText(`Stop 1 of ${titles.length}`, { exact: true })).toBeVisible({
+        timeout: 20_000,
+      });
+      await expect(page.locator('.upcoming-stop')).toHaveCount(0);
+      await expect(page.locator('.narration-title')).toHaveText(titles[0] ?? '');
+      await expect(page.getByRole('button', { name: 'Ask the guide' })).toBeVisible();
+    });
+  } finally {
+    await docent.stop();
+  }
+});
