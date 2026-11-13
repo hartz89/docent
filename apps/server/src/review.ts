@@ -15,9 +15,23 @@ import {
   parseUnifiedDiff,
   type SessionId,
 } from '@docent/core';
-import { AgentError, type AgentRunner, forkCostEstimateUsd } from './agent.ts';
+import {
+  AgentError,
+  type AgentRunner,
+  type ForkEstimate,
+  forkCostEstimate,
+  formatUsdRange,
+  midpoint,
+} from './agent.ts';
 import { type CheckOutcome, checkAnswer, DEFAULT_CHECK_MODEL } from './answer-check.ts';
-import { type AuthorSession, Busy, oneAtATime, type SessionLocator } from './author-session.ts';
+import {
+  Arrivals,
+  type AuthorSession,
+  Busy,
+  oneAtATime,
+  type Place,
+  type SessionLocator,
+} from './author-session.ts';
 import {
   GitHubRefusal,
   type PrInfo,
@@ -155,7 +169,10 @@ export type ReviewOptions = {
   questionModel?: string;
   /** Where finished tours are cached, by head commit. Leave out to skip the cache. */
   cacheDir?: string;
-  /** Skip the fork when its first call is estimated to cost more than this. Default $2. */
+  /**
+   * Each fork call's spending cap. The author's session goes to the guide from the start when
+   * priming it, the one expensive call, is estimated to cost more. Default $2.
+   */
   forkBudgetUsd?: number;
   /** How long one answer may take, author or guide, before it's abandoned. Default 3 minutes. */
   questionTimeoutMs?: number;
@@ -206,8 +223,10 @@ export class Review {
   #checks = new Map<string, Promise<CheckOutcome>>();
   /** The symbol index, built on first use. A review is bound to one head, so this is per head. */
   #symbols: Promise<BuiltIndex> | null = null;
-  /** What a question to the author's session was estimated to cost, when it was estimated. */
-  #forkEstimateUsd: number | null = null;
+  /** What questions to the author's session were estimated to cost, when they were. */
+  #forkEstimate: ForkEstimate | null = null;
+  /** Questions in the order they arrived, so they reach the author's session in that order. */
+  #arrivals = new Arrivals();
   #log: RunLog;
   readonly done: Promise<void>;
 
@@ -300,8 +319,14 @@ export class Review {
    * fork fails or times out, the guide answers from the code and says why the author didn't.
    * `signal` is the reviewer's request: when it aborts, the question is dropped, with no fallback.
    * Throws `Busy` when too many questions are already waiting for the author's session.
+   * `place` is the question's place in line, from `placeInLine`. `ask` gives it up when done.
    */
-  async ask(stopId: string, question: string, signal?: AbortSignal): Promise<AnswerView> {
+  async ask(
+    stopId: string,
+    question: string,
+    place: Place,
+    signal?: AbortSignal,
+  ): Promise<AnswerView> {
     const started = Date.now();
     const stops = this.#tour.state === 'ready' ? this.#tour.tour.stops : [];
     const at = stops.findIndex((s) => s.id === stopId);
@@ -311,10 +336,10 @@ export class Review {
       question,
     };
     try {
-      const answer = await this.#answer(stopId, question, signal);
+      const answer = await this.#answer(stopId, question, place, signal);
       const fork = {
         forkBudgetUsd: this.#forkBudgetUsd(),
-        ...(this.#forkEstimateUsd !== null ? { forkEstimateUsd: this.#forkEstimateUsd } : {}),
+        ...this.#forkEstimateFields(),
       };
       this.#log.event('question', {
         ...asked,
@@ -328,7 +353,20 @@ export class Review {
         ms: Date.now() - started,
         askedAt: answer.askedAt,
         answer: answer.text,
+        ...(answer.source === 'author_session' ? { checkId: answer.checkId } : {}),
       });
+      // The check finishes on its own, after the answer has gone out. Checks never reject.
+      if (answer.source === 'author_session') {
+        const { checkId } = answer;
+        void this.#checks.get(checkId)?.then(({ result, costs, correction }) =>
+          this.#log.event('question.check', {
+            checkId,
+            result,
+            costMicroUsd: totalMicroUsd(costs),
+            ...(correction ? { correction: correction.text } : {}),
+          }),
+        );
+      }
       return answer;
     } catch (error) {
       this.#log.event('question.failed', {
@@ -338,10 +376,26 @@ export class Review {
         ms: Date.now() - started,
       });
       throw error;
+    } finally {
+      place.leave();
     }
   }
 
-  async #answer(stopId: string, question: string, signal?: AbortSignal): Promise<AnswerView> {
+  /**
+   * A place in line for a question about to be asked. Questions reach the author's session in
+   * the order their places were taken, so the server takes one the moment a request arrives,
+   * before the async work of reading it. `ask` gives it up when it's done with it.
+   */
+  placeInLine(): Place {
+    return this.#arrivals.take();
+  }
+
+  async #answer(
+    stopId: string,
+    question: string,
+    place: Place,
+    signal?: AbortSignal,
+  ): Promise<AnswerView> {
     const workspace = this.#workspace;
     const tour = this.#tour;
     if (!workspace || tour.state !== 'ready') throw new Error('The tour is not ready yet.');
@@ -361,10 +415,14 @@ export class Review {
     const costs: CostRecord[] = [];
     let costIncomplete = false;
     let whyNotAuthor = author.found ? '' : author.reason;
+    if (!author.found) place.leave();
     if (author.found) {
       let timedOut = false;
       try {
-        const reply = await oneAtATime(
+        // Joins the session's queue only once every question that arrived earlier has, so setup
+        // that finished out of order can't change who goes first.
+        await place.ready;
+        const inLine = oneAtATime(
           author.id,
           async () => {
             // A question that waited in line may find the session turned over to the guide.
@@ -391,6 +449,8 @@ export class Review {
           },
           signal,
         );
+        place.leave();
+        const reply = await inLine;
         // The answer goes out now; the check follows on its own, and only ever adds to it.
         const checkId = randomUUID();
         this.#checks.set(
@@ -493,7 +553,7 @@ Question: ${question}`,
           found: found.found,
           ...(found.found ? { session: found.id, via: found.via } : { reason: found.reason }),
           ...(author.found ? { contextTokens: author.contextTokens } : {}),
-          ...(this.#forkEstimateUsd !== null ? { forkEstimateUsd: this.#forkEstimateUsd } : {}),
+          ...this.#forkEstimateFields(),
           forkBudgetUsd: this.#forkBudgetUsd(),
         });
       });
@@ -573,16 +633,34 @@ Question: ${question}`,
     return this.#options.forkBudgetUsd ?? DEFAULT_FORK_BUDGET_USD;
   }
 
+  /**
+   * Turns a session too big to prime within budget over to the guide. Priming is the one
+   * expensive call, and each call has its own cap, so that's what is checked. Questions after it
+   * read the primed cache and cost far less.
+   *
+   * It checks the estimate's midpoint, on purpose. A priming whose high end is over the cap can
+   * still run, and if it does trip the cap, the guide answers for the rest of the review. Checking
+   * the high end instead would refuse sessions that measured well under the cap: the 263k-token
+   * one cost ~$1.87 to prime, but its high end is $2.15, over the default $2.
+   */
   #withinBudget(author: AuthorSession): AuthorSession {
     if (!author.found || author.contextTokens === null) return author;
     const budget = this.#forkBudgetUsd();
-    const estimate = forkCostEstimateUsd(this.#questionModel(), author.contextTokens);
-    this.#forkEstimateUsd = estimate;
-    if (estimate === null || estimate <= budget) return author;
+    const estimate = forkCostEstimate(this.#questionModel(), author.contextTokens);
+    this.#forkEstimate = estimate;
+    if (estimate === null || midpoint(estimate.primeUsd) <= budget) return author;
     return {
       found: false,
-      reason: `The author's session is too big to ask within budget (about $${estimate.toFixed(2)} for the first question; the budget is $${budget.toFixed(2)})`,
+      reason: `The author's session is too big to ask within budget (about ${formatUsdRange(estimate.primeUsd)} to read it in for the first question; the budget is $${budget.toFixed(2)})`,
     };
+  }
+
+  /** The fork estimate, for the run log, as [low, high] in USD. */
+  #forkEstimateFields() {
+    const estimate = this.#forkEstimate;
+    if (!estimate) return {};
+    const { primeUsd: p, questionUsd: q } = estimate;
+    return { forkPrimeUsd: [p.low, p.high], forkQuestionUsd: [q.low, q.high] };
   }
 
   /**

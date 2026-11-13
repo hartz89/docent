@@ -17,6 +17,7 @@ import {
 import { fixtureRunner, recording } from './fixture.ts';
 import { fileFromText, GitHubRefusal, type PrSource, type ReviewPost } from './github.ts';
 import { Review, type ReviewOptions, type TourState, tourCacheName } from './review.ts';
+import { RunLog } from './run-log.ts';
 
 // A small PR: one behavior change in src/cors.ts, plus a lockfile bump.
 const head: Record<string, string> = {
@@ -47,9 +48,17 @@ diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
 
 const prHead = commitSha('h'.repeat(40));
 
-/** GitHub's side of the PR: where its head is now, and the reviews posted to it. */
+/**
+ * GitHub's side of the PR: where its head is now, and the reviews posted to it. `slowRead`, when
+ * set, holds the next file read until it settles, like a slow read from the checkout.
+ */
 function fakeGitHub() {
-  return { head: prHead, posted: [] as ReviewPost[], refusal: null as string | null };
+  return {
+    head: prHead,
+    posted: [] as ReviewPost[],
+    refusal: null as string | null,
+    slowRead: null as Promise<void> | null,
+  };
 }
 type FakeGitHub = ReturnType<typeof fakeGitHub>;
 
@@ -76,7 +85,12 @@ const sourceFor =
         'Reflect the origin\n\nClaude-Session: https://claude.ai/code/session_01Abc',
       ],
       dir: '/nowhere',
-      readFile: async (side, path) => (side === 'new' ? head : base)[path] ?? null,
+      readFile: async (side, path) => {
+        const slow = github.slowRead;
+        github.slowRead = null;
+        await slow;
+        return (side === 'new' ? head : base)[path] ?? null;
+      },
       open: async (side, path) => fileFromText((side === 'new' ? head : base)[path] ?? null),
       tree: async () => ({
         entries: Object.keys(head).map((path) => ({ path, kind: 'file' as const })),
@@ -127,11 +141,11 @@ const gappyTour = {
   ]),
 };
 /**
- * A repair, in the tour's own shape: only the stops that change. A stop with an existing title
- * replaces that stop; one with a new title is added.
+ * A repair, in the tour's own shape: only the stops that change. A stop with `replaces: n`
+ * replaces stop n; one without is added.
  */
 const repairOf = (...changed: object[]) => ({
-  stops: changed.map((stop) => ({ flags: [], ...stop })),
+  stops: changed.map((stop) => ({ flags: [], replaces: 0, ...stop })),
 });
 
 /** Stands in for a turn that hit the budget cap: the runner throws, with the cost so far. */
@@ -177,7 +191,7 @@ async function open(
   cacheDir?: string,
   model = 'claude-test',
   locator: SessionLocator = noAuthor,
-  extra: Pick<ReviewOptions, 'forkBudgetUsd' | 'questionTimeoutMs' | 'questionModel'> = {},
+  extra: Pick<ReviewOptions, 'forkBudgetUsd' | 'questionTimeoutMs' | 'questionModel' | 'log'> = {},
   github = fakeGitHub(),
 ) {
   const review = new Review({
@@ -294,10 +308,12 @@ describe('GET /api/review', () => {
   });
 
   test('sends the checker problems back, and the guide repairs only the stop that broke', async () => {
-    // Stop 2 ("x") comes back with its citation fixed; the other stops aren't resent.
+    // Stop 2 ("x") comes back with the missing line cited and a new title. It still replaces
+    // stop 2, rather than showing up twice. The other stops aren't resent.
     const fixed = {
+      replaces: 2,
       kind: 'core_change',
-      title: 'x',
+      title: 'The origin is reflected',
       body: 'y',
       citations: [cite('new', 2), cite('old', 2)],
     };
@@ -313,7 +329,11 @@ describe('GET /api/review', () => {
     expect(requests[1]?.schema).toBe(requests[0]?.schema);
     expect(requests[1]?.prompt).toContain('cites src/cors.ts head lines 2-90, outside the file');
     expect(requests[1]?.prompt).toContain('sending back only what changes');
-    expect(tour.tour.stops.map((s) => s.title)).toEqual(['Why', 'x', 'Your call']);
+    expect(tour.tour.stops.map((s) => s.title)).toEqual([
+      'Why',
+      'The origin is reflected',
+      'Your call',
+    ]);
     expect(tour.tour.stops[1]?.anchors).toHaveLength(2);
     expect(tour.costs).toHaveLength(2);
   });
@@ -326,7 +346,13 @@ describe('GET /api/review', () => {
       flags: [],
       citations: [cite('old', 2)],
     };
-    const fixed = { kind: 'core_change', title: 'x', body: 'y', citations: [cite('new', 2)] };
+    const fixed = {
+      replaces: 2,
+      kind: 'core_change',
+      title: 'x',
+      body: 'y',
+      citations: [cite('new', 2)],
+    };
     const { runner } = scripted(gappyTour, repairOf(fixed, extra));
     const { api } = await open(runner);
 
@@ -338,6 +364,28 @@ describe('GET /api/review', () => {
       ['stop-2', 'x'],
       ['stop-3', 'The old wildcard'],
       ['stop-4', 'Your call'],
+    ]);
+  });
+
+  test('a repair that names a stop that is not there is sent back, with the stops as they are', async () => {
+    const fixed = { ...goodTour.stops[1], flags: [] };
+    const { runner, requests } = scripted(
+      gappyTour,
+      repairOf({ ...fixed, replaces: 9 }),
+      repairOf({ ...fixed, replaces: 2 }),
+    );
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    // Every repair request lists the stops by number, since earlier repairs can renumber them.
+    expect(requests[1]?.prompt).toContain("The tour's stops now, by number:\n1. intent: Why\n2.");
+    expect(requests[2]?.prompt).toContain('The repair replaces stop 9, but there is no stop 9.');
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.stops.map((s) => s.title)).toEqual([
+      'Why',
+      'The origin is reflected',
+      'Your call',
     ]);
   });
 
@@ -572,7 +620,7 @@ describe('the tour, while it is written', () => {
         { kind: 'edge', title: 'After it', body: 'd', flags: [], citations: [cite('old', 2)] },
       ]),
     };
-    const fixed = { ...goodTour.stops[1], title: 'Bad lines' };
+    const fixed = { ...goodTour.stops[1], title: 'Bad lines', replaces: 2 };
     const states = await watch(streaming([broken, repairOf(fixed)]).runner);
 
     const everShown = new Set(titlesShown(states).flat());
@@ -660,6 +708,24 @@ describe('the tour, while it is written', () => {
     const counts = states.flatMap((s) => (s.state === 'working' ? [s.stops.length] : []));
     expect(counts.every((n, i) => i === 0 || n >= (counts[i - 1] ?? 0))).toBe(true);
     expect(ready(states.at(-1) as TourState).attempts).toBe(2);
+  });
+
+  test('a missing verdict is repaired: the guide adds just that stop', async () => {
+    const noVerdict = { ...goodTour, stops: goodTour.stops.slice(0, -1) };
+    const verdict = { ...goodTour.stops[2], title: 'Over to you' };
+    const { runner, requests } = scripted(noVerdict, repairOf(verdict));
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(requests[1]?.prompt).toContain('The tour has no verdict_prompt stop');
+    expect(requests[1]?.prompt).toContain('sending back only what changes');
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.stops.map((s) => s.title)).toEqual([
+      'Why',
+      'The origin is reflected',
+      'Over to you',
+    ]);
   });
 
   test('order problems get a whole new tour, since a repair can only replace or add stops', async () => {
@@ -965,8 +1031,8 @@ describe('POST /api/questions', () => {
     });
   });
 
-  test('a session too big to fork within budget goes to the guide, with the estimate', async () => {
-    // 400k tokens of context on Opus 5.5: about $3.20 to write to a 1-hour cache, over a $1 budget.
+  test('a session too big to prime within budget goes to the guide, with the estimate', async () => {
+    // 400k tokens of context on Opus 5.5: priming writes about 370k of them to a 1-hour cache.
     const author = withAuthor();
     const { api } = await open(
       author.runner,
@@ -983,13 +1049,30 @@ describe('POST /api/questions', () => {
       answer: {
         source: 'guide',
         whyNotAuthor:
-          "The author's session is too big to ask within budget (about $3.20 for the first question; the budget is $1.00)",
+          "The author's session is too big to ask within budget (about $2.82–3.41 to read it in for the first question; the budget is $1.00)",
       },
     });
   });
 
+  test('a session whose priming fits the budget is asked, though one question writes it all', async () => {
+    // The 263k-token session measured in docs/research/2026-11-11-cheaper-questions.md: about
+    // $1.87 to prime on Opus 5.5. Writing all 263k would be $2.10, over a $2 budget.
+    const author = withAuthor();
+    const { api } = await open(
+      author.runner,
+      undefined,
+      'claude-opus-5-5',
+      fixedSession(authorSession(263_000)),
+      { forkBudgetUsd: 2 },
+    );
+
+    const res = await ask(api);
+
+    expect(await res.json()).toMatchObject({ answer: { source: 'author_session' } });
+  });
+
   test('a cheaper question model answers for the author, and sets the estimate', async () => {
-    // Too big for Opus within $1 (about $3.20), but about $0.40 on Haiku at its long-prompt price.
+    // Too big for Opus within $1 (about $3), but about $0.37 on Haiku at its long-prompt price.
     const author = withAuthor();
     const { api } = await open(
       author.runner,
@@ -1253,12 +1336,21 @@ describe('POST /api/questions', () => {
     expect(author.guide.filter((r) => r.job === 'question')).toEqual([]);
   });
 
-  test('one question at a time per author session, and a full queue is refused', async () => {
+  test('one question at a time per author session, in the order asked, and a full queue is refused', async () => {
     const author = withAuthor({ hold: true });
-    const { api } = await open(author.runner, undefined, 'claude-test', authorFound);
+    const github = fakeGitHub();
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound, {}, github);
+    // One question's code is slow to read, so the others are set up first. Order still holds.
+    let readDone = () => {};
+    github.slowRead = new Promise((resolve) => {
+      readDone = resolve;
+    });
 
     const first = ask(api, 'First?');
     const waiting = [1, 2, 3].map((n) => ask(api, `Waiting ${n}?`));
+    await vi.waitFor(() => expect(github.slowRead).toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    readDone();
     await vi.waitFor(() => expect(author.forks).toHaveLength(1));
     // Later questions wait for the first fork to finish before forking.
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1284,6 +1376,27 @@ describe('POST /api/questions', () => {
       'Waiting 2?',
       'Waiting 3?',
     ]);
+  });
+
+  test('a request refused before it is asked gives up its place in line', async () => {
+    const author = withAuthor({ hold: true });
+    const { app, api } = await open(author.runner, undefined, 'claude-test', authorFound);
+
+    const first = ask(api, 'First?');
+    const refused = [
+      await api.questions.$post({ json: { stopId: 'stop-2', question: ' ' } }),
+      await app.request(`${origin}/api/questions`, { method: 'POST', body: '{}' }),
+    ];
+    const next = ask(api, 'Next?');
+    await vi.waitFor(() => expect(author.forks).toHaveLength(1));
+    author.releases[0]?.();
+    await vi.waitFor(() => expect(author.forks).toHaveLength(2));
+    author.releases[1]?.();
+
+    expect(refused.map((r) => r.status)).toEqual([400, 401]);
+    expect((await first).status).toBe(200);
+    expect(await (await next).json()).toMatchObject({ answer: { source: 'author_session' } });
+    expect(author.forks.map(questionIn)).toEqual(['First?', 'Next?']);
   });
 
   test('rejects an empty question', async () => {
@@ -1335,6 +1448,36 @@ describe('the answer check', () => {
     );
     expect(check?.prompt).toContain('<question>\nDoes it still send the wildcard?\n</question>');
     expect(check?.prompt).toContain('src/cors.ts (head) lines 2-2:\n  const origin = reflect();');
+  });
+
+  test('the run log records each author answer with what its check found', async () => {
+    const log = RunLog.open({
+      dir: await mkdtemp(join(tmpdir(), 'docent-runs-')),
+      label: 'x',
+      env: {},
+    });
+    const author = withAuthor({ check: wrong });
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound, { log });
+
+    await askAndCheck(api);
+
+    const logged = async () =>
+      (await readFile(log.path ?? '', 'utf8'))
+        .trimEnd()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter((e) => e.kind === 'question' || e.kind === 'question.check');
+    await vi.waitFor(async () => expect(await logged()).toHaveLength(2));
+    const [question, check] = await logged();
+    // The answer is logged when it goes out; the check, tied to it, when it's done.
+    expect(question).toMatchObject({ kind: 'question', source: 'author_session' });
+    expect(check).toMatchObject({
+      kind: 'question.check',
+      checkId: question?.checkId,
+      result: 'corrected',
+      costMicroUsd: 40,
+      correction: 'The code sets `origin` from `reflect()`, not `*`.',
+    });
   });
 
   test('shows a correction with the lines that show it when the code says otherwise', async () => {

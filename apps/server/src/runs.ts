@@ -17,7 +17,7 @@ const usage = `Usage:
 export type Run = { id: string; events: RunEvent[]; badLines: number };
 
 /** Kinds whose `costMicroUsd` is money spent this run. Tour attempts are inside `tour.*`. */
-const COST_KINDS = new Set(['tour.ready', 'tour.failed', 'question']);
+const COST_KINDS = new Set(['tour.ready', 'tour.failed', 'question', 'question.check']);
 const ERROR_KINDS = new Set(['error', 'client.error']);
 
 /** Runs `docent runs …` against the runs folder. Returns the output and the exit code. */
@@ -128,6 +128,35 @@ function facts(run: Run) {
   };
 }
 
+/** What the answer check found, in words. */
+const CHECKS: Record<string, string> = {
+  corrected: 'the code says otherwise',
+  silent: 'nothing to add',
+  failed: "couldn't run",
+};
+
+/** A [low, high] range in USD from the log, or null. */
+function usdRange(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length !== 2) return null;
+  const [low, high] = value.map((v) => num(v).toFixed(2));
+  return low === high ? `$${low}` : `$${low}–${high}`;
+}
+
+/** The fork's estimate and budget, when the author's session was in the running. */
+function forkEstimate(q: RunEvent): string | null {
+  const budget = `budget $${num(q.forkBudgetUsd).toFixed(2)}`;
+  const prime = usdRange(q.forkPrimeUsd);
+  if (prime) {
+    const each = usdRange(q.forkQuestionUsd);
+    return `Fork estimated ${prime} to prime${each ? `, then ${each} a question` : ''}; ${budget}.`;
+  }
+  // Runs logged before priming had one figure: a whole-session write per question.
+  if (typeof q.forkEstimateUsd === 'number') {
+    return `Fork estimated $${q.forkEstimateUsd.toFixed(2)}, ${budget}.`;
+  }
+  return null;
+}
+
 // ---- The list ----
 
 function listRow(run: Run): string[] {
@@ -217,15 +246,21 @@ export function summarize(run: Run): string {
             ? `     Answered by the author's session ${clean(str(q.session))}`
             : `     Answered by the guide, because: ${clean(str(q.whyNotAuthor))}`,
         );
-        // The fork's estimate and budget, when the author's session was in the running.
-        const fork =
-          typeof q.forkEstimateUsd === 'number'
-            ? `Fork estimated $${q.forkEstimateUsd.toFixed(2)}, budget $${num(q.forkBudgetUsd).toFixed(2)}. `
-            : '';
+        const fork = forkEstimate(q);
+        if (fork) out.push(`     ${fork}`);
         out.push(
-          `     ${fork}Cost ${usd(num(q.costMicroUsd))}${q.costIncomplete ? ' or more' : ''}, ${duration(num(q.ms))}`,
+          `     Cost ${usd(num(q.costMicroUsd))}${q.costIncomplete ? ' or more' : ''}, ${duration(num(q.ms))}`,
         );
         out.push(...block('A: ', str(q.answer)));
+        const check = run.events.find(
+          (e) => e.kind === 'question.check' && q.checkId !== undefined && e.checkId === q.checkId,
+        );
+        if (check) {
+          out.push(
+            `     Check: ${CHECKS[str(check.result)] ?? '?'}, ${usd(num(check.costMicroUsd))}`,
+          );
+          if (check.correction !== undefined) out.push(...block('C: ', str(check.correction)));
+        }
       }
       out.push('');
     });
@@ -278,7 +313,9 @@ function describe(e: RunEvent): string[] {
             ? `failed: ${clean(str(e.error))}`
             : e.outcome === 'bad_shape'
               ? "didn't match the tour schema"
-              : clean(str(e.outcome));
+              : e.outcome === 'bad_repair'
+                ? `repair refused: ${clean(str(e.problem))}`
+                : clean(str(e.outcome));
       return [
         `tour attempt ${num(e.attempt)}: ${what}, ${cost(e.costMicroUsd)}, ${duration(num(e.ms))}`,
         ...problems.map((p) => `- ${clean(String(p))}`),
@@ -305,6 +342,8 @@ function describe(e: RunEvent): string[] {
       return [
         `question at ${stopName(e)}: answered by ${e.source === 'author_session' ? "the author's session" : 'the guide'}, ${cost(e.costMicroUsd)}, ${duration(num(e.ms))}`,
       ];
+    case 'question.check':
+      return [`answer check: ${CHECKS[str(e.result)] ?? '?'}, ${cost(e.costMicroUsd)}`];
     case 'question.failed':
       return [
         `question at ${stopName(e)} not answered (${clean(str(e.outcome))}): ${clean(str(e.message))}`,

@@ -371,19 +371,52 @@ export function costRecord(
   return { job, model, tokens, costMicroUsd, latencyMs };
 }
 
+/** A cost that can only be known roughly, in USD. */
+export type UsdRange = { low: number; high: number };
+
 /**
- * What a fork's first call costs, before it runs: it writes the parent's whole context to the
- * prompt cache. Priced as a 1-hour cache write (2x input), which is what Claude Code uses on a
- * subscription by default (the SDK's `promptCacheTtl`: "1 hour on a Claude subscription"). The
- * PR #17 live run agrees: 196k written tokens at 2x account for its $1.63. On an API key writes
- * are 5-minute (1.25x), so this overestimates there, which is the safe direction.
- * Later questions within the hour read that cache instead, for about a tenth of this
- * (docs/research/2026-11-11-cheaper-questions.md). Null for a model with no known price.
+ * What asking a forked session costs, before anything runs. Questions fork a primed copy of the
+ * session (see `Review`), so the costs come in two parts:
+ * - `primeUsd`: priming, once per review, paid by the first question. It writes the session to
+ *   the prompt cache, except Claude Code's own system prompt and tools, which every session
+ *   shares and the cache already holds. Each call has its own spending cap, so this is what a
+ *   budget check compares.
+ * - `questionUsd`: each question, reading that cache, a few times over as it uses tools.
  */
-export function forkCostEstimateUsd(model: string, contextTokens: number): number | null {
+export type ForkEstimate = { primeUsd: UsdRange; questionUsd: UsdRange };
+
+/**
+ * Calibrated on docs/research/2026-11-11-cheaper-questions.md. A 263k-token session wrote 233k
+ * to prime, so about 30k were already cached; that also fits the 47k-token session's measured
+ * $0.16. Writes are priced as 1-hour cache writes (2x input), what Claude Code uses on a
+ * subscription; on an API key they are 1.25x, so this overestimates there, the safe direction.
+ * Follow-ups read the whole session about 2 to 4.5 times: $0.03 on Haiku, $0.15–0.22 on Opus.
+ */
+const SHARED_PREFIX_TOKENS = 30_000;
+const PRIME_SPREAD = { low: 0.95, high: 1.15 };
+const QUESTION_READS = { low: 2, high: 4.5 };
+
+/** What questions to a fork of a session this size will cost. Null for a model with no price. */
+export function forkCostEstimate(model: string, contextTokens: number): ForkEstimate | null {
   const price = priceFor(model, contextTokens);
-  return price ? (contextTokens * price.input * 2) / 1e6 : null;
+  if (!price) return null;
+  const shared = Math.min(contextTokens, SHARED_PREFIX_TOKENS);
+  const prime = ((contextTokens - shared) * price.input * 2 + shared * price.cacheRead) / 1e6;
+  const read = (contextTokens * price.cacheRead) / 1e6;
+  return {
+    primeUsd: { low: prime * PRIME_SPREAD.low, high: prime * PRIME_SPREAD.high },
+    questionUsd: { low: read * QUESTION_READS.low, high: read * QUESTION_READS.high },
+  };
 }
+
+/** A range for people: "$2.20–2.50", or "$0.03" when both ends round the same. */
+export function formatUsdRange({ low, high }: UsdRange): string {
+  const [a, b] = [low.toFixed(2), high.toFixed(2)];
+  return a === b ? `$${a}` : `$${a}–${b}`;
+}
+
+/** The midpoint, which a budget is checked against: the ends are a margin, not a forecast. */
+export const midpoint = ({ low, high }: UsdRange) => (low + high) / 2;
 
 const LONG_PROMPT_TOKENS = 100_000;
 

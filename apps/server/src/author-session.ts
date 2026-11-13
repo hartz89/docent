@@ -271,6 +271,33 @@ async function originRepo(dir: string): Promise<string | null> {
   return match ? `${match[1]}/${match[2]}` : null;
 }
 
+/**
+ * A question's place in line, taken the moment its request arrives. Setup that comes before the
+ * question can join its session's queue (auth, reading the body and the stop's code, finding the
+ * session) takes a different time for each question, so without a place a later question could
+ * overtake an earlier one. `ready` settles once every question ahead of this one has joined its
+ * queue or given up its place. Call `leave()` once this question has joined, or won't: after that
+ * the next one may go. Leaving twice is harmless.
+ */
+export type Place = { ready: Promise<void>; leave(): void };
+
+/** Hands out places in arrival order. */
+export class Arrivals {
+  #last: Promise<void> = Promise.resolve();
+
+  take(): Place {
+    const ready = this.#last;
+    let leave = () => {};
+    const left = new Promise<void>((resolve) => {
+      leave = resolve;
+    });
+    // The next place waits for this one and everything ahead of it, so leaving early never lets
+    // the next question overtake one further up.
+    this.#last = Promise.all([ready, left]).then(() => undefined);
+    return { ready, leave };
+  }
+}
+
 /** The author's session is busy: too many questions are already waiting for it. */
 export class Busy extends Error {}
 
