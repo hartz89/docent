@@ -140,11 +140,13 @@ if (values.fixture) {
   );
 } else {
   // Checked before anything is fetched, so a missing or outdated Claude Code fails at once.
-  await claudeCode().catch((error: unknown) => {
+  const claude = await claudeCode().catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));
     endReason = 'no usable Claude Code';
     process.exit(1);
   });
+  // Which Claude Code enforced the read-only options, since it's the reviewer's, not pinned.
+  log.event('claude.found', { path: claude.path, version: claude.version });
   source = githubSource(url ?? '', cacheDir);
   runner = sdkRunner;
   locator = localSessions(values.session !== undefined ? { explicit: values.session } : {});

@@ -5,7 +5,7 @@
 // says.
 import { execFile } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { delimiter, isAbsolute, join, sep } from 'node:path';
 import { promisify } from 'node:util';
 
 /**
@@ -25,8 +25,13 @@ const INSTALL_HINT =
 
 /**
  * Finds Claude Code and checks its version. `DOCENT_CLAUDE_PATH` wins; otherwise the first
- * `claude` on PATH. Relative PATH entries (like `.`) are skipped, so a checkout or any other
- * folder Docent happens to run from can't supply the binary. Throws a message for people.
+ * `claude` on PATH. Two kinds of PATH entry are skipped, because the folder Docent runs from
+ * (a checkout of the very repo under review, say) controls what's in them:
+ * - relative ones, like `.`;
+ * - any folder inside a `node_modules`. npx, `npm run` and `pnpm run` put an absolute
+ *   `node_modules/.bin` on PATH for the current folder and each one above it, ahead of the
+ *   user's own entries, and a repo or any of its dependencies can put a `claude` there.
+ * Throws a message for people.
  */
 export async function findClaudeCode(env: NodeJS.ProcessEnv = process.env): Promise<ClaudeCode> {
   const override = env[CLAUDE_PATH_ENV];
@@ -74,7 +79,7 @@ function checkedOverride(path: string): string {
 function onPath(pathVar: string): string | undefined {
   const names = process.platform === 'win32' ? ['claude.exe'] : ['claude'];
   for (const dir of pathVar.split(delimiter)) {
-    if (!isAbsolute(dir)) continue;
+    if (!isAbsolute(dir) || dir.split(sep).includes('node_modules')) continue;
     for (const name of names) {
       const candidate = join(dir, name);
       if (isExecutableFile(candidate)) return candidate;

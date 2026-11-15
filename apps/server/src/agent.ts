@@ -107,6 +107,9 @@ const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
  * folder when it ends.
  * `src/agent.test.ts` pins these options; `src/agent.live.test.ts` proves them against a hostile
  * checkout with a real session, and proves a fork leaves the author's transcript unchanged.
+ * Claude Code enforces them, and it's the reviewer's own (`claude-code.ts`), at whatever version
+ * they've updated to, no older than the SDK's own. So the live test proves the version it ran
+ * on, and the run log records which one each review used.
  */
 export function readOnlyOptions(
   request: Pick<

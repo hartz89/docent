@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { mkdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
@@ -19,6 +20,19 @@ describe('finding Claude Code', () => {
     const real = await fakeClaudeDir();
 
     const found = await findClaudeCode({ PATH: `.:node_modules/.bin::${real}` });
+
+    expect(found.path).toBe(join(real, 'claude'));
+  });
+
+  test('skips folders inside node_modules, which the repo under review can fill', async () => {
+    // npx puts an absolute node_modules/.bin on PATH for the current folder and each one above.
+    const checkout = await fakeClaudeDir('9.9.9 (Claude Code)');
+    const bin = join(checkout, 'node_modules', '.bin');
+    await mkdir(bin, { recursive: true });
+    await rename(join(checkout, 'claude'), join(bin, 'claude'));
+    const real = await fakeClaudeDir();
+
+    const found = await findClaudeCode({ PATH: `${bin}:${real}` });
 
     expect(found.path).toBe(join(real, 'claude'));
   });
