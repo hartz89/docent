@@ -622,6 +622,26 @@ describe('as-agent merge gate', () => {
     },
   );
 
+  test.each(['DISMISSED', 'PENDING'])(
+    'refuses when the only reviewer review on the head is %s',
+    async (state) => {
+      const { code, ranMerge, logs } = await merge([review(state, HEAD)]);
+      expect(code).toBe(1);
+      expect(ranMerge).toBe(false);
+      expect(logs()[0]).toContain(`the head commit ${HEAD} has no reviewer review`);
+    },
+  );
+
+  test('refuses when GitHub gives no usable head commit', async () => {
+    const run = setup({
+      config,
+      pull: { head: 'not-a-sha', reviews: [review('COMMENTED', HEAD)] },
+    });
+    expect(await asAgent(['builder', '--', ...MERGE], run.deps)).toBe(1);
+    expect(existsSync(join(dir, 'argv'))).toBe(false);
+    expect(run.logs()[0]).toContain('GitHub gave no head commit for PR #3');
+  });
+
   test('refuses while the latest reviewer verdict requests changes', async () => {
     const { code, ranMerge, logs } = await merge([
       review('COMMENTED', OLD),
