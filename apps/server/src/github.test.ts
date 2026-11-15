@@ -1,11 +1,11 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { type CommitSha, commitSha } from '@docent/core';
 import { beforeAll, describe, expect, test } from 'vitest';
-import { explainGhFailure, prefetchBlobs } from './github.ts';
+import { commitReader, explainGhFailure, MAX_FILE_BYTES, prefetchBlobs } from './github.ts';
 
 const run = promisify(execFile);
 
@@ -108,5 +108,158 @@ describe('prefetchBlobs', () => {
 
     expect(await prefetchBlobs(clone, [sha])).toBe(2);
     expect(await missingBlobs(clone, sha)).toBe(2);
+  });
+});
+
+describe('reading many files at once', () => {
+  /** A commit built from exact tree entries, so modes and odd names need no filesystem. */
+  async function commit(
+    repo: string,
+    entries: Record<string, { mode: string; text?: string | Buffer; oid?: string }>,
+  ): Promise<CommitSha> {
+    await sh(repo, 'read-tree', '--empty');
+    const scratch = await mkdtemp(join(tmpdir(), 'docent-blob-'));
+    for (const [path, { mode, text, oid }] of Object.entries(entries)) {
+      let id = oid;
+      if (id === undefined) {
+        const blob = join(scratch, 'blob');
+        await writeFile(blob, text ?? '');
+        id = (await sh(repo, 'hash-object', '-w', blob)).trim();
+      }
+      // On macOS git folds decomposed names into composed ones unless told not to.
+      await sh(
+        repo,
+        '-c',
+        'core.precomposeunicode=false',
+        'update-index',
+        '--add',
+        '--cacheinfo',
+        `${mode},${id},${path}`,
+      );
+    }
+    const tree = (await sh(repo, 'write-tree')).trim();
+    return commitSha((await sh(repo, 'commit-tree', tree, '-m', 'c')).trim());
+  }
+
+  const file = (text: string | Buffer) => ({ mode: '100644', text });
+  const shared = {
+    'run.sh': { mode: '100755', text: '#!/bin/sh\necho hi\n' },
+    link: { mode: '120000', text: 'plain.ts' },
+    'long-link': { mode: '120000', text: 'x/'.repeat(2500) },
+    'vendor/lib': { mode: '160000', oid: 'a'.repeat(40) },
+    'logo.png': file(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01])),
+    'big.txt': file('x'.repeat(MAX_FILE_BYTES + 1)),
+    'exact.txt': file('y'.repeat(MAX_FILE_BYTES)),
+    'empty.txt': file(''),
+    'latin1.txt': file(Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a])),
+    'with space.ts': file('space\n'),
+    'line\nbreak.ts': file('newline\n'),
+    'café.ts': file('composed\n'),
+    'café.ts': file('decomposed\n'),
+    '日本/ファイル.ts': file('unicode\n'),
+    'star*.ts': file('literal\n'),
+    'src/a.ts': file('nested\n'),
+    'same1.ts': file('same\n'),
+    'same2.ts': file('same\n'),
+  };
+  // Every kind of answer, plus names that only exist at one side, or nowhere, or aren't safe.
+  // `src` comes first: asking for a folder must not hide the files asked for inside it.
+  const asked = [
+    'src',
+    ...Object.keys(shared),
+    'plain.ts',
+    'gone.txt',
+    'new.ts',
+    'nope.ts',
+    'starX.ts',
+    'vendor/lib/inner.ts',
+    'cafe.ts',
+    '../escape',
+    '-x',
+    '',
+    'src/./a.ts',
+    'plain.ts',
+  ];
+
+  let reader: ReturnType<typeof commitReader>;
+
+  beforeAll(async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'docent-batch-'));
+    await sh(repo, 'init', '--quiet', '--initial-branch=main');
+    const base = await commit(repo, {
+      ...shared,
+      'plain.ts': file('export const v = 1;\n'),
+      'gone.txt': file('deleted at head\n'),
+    });
+    const head = await commit(repo, {
+      ...shared,
+      'plain.ts': file('export const v = 2;\n'),
+      'new.ts': file('added at head\n'),
+    });
+    reader = commitReader(repo, base, head);
+  });
+
+  const oneAtATime = async (side: 'old' | 'new', paths: readonly string[]) =>
+    new Map(await Promise.all(paths.map(async (p) => [p, await reader.open(side, p)] as const)));
+
+  test.each(['old', 'new'] as const)('agrees with reading each file alone, at %s', async (side) => {
+    const batched = await reader.openAll(side, asked);
+    expect(batched).toEqual(await oneAtATime(side, asked));
+    expect([...batched.keys()].sort()).toEqual([...new Set(asked)].sort());
+
+    // And the answers are the interesting ones, so agreeing isn't just both saying "missing".
+    const kind = (path: string) => batched.get(path)?.kind;
+    expect(batched.get('plain.ts')).toEqual({
+      kind: 'text',
+      text: `export const v = ${side === 'old' ? 1 : 2};\n`,
+    });
+    expect(batched.get('link')).toEqual({ kind: 'symlink', target: 'plain.ts' });
+    expect(batched.get('big.txt')).toEqual({ kind: 'too_large', bytes: MAX_FILE_BYTES + 1 });
+    expect(batched.get('café.ts')).toEqual({ kind: 'text', text: 'composed\n' });
+    expect(batched.get('café.ts')).toEqual({ kind: 'text', text: 'decomposed\n' });
+    expect(batched.get('empty.txt')).toEqual({ kind: 'text', text: '' });
+    expect(kind('logo.png')).toBe('binary');
+    expect(kind('exact.txt')).toBe('text');
+    for (const path of [
+      'run.sh',
+      'with space.ts',
+      'line\nbreak.ts',
+      '日本/ファイル.ts',
+      'src/a.ts',
+    ]) {
+      expect(kind(path), path).toBe('text');
+    }
+    for (const path of ['long-link', 'vendor/lib', 'src', 'starX.ts', '../escape', '-x']) {
+      expect(kind(path), path).toBe('missing');
+    }
+    expect(kind('gone.txt')).toBe(side === 'old' ? 'text' : 'missing');
+    expect(kind('new.ts')).toBe(side === 'new' ? 'text' : 'missing');
+  });
+
+  test('more paths than one command line holds are still all read', async () => {
+    const padding = Array.from({ length: 1500 }, (_, i) => `pad/${'p'.repeat(90)}/${i}.ts`);
+    const batched = await reader.openAll('new', [...padding, 'plain.ts', 'src/a.ts']);
+
+    expect(batched.get('plain.ts')).toEqual({ kind: 'text', text: 'export const v = 2;\n' });
+    expect(batched.get('src/a.ts')).toEqual({ kind: 'text', text: 'nested\n' });
+    expect(padding.every((path) => batched.get(path)?.kind === 'missing')).toBe(true);
+  });
+
+  test("a blob git can't read is missing, and doesn't cost the files beside it", async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'docent-batch-lost-'));
+    await sh(repo, 'init', '--quiet', '--initial-branch=main');
+    const sha = await commit(repo, { 'a.ts': file('kept\n'), 'b.ts': file('lost\n') });
+    const lost = (await sh(repo, 'rev-parse', `${sha}:b.ts`)).trim();
+    await rm(join(repo, '.git', 'objects', lost.slice(0, 2), lost.slice(2)));
+    const broken = commitReader(repo, sha, sha);
+
+    // `ls-tree --long` can't size it, so the batch falls back to one path at a time.
+    expect(await broken.open('new', 'b.ts')).toEqual({ kind: 'missing' });
+    expect(await broken.openAll('new', ['a.ts', 'b.ts'])).toEqual(
+      new Map([
+        ['a.ts', { kind: 'text', text: 'kept\n' }],
+        ['b.ts', { kind: 'missing' }],
+      ]),
+    );
   });
 });

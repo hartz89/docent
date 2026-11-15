@@ -9,6 +9,7 @@ import type { AgentReply, AgentRequest, AgentRunner } from './agent.ts';
 import {
   fileFromText,
   isSafeRepoPath,
+  openEach,
   type PrInfo,
   type PrSource,
   type RepoTree,
@@ -41,6 +42,8 @@ export function fixtureSource(dir: string, record: ReviewRecorder = printReview)
       const file = fileAt(dir, side, path);
       return isSafeRepoPath(path) && existsSync(file) ? readFileText(file, 'utf8') : null;
     };
+    const open = async (side: 'old' | 'new', path: string) =>
+      fileFromText(await readFile(side, path));
     return {
       pr,
       diffText: await readFileText(join(dir, 'diff.patch'), 'utf8'),
@@ -49,7 +52,8 @@ export function fixtureSource(dir: string, record: ReviewRecorder = printReview)
       headInBaseRepo: false,
       dir: join(dir, 'files', 'head'),
       readFile,
-      open: async (side, path) => fileFromText(await readFile(side, path)),
+      open,
+      openAll: openEach(open),
       // The recorded tree, or none: older fixtures didn't record one.
       tree: async () => {
         const file = join(dir, 'tree.json');
@@ -196,6 +200,14 @@ export function recording(
           const file = await workspace.open(side, path);
           if (file.kind === 'text') await save(fileAt(dir, side, path), file.text);
           return file;
+        },
+        // Skip proofs read through here, so a replay's proofs see the same files.
+        openAll: async (side, paths) => {
+          const files = await workspace.openAll(side, paths);
+          for (const [path, file] of files) {
+            if (file.kind === 'text') await save(fileAt(dir, side, path), file.text);
+          }
+          return files;
         },
         tree: async () => {
           const tree = await workspace.tree();

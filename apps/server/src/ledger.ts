@@ -64,7 +64,7 @@ export type LedgerView = {
 };
 
 /** Reads from git objects at the review's two commits, never the working tree. */
-type ProofSource = Pick<Workspace, 'open' | 'baseGitattributes' | 'findWords'>;
+type ProofSource = Pick<Workspace, 'openAll' | 'baseGitattributes' | 'findWords'>;
 
 /** How long the whole-repo word lookups may take before renames are given up on. */
 export const LOOKUP_DEADLINE_MS = 20_000;
@@ -104,21 +104,14 @@ export async function proveForReview(
     : proofs.filter((p) => p.evidence.label !== 'generated' && p.evidence.label !== 'vendored');
 }
 
-/** Files read at once while gathering text for the proofs. */
-const READ_CONCURRENCY = 8;
-
 async function fileTexts(workspace: ProofSource, diff: Diff): Promise<FileTexts> {
   const side = async (which: 'old' | 'new') => {
     const paths = [...new Set(diff.files.map((f) => (which === 'old' ? f.oldPath : f.path)))];
     const texts = new Map<string, string | null>();
-    for (let at = 0; at < paths.length; at += READ_CONCURRENCY) {
-      const batch = paths.slice(at, at + READ_CONCURRENCY);
-      const found = await Promise.all(batch.map((path) => workspace.open(which, path)));
-      batch.forEach((path, i) => {
-        const file = found[i];
-        if (file?.kind === 'text') texts.set(path, file.text);
-        else if (file?.kind === 'missing') texts.set(path, null);
-      });
+    // One batched read per side: two git processes per file made large PRs slow to prove.
+    for (const [path, file] of await workspace.openAll(which, paths)) {
+      if (file.kind === 'text') texts.set(path, file.text);
+      else if (file.kind === 'missing') texts.set(path, null);
     }
     return texts;
   };

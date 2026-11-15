@@ -1,6 +1,6 @@
 // The boundary to GitHub and git: PR metadata and diff through `gh`, and a read-only checkout of
 // the head commit in Docent's cache folder, so the guide can read real code.
-import { execFile } from 'node:child_process';
+import { type ChildProcess, execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -46,6 +46,8 @@ export type Workspace = {
   readFile: (side: 'old' | 'new', path: string) => Promise<string | null>;
   /** One file for the reviewer's code view: its text, or why it isn't shown. */
   open: (side: 'old' | 'new', path: string) => Promise<RepoFile>;
+  /** Many files at once, each exactly as `open` gives it. Skip proofs read every changed file. */
+  openAll: (side: 'old' | 'new', paths: readonly string[]) => Promise<Map<string, RepoFile>>;
   /** Every file in the repo at head, for browsing. */
   tree: () => Promise<RepoTree>;
   /** The PR's head commit right now, which moves when the author pushes. */
@@ -94,6 +96,12 @@ export function fileFromText(text: string | null): RepoFile {
   const bytes = Buffer.byteLength(text);
   if (bytes > MAX_FILE_BYTES) return { kind: 'too_large', bytes };
   return text.includes('\0') ? { kind: 'binary' } : { kind: 'text', text };
+}
+
+/** `openAll` for a workspace that has only `open`: fixtures and tests, whose reads are cheap. */
+export function openEach(open: Workspace['open']): Workspace['openAll'] {
+  return async (side, paths) =>
+    new Map(await Promise.all(paths.map(async (path) => [path, await open(side, path)] as const)));
 }
 
 /** GitHub turned the review down, or couldn't be reached. The message is fit to show. */
@@ -313,39 +321,71 @@ export function commitReader(
   base: CommitSha,
   head: CommitSha,
   maxTreeEntries = MAX_TREE_ENTRIES,
-): Pick<Workspace, 'readFile' | 'open' | 'tree' | 'baseGitattributes' | 'findWords'> {
+): Pick<Workspace, 'readFile' | 'open' | 'openAll' | 'tree' | 'baseGitattributes' | 'findWords'> {
   const blob = async (sha: CommitSha, path: string, maxBytes: number): Promise<RepoFile> => {
     if (!isSafeRepoPath(path)) return { kind: 'missing' };
-    let entry: string;
+    let listing: string;
     try {
       // `<mode> blob <oid> <size>\t<path>\0` for exactly this path, or nothing.
-      ({ stdout: entry } = await git(dir, [
-        '-c',
-        'core.precomposeunicode=false',
-        '--literal-pathspecs',
-        'ls-tree',
-        '-z',
-        '--long',
-        sha,
-        '--',
-        path,
-      ]));
+      ({ stdout: listing } = await git(dir, [...LS_TREE, sha, '--', path]));
     } catch {
       return { kind: 'missing' };
     }
-    const match = /^(\d{6}) blob ([0-9a-f]{40,64}) +(\d+)\t([^\0]*)\0$/.exec(entry);
-    if (!match || match[4] !== path) return { kind: 'missing' };
-    const [, mode = '', oid = '', size = ''] = match;
-    const bytes = Number(size);
-    if (mode === '120000') {
-      if (bytes > 4096) return { kind: 'missing' };
-      const { stdout } = await git(dir, ['cat-file', 'blob', oid]);
-      return { kind: 'symlink', target: stdout };
+    const entry = listing.endsWith('\0') ? listedBlob(listing.slice(0, -1)) : null;
+    const read = toRead(entry?.path === path ? entry : null, maxBytes);
+    if ('kind' in read) return read;
+    const { stdout } = await git(
+      dir,
+      ['cat-file', 'blob', read.oid],
+      read.symlink ? {} : { maxBuffer: maxBytes + 1 },
+    );
+    return asRepoFile(read, stdout);
+  };
+  /**
+   * `blob()` for many paths at one commit, in one `ls-tree` and one `cat-file --batch` instead of
+   * two git processes per path. Each answer goes through the same checks, so it's what `blob()`
+   * gives for that path. Whatever the batch can't answer in full is read one path at a time, the
+   * old way, so its answer (or its failure) is exactly the old one too.
+   */
+  const blobs = async (
+    sha: CommitSha,
+    paths: readonly string[],
+    maxBytes: number,
+  ): Promise<Map<string, RepoFile>> => {
+    const files = new Map<string, RepoFile>();
+    const safe: string[] = [];
+    for (const path of new Set(paths)) {
+      if (isSafeRepoPath(path)) safe.push(path);
+      else files.set(path, { kind: 'missing' });
     }
-    if (mode !== '100644' && mode !== '100755') return { kind: 'missing' };
-    if (bytes > maxBytes) return { kind: 'too_large', bytes };
-    const { stdout } = await git(dir, ['cat-file', 'blob', oid], { maxBuffer: maxBytes + 1 });
-    return stdout.includes('\0') ? { kind: 'binary' } : { kind: 'text', text: stdout };
+    const listed = new Map<string, ListedBlob>();
+    const oneByOne = new Set<string>();
+    for (const chunk of chunks(safe, (path) => Buffer.byteLength(path) + 1, MAX_ARGV_BYTES)) {
+      try {
+        const { stdout } = await git(dir, [...LS_TREE, sha, '--', ...chunk]);
+        for (const record of stdout.split('\0')) {
+          const entry = listedBlob(record);
+          if (entry) listed.set(entry.path, entry);
+        }
+      } catch {
+        for (const path of chunk) oneByOne.add(path);
+      }
+    }
+    const reads = new Map<string, Read>();
+    for (const path of safe) {
+      if (oneByOne.has(path)) continue;
+      const read = toRead(listed.get(path) ?? null, maxBytes);
+      if ('kind' in read) files.set(path, read);
+      else reads.set(path, read);
+    }
+    const contents = await catBlobs(dir, [...reads.values()]).catch(() => null);
+    for (const [path, read] of reads) {
+      const bytes = contents?.get(read.oid);
+      if (bytes !== undefined) files.set(path, asRepoFile(read, bytes.toString('utf8')));
+      else oneByOne.add(path);
+    }
+    for (const path of oneByOne) files.set(path, await blob(sha, path, maxBytes));
+    return files;
   };
   const at = (side: 'old' | 'new') => (side === 'new' ? head : base);
   let listing: Promise<RepoTree> | null = null;
@@ -357,6 +397,7 @@ export function commitReader(
       return file.kind === 'symlink' ? file.target : null;
     },
     open: (side, path) => blob(at(side), path, MAX_FILE_BYTES),
+    openAll: (side, paths) => blobs(at(side), paths, MAX_FILE_BYTES),
     tree: () => {
       // A failed listing isn't kept, so the next request tries again.
       listing ??= listTree(dir, head, maxTreeEntries).catch((error: unknown) => {
@@ -394,6 +435,105 @@ export function commitReader(
       return found;
     },
   };
+}
+
+/** `ls-tree` for exact paths, as listed: modes, object ids and sizes, NUL-separated. */
+const LS_TREE = [
+  '-c',
+  'core.precomposeunicode=false',
+  '--literal-pathspecs',
+  'ls-tree',
+  '-z',
+  '--long',
+];
+
+/** One blob as `ls-tree --long` lists it. Trees, submodules and anything else aren't blobs. */
+type ListedBlob = { path: string; mode: string; oid: string; bytes: number };
+
+function listedBlob(record: string): ListedBlob | null {
+  const match = /^(\d{6}) blob ([0-9a-f]{40,64}) +(\d+)\t([^\0]*)$/.exec(record);
+  if (!match) return null;
+  const [, mode = '', oid = '', size = '', path = ''] = match;
+  return { path, mode, oid, bytes: Number(size) };
+}
+
+/** A blob worth reading, once its mode and size have passed. */
+type Read = { oid: string; bytes: number; symlink: boolean };
+
+/**
+ * The mode and size checks, before anything is read: only regular files up to `maxBytes`, and
+ * symlinks up to 4096 bytes of link text. Everything else is answered without reading it.
+ */
+function toRead(entry: ListedBlob | null, maxBytes: number): Read | RepoFile {
+  if (!entry) return { kind: 'missing' };
+  const { mode, oid, bytes } = entry;
+  if (mode === '120000') return bytes > 4096 ? { kind: 'missing' } : { oid, bytes, symlink: true };
+  if (mode !== '100644' && mode !== '100755') return { kind: 'missing' };
+  if (bytes > maxBytes) return { kind: 'too_large', bytes };
+  return { oid, bytes, symlink: false };
+}
+
+/** The text check, once a blob is read: a symlink is its link text; a NUL means binary. */
+function asRepoFile(read: Read, text: string): RepoFile {
+  if (read.symlink) return { kind: 'symlink', target: text };
+  return text.includes('\0') ? { kind: 'binary' } : { kind: 'text', text };
+}
+
+/** Paths per `ls-tree`, in bytes, well under any system's argument limit. */
+const MAX_ARGV_BYTES = 64 * 1024;
+/** Blob bytes per `cat-file --batch`, so no one process buffers too much. */
+const MAX_BATCH_BYTES = 64 * 1024 * 1024;
+
+/** Splits `items` into runs whose sizes add up to at most `budget`, each holding at least one. */
+function chunks<T>(items: readonly T[], size: (item: T) => number, budget: number): T[][] {
+  const runs: T[][] = [];
+  let current: T[] = [];
+  let used = 0;
+  for (const item of items) {
+    if (current.length > 0 && used + size(item) > budget) {
+      runs.push(current);
+      current = [];
+      used = 0;
+    }
+    current.push(item);
+    used += size(item);
+  }
+  if (current.length > 0) runs.push(current);
+  return runs;
+}
+
+/**
+ * Blobs' bytes, by object id, through `cat-file --batch`: ids in on stdin, each blob out as
+ * `<oid> blob <size>\n<bytes>\n`, in order. Throws unless every one comes back whole, as a blob
+ * of the size `ls-tree` gave, so a caller never takes a partial answer.
+ */
+async function catBlobs(dir: string, reads: readonly Read[]): Promise<Map<string, Buffer>> {
+  const unique = [...new Map(reads.map((read) => [read.oid, read])).values()];
+  const found = new Map<string, Buffer>();
+  const header = (read: Read) => Buffer.from(`${read.oid} blob ${read.bytes}\n`);
+  for (const batch of chunks(unique, (read) => read.bytes, MAX_BATCH_BYTES)) {
+    const expected = batch.reduce((sum, read) => sum + header(read).length + read.bytes + 1, 0);
+    const pending = run('git', hardenedGitArgs(dir, ['cat-file', '--batch']), {
+      encoding: 'buffer',
+      maxBuffer: expected,
+      env: hardenedGitEnv(),
+    });
+    feed(pending.child, batch.map((read) => `${read.oid}\n`).join(''));
+    const { stdout } = await pending;
+    let at = 0;
+    for (const read of batch) {
+      const head = header(read);
+      const start = at + head.length;
+      const end = start + read.bytes;
+      if (!stdout.subarray(at, start).equals(head) || stdout[end] !== 0x0a) {
+        throw new Error(`cat-file --batch didn't return ${read.oid} whole.`);
+      }
+      found.set(read.oid, stdout.subarray(start, end));
+      at = end + 1;
+    }
+    if (at !== stdout.length) throw new Error('cat-file --batch returned more than was asked.');
+  }
+  return found;
 }
 
 /** More rename candidates than this aren't looked up at all, so they prove nothing. */
@@ -484,13 +624,18 @@ export function git(
     ...(options.timeout ? { timeout: options.timeout } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
   });
-  if (options.input !== undefined) {
-    // git may exit before reading all its input. That's its exit status to report, through the
-    // promise; an unhandled EPIPE here would take the whole server down.
-    pending.child.stdin?.on('error', () => {});
-    pending.child.stdin?.end(options.input);
-  }
+  if (options.input !== undefined) feed(pending.child, options.input);
   return pending;
+}
+
+/**
+ * Writes `input` to a child's stdin. git may exit before reading all of it. That's its exit
+ * status to report, through the promise; an unhandled EPIPE here would take the whole server
+ * down.
+ */
+function feed(child: ChildProcess, input: string): void {
+  child.stdin?.on('error', () => {});
+  child.stdin?.end(input);
 }
 
 /** `git()`'s arguments, for callers that need to stream its output. */
