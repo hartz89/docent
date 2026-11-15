@@ -633,6 +633,25 @@ describe('GET /api/review', () => {
     expect(ready(waiter.snapshot().tour).cached).toBe(false);
   });
 
+  test('a Docent closed while the PR still loads never starts the guide', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    const model = scripted(goodTour);
+    const review = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: model.runner,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+
+    await review.close();
+    await review.done;
+
+    expect(model.requests).toHaveLength(0);
+    expect(review.snapshot().tour).toMatchObject({ state: 'failed' });
+    expect(await readdir(join(cacheDir, 'tours', 'acme__web'))).toEqual([]);
+  });
+
   test('a Docent closed while it waits on another stops waiting, and writes nothing', async () => {
     const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
     await open(scripted(goodTour).runner, cacheDir);
