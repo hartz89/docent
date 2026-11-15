@@ -254,10 +254,11 @@ async function ensureCheckout(dir: string, repo: string, pr: PrInfo): Promise<vo
  * files. Without it, git fetches each missing blob alone the first time anything reads it (about
  * 250 ms apiece), which makes skip proofs slow on a large PR. It changes when blobs arrive, never
  * which ones or what they hold: the same remote, by object id, through the same hardened git.
- * Best effort: whatever it misses is still fetched on demand, as before. Returns how many it asked
- * for.
+ * Best effort: whatever it misses is still fetched on demand, as before. Returns how many blobs
+ * it asked for, whether or not the fetch went through.
  */
 export async function prefetchBlobs(dir: string, commits: readonly CommitSha[]): Promise<number> {
+  let missing: string[];
   try {
     // `--missing=print` lists what's absent (`?<oid>`) and never fetches it.
     const { stdout } = await git(dir, [
@@ -268,11 +269,15 @@ export async function prefetchBlobs(dir: string, commits: readonly CommitSha[]):
       ...commits,
       '--',
     ]);
-    const missing = stdout
+    missing = stdout
       .split('\n')
       .filter((line) => /^\?[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(line))
       .map((line) => line.slice(1));
-    if (missing.length === 0) return 0;
+  } catch {
+    return 0;
+  }
+  if (missing.length === 0) return 0;
+  try {
     // The same request git's own on-demand fetch makes, for all of them at once. Ids go on stdin,
     // so there's no argument-length limit and nothing from the repo lands in argv.
     await git(
@@ -291,10 +296,8 @@ export async function prefetchBlobs(dir: string, commits: readonly CommitSha[]):
       ],
       { input: `${missing.join('\n')}\n`, timeout: PREFETCH_TIMEOUT_MS },
     );
-    return missing.length;
-  } catch {
-    return 0;
-  }
+  } catch {}
+  return missing.length;
 }
 
 /** How long the batched blob fetch may take before reads fall back to fetching on demand. */
@@ -481,7 +484,12 @@ export function git(
     ...(options.timeout ? { timeout: options.timeout } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
   });
-  if (options.input !== undefined) pending.child.stdin?.end(options.input);
+  if (options.input !== undefined) {
+    // git may exit before reading all its input. That's its exit status to report, through the
+    // promise; an unhandled EPIPE here would take the whole server down.
+    pending.child.stdin?.on('error', () => {});
+    pending.child.stdin?.end(options.input);
+  }
   return pending;
 }
 

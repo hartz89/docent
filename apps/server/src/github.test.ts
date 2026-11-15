@@ -106,7 +106,7 @@ describe('prefetchBlobs', () => {
     );
     expect(await missingBlobs(clone, sha)).toBe(2);
 
-    expect(await prefetchBlobs(clone, [sha])).toBe(0);
+    expect(await prefetchBlobs(clone, [sha])).toBe(2);
     expect(await missingBlobs(clone, sha)).toBe(2);
   });
 });
