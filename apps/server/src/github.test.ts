@@ -245,6 +245,44 @@ describe('reading many files at once', () => {
     expect(padding.every((path) => batched.get(path)?.kind === 'missing')).toBe(true);
   });
 
+  test('a name that only looks the same never stands in for the file asked for', async () => {
+    // A tree a PR could push by hand: beside `caf�.ts`, a name that isn't UTF-8 but decodes
+    // to the same text, and a name listed twice. Asking for the folder lists all of them.
+    const repo = await mkdtemp(join(tmpdir(), 'docent-batch-names-'));
+    await sh(repo, 'init', '--quiet', '--initial-branch=main');
+    const scratch = await mkdtemp(join(tmpdir(), 'docent-tree-'));
+    const object = async (type: string, bytes: Buffer) => {
+      const path = join(scratch, 'object');
+      await writeFile(path, bytes);
+      return (await sh(repo, 'hash-object', '--literally', '-t', type, '-w', path)).trim();
+    };
+    const entry = (mode: string, name: Buffer, oid: string) =>
+      Buffer.concat([Buffer.from(`${mode} `), name, Buffer.from([0]), Buffer.from(oid, 'hex')]);
+    const real = await object('blob', Buffer.from('// the real file\nexport const v = 1;\n'));
+    const impostor = await object('blob', Buffer.from('// an impostor\nexport const v = 1;\n'));
+    const src = await object(
+      'tree',
+      Buffer.concat([
+        entry('100644', Buffer.from('caf�.ts'), real),
+        entry('100644', Buffer.from([0x63, 0x61, 0x66, 0xf5, 0x2e, 0x74, 0x73]), impostor),
+        entry('100644', Buffer.from('dup.ts'), real),
+        entry('100644', Buffer.from('dup.ts'), impostor),
+      ]),
+    );
+    const root = await object('tree', entry('40000', Buffer.from('src'), src));
+    const sha = commitSha((await sh(repo, 'commit-tree', root, '-m', 'c')).trim());
+    const odd = commitReader(repo, sha, sha);
+    const paths = ['src', 'src/caf�.ts', 'src/dup.ts', 'src/caf\uD800.ts'];
+
+    const batched = await odd.openAll('new', paths);
+    for (const path of paths) expect(batched.get(path), path).toEqual(await odd.open('new', path));
+    expect(batched.get('src/caf�.ts')).toEqual({
+      kind: 'text',
+      text: '// the real file\nexport const v = 1;\n',
+    });
+    expect(batched.get('src/dup.ts')).toEqual({ kind: 'missing' });
+  });
+
   test("a blob git can't read is missing, and doesn't cost the files beside it", async () => {
     const repo = await mkdtemp(join(tmpdir(), 'docent-batch-lost-'));
     await sh(repo, 'init', '--quiet', '--initial-branch=main');
@@ -253,7 +291,7 @@ describe('reading many files at once', () => {
     await rm(join(repo, '.git', 'objects', lost.slice(0, 2), lost.slice(2)));
     const broken = commitReader(repo, sha, sha);
 
-    // `ls-tree --long` can't size it, so the batch falls back to one path at a time.
+    // `ls-tree --long` can't size it (it prints `BAD`), so neither reader takes it as a blob.
     expect(await broken.open('new', 'b.ts')).toEqual({ kind: 'missing' });
     expect(await broken.openAll('new', ['a.ts', 'b.ts'])).toEqual(
       new Map([

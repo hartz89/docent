@@ -358,14 +358,20 @@ export function commitReader(
       if (isSafeRepoPath(path)) safe.push(path);
       else files.set(path, { kind: 'missing' });
     }
-    const listed = new Map<string, ListedBlob>();
+    // Names are matched as raw bytes, never as decoded text: a name that isn't UTF-8 decodes
+    // onto another, and a folder asked for lists every name inside it. `byName` keys are the
+    // bytes, one char each (latin1), so two different names never share a key.
+    const byName = new Map<string, ListedBlob>();
+    const listings = new Map<string, number>();
     const oneByOne = new Set<string>();
     for (const chunk of chunks(safe, (path) => Buffer.byteLength(path) + 1, MAX_ARGV_BYTES)) {
       try {
-        const { stdout } = await git(dir, [...LS_TREE, sha, '--', ...chunk]);
-        for (const record of stdout.split('\0')) {
-          const entry = listedBlob(record);
-          if (entry) listed.set(entry.path, entry);
+        const { stdout } = await gitBytes(dir, [...LS_TREE, sha, '--', ...chunk]);
+        for (const record of splitRecords(stdout)) {
+          const name = record.subarray(record.indexOf(0x09) + 1).toString('latin1');
+          listings.set(name, (listings.get(name) ?? 0) + 1);
+          const entry = listedBlob(record.toString('latin1'));
+          if (entry) byName.set(name, entry);
         }
       } catch {
         for (const path of chunk) oneByOne.add(path);
@@ -374,17 +380,31 @@ export function commitReader(
     const reads = new Map<string, Read>();
     for (const path of safe) {
       if (oneByOne.has(path)) continue;
-      const read = toRead(listed.get(path) ?? null, maxBytes);
+      const name = Buffer.from(path).toString('latin1');
+      // A name listed twice (a malformed tree), or a path with no exact bytes (a lone
+      // surrogate), is left to the one-path read, whose answer for it is the old one.
+      if ((listings.get(name) ?? 0) > 1 || !path.isWellFormed()) {
+        oneByOne.add(path);
+        continue;
+      }
+      const read = toRead(byName.get(name) ?? null, maxBytes);
       if ('kind' in read) files.set(path, read);
       else reads.set(path, read);
     }
-    const contents = await catBlobs(dir, [...reads.values()]).catch(() => null);
+    const contents = await catBlobs(dir, [...reads.values()]);
     for (const [path, read] of reads) {
-      const bytes = contents?.get(read.oid);
-      if (bytes !== undefined) files.set(path, asRepoFile(read, bytes.toString('utf8')));
+      const file = contents.get(readKey(read));
+      if (file !== undefined) files.set(path, file);
       else oneByOne.add(path);
     }
-    for (const path of oneByOne) files.set(path, await blob(sha, path, maxBytes));
+    // The old reader's pace: a few files at a time.
+    const queue = [...oneByOne];
+    const worker = async () => {
+      for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
+        files.set(path, await blob(sha, path, maxBytes));
+      }
+    };
+    await Promise.all(Array.from({ length: FALLBACK_CONCURRENCY }, worker));
     return files;
   };
   const at = (side: 'old' | 'new') => (side === 'new' ? head : base);
@@ -502,36 +522,58 @@ function chunks<T>(items: readonly T[], size: (item: T) => number, budget: numbe
   return runs;
 }
 
+/** Files read one at a time, at once, when a batch couldn't answer for them. */
+const FALLBACK_CONCURRENCY = 8;
+
+/** The same blob can be a symlink at one path and a file at another, and answers differently. */
+const readKey = (read: Read) => `${read.symlink ? 'link' : 'file'} ${read.oid}`;
+
+/** `ls-tree -z` output as records, each still raw bytes. */
+function splitRecords(stdout: Buffer): Buffer[] {
+  const records: Buffer[] = [];
+  for (let at = 0; at < stdout.length; ) {
+    const end = stdout.indexOf(0, at);
+    const record = stdout.subarray(at, end === -1 ? stdout.length : end);
+    if (record.includes(0x09)) records.push(record);
+    at = end === -1 ? stdout.length : end + 1;
+  }
+  return records;
+}
+
 /**
- * Blobs' bytes, by object id, through `cat-file --batch`: ids in on stdin, each blob out as
- * `<oid> blob <size>\n<bytes>\n`, in order. Throws unless every one comes back whole, as a blob
- * of the size `ls-tree` gave, so a caller never takes a partial answer.
+ * Blobs read through `cat-file --batch`, answered as `blob()` would answer them, by `readKey`.
+ * Ids go in on stdin; each blob comes out as `<oid> blob <size>\n<bytes>\n`, in order. A batch
+ * counts only if every blob in it comes back whole, as a blob of the size `ls-tree` gave; the
+ * reads of a batch that doesn't are left out, for the caller to read one at a time. Each batch is
+ * answered before the next is read, so only one batch's raw output is held at once.
  */
-async function catBlobs(dir: string, reads: readonly Read[]): Promise<Map<string, Buffer>> {
-  const unique = [...new Map(reads.map((read) => [read.oid, read])).values()];
-  const found = new Map<string, Buffer>();
+async function catBlobs(dir: string, reads: readonly Read[]): Promise<Map<string, RepoFile>> {
+  const unique = [...new Map(reads.map((read) => [readKey(read), read])).values()];
+  const found = new Map<string, RepoFile>();
   const header = (read: Read) => Buffer.from(`${read.oid} blob ${read.bytes}\n`);
   for (const batch of chunks(unique, (read) => read.bytes, MAX_BATCH_BYTES)) {
     const expected = batch.reduce((sum, read) => sum + header(read).length + read.bytes + 1, 0);
-    const pending = run('git', hardenedGitArgs(dir, ['cat-file', '--batch']), {
-      encoding: 'buffer',
-      maxBuffer: expected,
-      env: hardenedGitEnv(),
-    });
-    feed(pending.child, batch.map((read) => `${read.oid}\n`).join(''));
-    const { stdout } = await pending;
+    let stdout: Buffer;
+    try {
+      ({ stdout } = await gitBytes(dir, ['cat-file', '--batch'], {
+        maxBuffer: expected,
+        input: batch.map((read) => `${read.oid}\n`).join(''),
+      }));
+    } catch {
+      continue;
+    }
+    const answers = new Map<string, RepoFile>();
     let at = 0;
     for (const read of batch) {
       const head = header(read);
       const start = at + head.length;
       const end = start + read.bytes;
-      if (!stdout.subarray(at, start).equals(head) || stdout[end] !== 0x0a) {
-        throw new Error(`cat-file --batch didn't return ${read.oid} whole.`);
-      }
-      found.set(read.oid, stdout.subarray(start, end));
+      if (!stdout.subarray(at, start).equals(head) || stdout[end] !== 0x0a) break;
+      answers.set(readKey(read), asRepoFile(read, stdout.toString('utf8', start, end)));
       at = end + 1;
     }
-    if (at !== stdout.length) throw new Error('cat-file --batch returned more than was asked.');
+    if (answers.size !== batch.length || at !== stdout.length) continue;
+    for (const [key, file] of answers) found.set(key, file);
   }
   return found;
 }
@@ -623,6 +665,21 @@ export function git(
     env: hardenedGitEnv(),
     ...(options.timeout ? { timeout: options.timeout } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
+  });
+  if (options.input !== undefined) feed(pending.child, options.input);
+  return pending;
+}
+
+/** `git()`, with its output as raw bytes: for blob contents and names that may not be UTF-8. */
+function gitBytes(
+  dir: string,
+  args: readonly string[],
+  options: { maxBuffer?: number; input?: string } = {},
+) {
+  const pending = run('git', hardenedGitArgs(dir, args), {
+    encoding: 'buffer',
+    maxBuffer: options.maxBuffer ?? 1 << 26,
+    env: hardenedGitEnv(),
   });
   if (options.input !== undefined) feed(pending.child, options.input);
   return pending;
