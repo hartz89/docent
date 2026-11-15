@@ -12,6 +12,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: ({ options }: { options: { sessionId?: string } }) => script(options),
 }));
 const { AgentError, sdkRunner } = await import('./agent.ts');
+const { CLAUDE_PATH_ENV } = await import('./claude-code.ts');
+const { fakeClaudeDir } = await import('./testdata/fake-claude.ts');
 
 const AUTHOR = '11111111-2222-4333-8444-555555555555';
 let project = '';
@@ -24,6 +26,7 @@ beforeEach(async () => {
   await writeFile(join(project, `${AUTHOR}.jsonl`), '{"type":"user"}\n');
   kept = await mkdtemp(join(tmpdir(), 'docent-kept-'));
   vi.stubEnv('CLAUDE_CONFIG_DIR', config);
+  vi.stubEnv(CLAUDE_PATH_ENV, join(await fakeClaudeDir(), 'claude'));
 });
 afterEach(() => vi.unstubAllEnvs());
 

@@ -26,7 +26,11 @@ export type { AnchorView, NoteView, StopView, TourOutcome, TourView } from './to
 
 // Resolves from both src/ and dist/, which sit at the same depth.
 const packageJson = new URL('../package.json', import.meta.url);
-export const { version } = JSON.parse(readFileSync(packageJson, 'utf8')) as { version: string };
+export const { version, name: packageName } = JSON.parse(readFileSync(packageJson, 'utf8')) as {
+  version: string;
+  /** What npm knows Docent as. The packed package's copy names the published package. */
+  name: string;
+};
 
 export type StartOptions = {
   /** Folder holding the built web app. Leave it out in dev, where Vite serves the app. */

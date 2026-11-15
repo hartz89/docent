@@ -30,7 +30,7 @@ The maintainer's steps for putting Docent on npm. Agents prepare everything up t
    node scripts/pack-smoke.ts dist/*.tgz
    ```
 
-   It prints the tarball's size, and the dependency count and disk size of a fresh install.
+   It prints the tarball's size, and the dependency count and disk size of a fresh install, made with `--omit=optional` as the README says.
 3. **Tag and push:**
 
    ```bash
@@ -43,7 +43,7 @@ The maintainer's steps for putting Docent on npm. Agents prepare everything up t
    - The package page on npmjs.com shows a "Provenance" section linking to the exact commit and workflow run.
    - `npm view @docent/docent@0.1.0 dist.attestations` prints the attestation.
    - In a scratch folder: `npm init -y && npm install @docent/docent@0.1.0 && npm audit signatures`. It should report verified registry signatures and attestations.
-6. **Try it the way a user would:** `npx @docent/docent@0.1.0 review <a PR url>`.
+6. **Try it the way a user would:** `npx --omit=optional @docent/docent@0.1.0 review <a PR url>`.
 
 ## If something goes wrong
 
