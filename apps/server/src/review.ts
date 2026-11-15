@@ -3,9 +3,9 @@
 // the author's session sit behind injected boundaries.
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import {
   type Candidate,
   type CommitSha,
@@ -56,6 +56,7 @@ import {
   type TourOutcome,
   type TourProgress,
 } from './tour.ts';
+import { cachedOnce, type LockHolder } from './tour-lock.ts';
 
 export type StepId = 'reading' | 'planning' | 'writing' | 'checking';
 export type Step = { id: StepId; label: string; status: 'done' | 'active' | 'pending' };
@@ -852,22 +853,44 @@ Question: ${question}`,
       }
       ended('missed');
 
-      const outcome = await generateTour({
-        workspace,
-        diff: this.#diff,
-        runner: this.#options.runner,
-        model: this.#options.model,
-        // Progress only moves a tour that's still being written, never a ready or failed one.
-        onProgress: (progress) => {
-          if (this.#tour.state === 'working') this.#set(fromProgress(progress, this.#tour));
-        },
-        timings: time,
-        log: this.#log,
-      });
-      if (cacheFile) {
-        await mkdir(dirname(cacheFile), { recursive: true });
-        await writeFile(cacheFile, JSON.stringify(outcome, null, 2));
-      }
+      const diff = this.#diff;
+      // Another Docent writing this same tour, like a `--prepare` warm-up, is waited for rather
+      // than paid for twice. The wait ends when its tour is read, or when this one writes it.
+      let waited = false;
+      let endWait = () => {};
+      const stopWaiting = () => {
+        endWait();
+        endWait = () => {};
+      };
+      const write = () => {
+        stopWaiting();
+        return generateTour({
+          workspace,
+          diff,
+          runner: this.#options.runner,
+          model: this.#options.model,
+          // Progress only moves a tour that's still being written, never a ready or failed one.
+          onProgress: (progress) => {
+            if (this.#tour.state === 'working') this.#set(fromProgress(progress, this.#tour));
+          },
+          timings: time,
+          log: this.#log,
+        });
+      };
+      const written = cacheFile
+        ? await cachedOnce(cacheFile, write, (holder) => {
+            if (!waited) {
+              waited = true;
+              endWait = time.span('Wait for another Docent writing this tour');
+              this.#log.event('tour.wait', holder ? { pid: holder.pid, host: holder.host } : {});
+            }
+            this.#set(working('writing', writtenElsewhere(holder), 1, []));
+          })
+        : { value: await write(), cached: false };
+      stopWaiting();
+      const outcome: TourOutcome = written.cached
+        ? { ...written.value, timing: written.value.timing ?? [], cached: true }
+        : written.value;
       await lookup;
       await this.#tourReady(outcome, await proofs, tourStarted);
     } catch (error) {
@@ -1012,6 +1035,24 @@ function working(
     stops,
     writing,
   };
+}
+
+/** How a wait on another Docent's tour starts, so the CLI can say it once. */
+export const WRITTEN_ELSEWHERE = 'A tour for this PR is being written by another Docent';
+/** About how long a tour takes to write: 32 to 82 s in the v3 prompt's runs. */
+const TYPICAL_TOUR_MS = 90_000;
+
+/** The wait screen's line while another process writes this tour, with a rough time left. */
+export function writtenElsewhere(holder: LockHolder | null, now = Date.now()): string {
+  const left = holder ? TYPICAL_TOUR_MS - (now - holder.startedAt) : TYPICAL_TOUR_MS;
+  // Rounded up, so the line steps down only as whole minutes pass.
+  const when =
+    left <= 0
+      ? 'it should be ready soon'
+      : left < 60_000
+        ? 'less than a minute left'
+        : `about ${Math.ceil(left / 60_000)} min left`;
+  return `${WRITTEN_ELSEWHERE}, ${when}`;
 }
 
 function fromProgress(progress: TourProgress, previous: TourState): TourState {

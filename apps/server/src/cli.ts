@@ -17,7 +17,7 @@ import {
   type PrSource,
   parsePrUrl,
 } from './github.ts';
-import { Review } from './review.ts';
+import { Review, WRITTEN_ELSEWHERE } from './review.ts';
 import { RunLog, runLogDisabledByEnv } from './run-log.ts';
 import { runsCommand } from './runs.ts';
 import { startServer, version } from './server.ts';
@@ -237,11 +237,15 @@ function startRunLog(): RunLog {
   return log;
 }
 
-/** Prints the tour's outcome: its cost, or why it failed. */
+/** Prints the tour's outcome: its cost, or why it failed. Says once if it waits on another Docent. */
 function report(review: Review) {
   const started = Date.now();
+  let waiting = false;
   review.subscribe((tour) => {
-    if (tour.state === 'ready') {
+    if (tour.state === 'working' && !waiting && tour.detail?.startsWith(WRITTEN_ELSEWHERE)) {
+      waiting = true;
+      console.log(`${tour.detail}. Waiting for it…`);
+    } else if (tour.state === 'ready') {
       const cost = tour.costs.reduce((sum, c) => sum + c.costMicroUsd, 0) / 1e6;
       const seconds = ((Date.now() - started) / 1000).toFixed(1);
       console.log(
