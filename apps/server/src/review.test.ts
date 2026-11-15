@@ -16,7 +16,7 @@ import {
   type SessionLocator,
 } from './author-session.ts';
 import { fixtureRunner, recording } from './fixture.ts';
-import { fileFromText, GitHubRefusal, type PrSource, type ReviewPost } from './github.ts';
+import { fileFromText, GitHubRefusal, openEach, type PrSource, type ReviewPost } from './github.ts';
 import { KEEP_DAYS, KEEP_FILES, MAX_FILE_BYTES, MAX_QUESTIONS } from './questions.ts';
 import { Review, type ReviewOptions, type TourState, tourCacheName } from './review.ts';
 import { RunLog } from './run-log.ts';
@@ -95,6 +95,9 @@ const sourceFor =
         return (side === 'new' ? head : base)[path] ?? null;
       },
       open: async (side, path) => fileFromText((side === 'new' ? head : base)[path] ?? null),
+      openAll: openEach(async (side, path) =>
+        fileFromText((side === 'new' ? head : base)[path] ?? null),
+      ),
       tree: async () => ({
         entries: Object.keys(head).map((path) => ({ path, kind: 'file' as const })),
         truncated: false,
