@@ -190,6 +190,7 @@ export function githubSource(url: string, cacheDir: string): PrSource {
     onStep('Checking out the code');
     const dir = join(cacheDir, 'repos', `${ref.owner}__${ref.name}`, pr.head);
     await ensureCheckout(dir, repo, pr);
+    await prefetchBlobs(dir, [pr.base, pr.head]);
 
     const pull = `repos/${repo}/pulls/${pr.number}`;
     // The PR is on github.com; GH_HOST or a default Enterprise host must not redirect the write.
@@ -246,6 +247,61 @@ async function ensureCheckout(dir: string, repo: string, pr: PrInfo): Promise<vo
   await git(dir, ['checkout', '--quiet', '--detach', pr.head]);
   await writeFile(ready, `${new Date().toISOString()}\n`);
 }
+
+/**
+ * Fetches, in one request, every blob at these commits that the blobless checkout doesn't have
+ * yet. The checkout already brought head's; this is mostly the base side of the PR's changed
+ * files. Without it, git fetches each missing blob alone the first time anything reads it (about
+ * 250 ms apiece), which makes skip proofs slow on a large PR. It changes when blobs arrive, never
+ * which ones or what they hold: the same remote, by object id, through the same hardened git.
+ * Best effort: whatever it misses is still fetched on demand, as before. Returns how many blobs
+ * it asked for, whether or not the fetch went through.
+ */
+export async function prefetchBlobs(dir: string, commits: readonly CommitSha[]): Promise<number> {
+  let missing: string[];
+  try {
+    // `--missing=print` lists what's absent (`?<oid>`) and never fetches it.
+    const { stdout } = await git(dir, [
+      'rev-list',
+      '--objects',
+      '--no-object-names',
+      '--missing=print',
+      ...commits,
+      '--',
+    ]);
+    missing = stdout
+      .split('\n')
+      .filter((line) => /^\?[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(line))
+      .map((line) => line.slice(1));
+  } catch {
+    return 0;
+  }
+  if (missing.length === 0) return 0;
+  try {
+    // The same request git's own on-demand fetch makes, for all of them at once. Ids go on stdin,
+    // so there's no argument-length limit and nothing from the repo lands in argv.
+    await git(
+      dir,
+      [
+        '-c',
+        'fetch.negotiationAlgorithm=noop',
+        'fetch',
+        '--quiet',
+        '--no-tags',
+        '--no-write-fetch-head',
+        '--no-recurse-submodules',
+        '--filter=blob:none',
+        '--stdin',
+        'origin',
+      ],
+      { input: `${missing.join('\n')}\n`, timeout: PREFETCH_TIMEOUT_MS },
+    );
+  } catch {}
+  return missing.length;
+}
+
+/** How long the batched blob fetch may take before reads fall back to fetching on demand. */
+const PREFETCH_TIMEOUT_MS = 120_000;
 
 /**
  * Reads files and the tree from git's objects at two pinned commits, never from the working tree.
@@ -420,14 +476,21 @@ async function listTree(dir: string, sha: CommitSha, max: number): Promise<RepoT
 export function git(
   dir: string,
   args: readonly string[],
-  options: { maxBuffer?: number; timeout?: number; signal?: AbortSignal } = {},
+  options: { maxBuffer?: number; timeout?: number; signal?: AbortSignal; input?: string } = {},
 ) {
-  return run('git', hardenedGitArgs(dir, args), {
+  const pending = run('git', hardenedGitArgs(dir, args), {
     maxBuffer: options.maxBuffer ?? 1 << 26,
     env: hardenedGitEnv(),
     ...(options.timeout ? { timeout: options.timeout } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
   });
+  if (options.input !== undefined) {
+    // git may exit before reading all its input. That's its exit status to report, through the
+    // promise; an unhandled EPIPE here would take the whole server down.
+    pending.child.stdin?.on('error', () => {});
+    pending.child.stdin?.end(options.input);
+  }
+  return pending;
 }
 
 /** `git()`'s arguments, for callers that need to stream its output. */
