@@ -39,6 +39,20 @@ test('--prepare caches the tour and exits, so the next open makes no model calls
   expect(second.stdout).toContain('Tour loaded from cache: no model calls.');
 });
 
+test('two --prepare runs of one PR at once write and pay for the tour once', async () => {
+  cacheDir = await mkdtemp(join(tmpdir(), 'docent-cli-'));
+  // Paced, so the tour takes a few seconds and the two processes overlap.
+  const run = () => docent('review', '--fixture', fixture, '--prepare', '--replay-pace', '40');
+
+  const outputs = (await Promise.all([run(), run()])).map((r) => r.stdout);
+
+  const paid = outputs.filter((out) => /Tour ready in .*\$0\.\d{4}/.test(out));
+  const waited = outputs.filter((out) => out.includes('Tour loaded from cache: no model calls.'));
+  expect(paid).toHaveLength(1);
+  expect(waited).toHaveLength(1);
+  expect(waited[0]).toContain('A tour for this PR is being written by another Docent');
+});
+
 test('--prepare exits with an error when the tour fails', async () => {
   cacheDir = await mkdtemp(join(tmpdir(), 'docent-cli-'));
   // The same recording with no guide replies, so the tour job fails.
