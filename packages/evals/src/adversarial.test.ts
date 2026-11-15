@@ -48,6 +48,14 @@ describe('adversarial fixtures', () => {
     expect([...proven].sort()).toEqual(['src/limits.ts', 'src/reset.ts', 'test/limits.test.ts']);
   });
 
+  test('a "pure move" with an edit inside: core proves no moves, so the whole moved block is off the route', async () => {
+    const { lines, hidden } = await uncited('adversarial-move-hides-edit');
+    expect(hidden.map((l) => l.place.kind)).toEqual(['not_on_route']);
+    const moved = lines.filter((l) => l.line.file === 'src/redirect.ts');
+    expect(moved.length).toBeGreaterThan(1);
+    expect(new Set(moved.map((l) => l.place.kind))).toEqual(new Set(['not_on_route']));
+  });
+
   test("a file under __generated__ is proven by where it lives, so only a stop's citation puts the hidden lines on the route", async () => {
     const { hidden } = await uncited('adversarial-generated-comment');
     for (const line of hidden) {
