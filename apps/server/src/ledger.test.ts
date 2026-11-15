@@ -230,6 +230,33 @@ describe('a tour with no core_change or edge stop', () => {
     expect(outcome.problems).toEqual([expect.stringContaining('no core_change or edge stop')]);
   });
 
+  test('is sent back when its only core_change stop cites unchanged lines', async () => {
+    const token = {
+      stops: [
+        verdictOnly.stops[0],
+        {
+          kind: 'core_change',
+          title: 'Something',
+          body: 'A file.',
+          flags: [],
+          citations: [cite('src/a.ts', 1)],
+        },
+        verdictOnly.stops[1],
+      ],
+    };
+    const { runner, requests } = guide(token);
+    const outcome = await generateTour({
+      workspace,
+      diff,
+      runner,
+      model: 'claude-test',
+      proofs: proveForReview(workspace, diff),
+      onProgress: () => {},
+    });
+    expect(requests[1]?.prompt).toContain('sending back only what changes');
+    expect(outcome.problems).toEqual([expect.stringContaining('no core_change or edge stop')]);
+  });
+
   test('passes on a pure rename, where a script proved every changed line', async () => {
     const rename = await repoOf(
       {
@@ -252,6 +279,26 @@ describe('a tour with no core_change or edge stop', () => {
     expect(requests).toHaveLength(1);
     expect(outcome.problems).toEqual([]);
     expect(outcome.tour.stops.map((s) => s.kind)).toEqual(['intent', 'verdict_prompt']);
+  });
+
+  test('on a pure rename whose proofs failed, nothing counts as proven, so it is sent back', async () => {
+    const rename = await repoOf(
+      { 'src/clock.ts': definition('Clock.', 'isExpired', 'key < now()') },
+      { 'src/clock.ts': definition('Clock.', 'hasExpired', 'key < now()') },
+    );
+    const failures = [() => [], () => Promise.reject(new Error('proofs failed'))];
+    for (const proofs of failures) {
+      const { runner, requests } = guide(verdictOnly);
+      const outcome = await generateTour({
+        ...rename,
+        runner,
+        model: 'claude-test',
+        proofs: proofs(),
+        onProgress: () => {},
+      });
+      expect(requests[1]?.prompt).toContain('The tour has no core_change or edge stop');
+      expect(outcome.problems).toEqual([expect.stringContaining('no core_change or edge stop')]);
+    }
   });
 });
 

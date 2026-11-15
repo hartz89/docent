@@ -9,6 +9,7 @@ import {
   checkStopOrder,
   computeLedger,
   type Diff,
+  lineKey,
   oneLine,
   type Proof,
   reviewId,
@@ -239,8 +240,9 @@ export type TourJob = {
   /** Which prompt to use. Leave out for the current one; the eval runner sets it for A/B runs. */
   promptVersion?: TourPromptVersion;
   /**
-   * Every proof core found in the diff. The checker needs them to tell whether a tour with no
-   * core_change or edge stop leaves out lines nothing proved. An empty list is the strict answer.
+   * Every proof core found in the diff. The checker needs them to tell whether the tour's
+   * core_change and edge stops explain any changed line nothing proved. An empty list, or a rejection, is
+   * the strict answer: every changed line then needs explaining.
    */
   proofs: readonly Proof[] | Promise<readonly Proof[]>;
   onProgress: (progress: TourProgress) => void;
@@ -272,6 +274,9 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
   let best: (Checked & { wire: WireTour }) | undefined;
   let attempts = 0;
   const files = fileReader(workspace);
+  // A proof failure proves nothing, which only makes the checker stricter. Caught here so a
+  // rejection never escapes the job or loses the costs paid so far.
+  const proofs = Promise.resolve(job.proofs).catch((): readonly Proof[] => []);
 
   while (attempts <= MAX_RETRIES) {
     // A stopped job writes nothing more, and keeps no half-checked tour: it's never cached.
@@ -354,7 +359,7 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
         : 'Your answer did not match the tour schema. Return the complete tour as JSON.';
       continue;
     }
-    best = { ...(await check(wire, files, diff, await job.proofs)), wire };
+    best = { ...(await check(wire, files, diff, await proofs)), wire };
     ended(best.problems.length ? best.problems.join(' | ') : 'passed');
     attempt({
       outcome: best.problems.length ? 'rejected' : 'passed',
@@ -627,10 +632,10 @@ async function check(
           : 'The tour must end with exactly one verdict_prompt stop.',
     );
   }
-  const unproven = withoutStops(diff, proofs);
-  if (unproven && !wire.stops.some((s) => s.kind === 'core_change' || s.kind === 'edge')) {
+  const { unproven, explained } = changeExplained(diff, tour, proofs);
+  if (unproven > 0 && !explained) {
     problems.push(
-      `The tour has no core_change or edge stop, but ${unproven} changed lines are not proven safe to skip. Add at least one core_change stop that explains what the change does, citing its lines.`,
+      `The tour has no core_change or edge stop that cites a changed line nothing proved, but ${unproven} changed lines are not proven safe to skip. Add at least one core_change stop that explains what the change does, citing its changed lines.`,
     );
   }
   // A missing verdict or a missing core_change is a stop to add, which a repair can do. Moving or
@@ -640,18 +645,27 @@ async function check(
 }
 
 /**
- * How many changed lines no proof covers: where the ledger puts them when no stop cites anything.
- * Any at all, and the tour has a change to explain.
+ * `unproven`: how many changed lines no proof covers, placed as if no stop cited anything.
+ * `explained`: some core_change or edge stop puts one of those lines on the route. A stop that
+ * cites only unchanged lines, or only proven ones, explains nothing the reviewer would miss.
  */
-function withoutStops(diff: Diff, proofs: readonly Proof[]): number {
-  const ledger = computeLedger(
-    diff,
-    { review: reviewId('review'), head: diff.head, stops: [] },
-    proofs,
-  );
-  // Never stale, since the empty tour is at the diff's own head. If it were, nothing is proven.
-  if (ledger.state === 'stale') return changedLines(diff).length;
-  return ledger.lines.filter((l) => l.place.kind === 'not_on_route').length;
+function changeExplained(
+  diff: Diff,
+  tour: Tour,
+  proofs: readonly Proof[],
+): { unproven: number; explained: boolean } {
+  const bare = computeLedger(diff, { ...tour, stops: [] }, proofs);
+  const cited = computeLedger(diff, tour, proofs);
+  // Never stale, since both are at the diff's own head. If they were, nothing counts as proven.
+  if (bare.state === 'stale' || cited.state === 'stale') {
+    return { unproven: changedLines(diff).length, explained: false };
+  }
+  const key = (l: (typeof bare.lines)[number]) => lineKey(l.line);
+  const open = new Set(bare.lines.filter((l) => l.place.kind === 'not_on_route').map(key));
+  return {
+    unproven: open.size,
+    explained: cited.lines.some((l) => l.place.kind === 'on_route' && open.has(key(l))),
+  };
 }
 
 /** The longest note kept. A note is a line, not a paragraph. */
