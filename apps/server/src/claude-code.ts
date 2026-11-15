@@ -5,7 +5,7 @@
 // says.
 import { execFile } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
-import { delimiter, isAbsolute, join, sep } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 
 /**
@@ -79,7 +79,7 @@ function checkedOverride(path: string): string {
 function onPath(pathVar: string): string | undefined {
   const names = process.platform === 'win32' ? ['claude.exe'] : ['claude'];
   for (const dir of pathVar.split(delimiter)) {
-    if (!isAbsolute(dir) || dir.split(sep).includes('node_modules')) continue;
+    if (!isAbsolute(dir) || dir.split(/[\\/]/).includes('node_modules')) continue;
     for (const name of names) {
       const candidate = join(dir, name);
       if (isExecutableFile(candidate)) return candidate;
