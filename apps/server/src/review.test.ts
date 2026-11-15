@@ -558,6 +558,111 @@ describe('GET /api/review', () => {
     expect(ready(waiter.snapshot().tour).cached).toBe(false);
   });
 
+  test('closing mid-repair stops the guide, lets go of the lock, and caches nothing', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    const tours = join(cacheDir, 'tours', 'acme__web');
+    const requests: AgentRequest[] = [];
+    const aborted = vi.fn();
+    // The first attempt needs a repair. The repair runs until it's stopped, as the SDK does.
+    const runner: AgentRunner = async (request) => {
+      requests.push(request);
+      if (requests.length === 1) return scripted(gappyTour).runner(request);
+      const signal = request.signal;
+      if (!signal) throw new Error('The repair got no abort signal.');
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+      aborted();
+      throw new AgentError('The agent stopped without an answer (aborted)', cost('tour', 200));
+    };
+    const review = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+
+    await review.close();
+
+    expect(aborted).toHaveBeenCalledOnce();
+    expect(requests.every((r) => r.signal === requests[0]?.signal)).toBe(true);
+    // No lock left behind, and no half-repaired tour for the next Docent to load.
+    expect(await readdir(tours)).toEqual([]);
+    await review.done;
+    expect(review.snapshot().tour).toMatchObject({ state: 'failed' });
+    expect(requests).toHaveLength(2);
+  });
+
+  test('when the Docent writing the tour is closed, the one waiting writes it', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    const started = Promise.withResolvers<void>();
+    const stopped = vi.fn();
+    const writing: AgentRunner = async (request) => {
+      started.resolve();
+      await new Promise((resolve) =>
+        request.signal?.addEventListener('abort', resolve, { once: true }),
+      );
+      stopped();
+      throw new Error('aborted');
+    };
+    const first = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: writing,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await started.promise;
+    const second = scripted(goodTour);
+    const waiter = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: second.runner,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await vi.waitFor(() =>
+      expect(waiter.snapshot().tour).toMatchObject({ detail: expect.stringContaining('another') }),
+    );
+
+    await first.close();
+    await waiter.done;
+
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(second.requests).toHaveLength(1);
+    expect(ready(waiter.snapshot().tour).cached).toBe(false);
+  });
+
+  test('a Docent closed while it waits on another stops waiting, and writes nothing', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    await open(scripted(goodTour).runner, cacheDir);
+    const [tourFile] = await readdir(join(cacheDir, 'tours', 'acme__web'));
+    const cached = join(cacheDir, 'tours', 'acme__web', tourFile ?? '');
+    await rm(cached);
+    // A live holder: this very process, with a fresh heartbeat.
+    const lock = `${cached}.lock`;
+    const holder = { pid: process.pid, host: hostname(), startedAt: Date.now(), token: 'live' };
+    await writeFile(lock, JSON.stringify(holder));
+    const second = scripted(goodTour);
+    const review = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: second.runner,
+      locator: noAuthor,
+      model: 'claude-test',
+      cacheDir,
+    });
+    await vi.waitFor(() =>
+      expect(review.snapshot().tour).toMatchObject({ detail: expect.stringContaining('another') }),
+    );
+
+    await review.close();
+    await review.done;
+
+    expect(second.requests).toHaveLength(0);
+    expect(review.snapshot().tour).toMatchObject({ state: 'failed' });
+    expect(JSON.parse(await readFile(lock, 'utf8'))).toEqual(holder);
+  });
+
   test('keeps the last good tour when a retry fails, and records what the failure cost', async () => {
     const { runner, requests } = scripted(gappyTour, 'not a tour', BUDGET);
     const { api } = await open(runner);

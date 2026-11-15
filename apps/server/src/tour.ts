@@ -171,6 +171,7 @@ export type TourJob = {
   /** Which prompt to use. Leave out for the current one; the eval runner sets it for A/B runs. */
   promptVersion?: TourPromptVersion;
   onProgress: (progress: TourProgress) => void;
+  /** Stops the job: the call in flight is aborted, and no attempt or repair starts after it. */
   signal?: AbortSignal;
   /** Where the job records its timing spans. The review passes its own, from when it opened. */
   timings?: Timings;
@@ -198,6 +199,8 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
   const files = fileReader(workspace);
 
   while (attempts <= MAX_RETRIES) {
+    // A stopped job writes nothing more, and keeps no half-checked tour: it's never cached.
+    if (job.signal?.aborted) throw new TourError('The tour was stopped.', costs);
     attempts++;
     const repairing = best !== undefined && !best.reorder;
     const started = Date.now();
@@ -244,6 +247,7 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
         error: error instanceof Error ? error.message : String(error),
         ...(error instanceof AgentError ? { costMicroUsd: error.cost.costMicroUsd } : {}),
       });
+      if (job.signal?.aborted) throw new TourError('The tour was stopped.', costs);
       if (best) break;
       throw new TourError(error instanceof Error ? error.message : String(error), costs);
     }

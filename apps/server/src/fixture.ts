@@ -4,6 +4,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile as readFileText, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, sep } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Job, MicroUsd } from '@docent/core';
 import type { AgentReply, AgentRequest, AgentRunner } from './agent.ts';
 import {
@@ -144,7 +145,8 @@ async function recordedHeadFiles(root: string): Promise<HeadFiles> {
 /**
  * Replays the recorded replies for each job in order, repeating the last one. With `paceMs`, a
  * structured reply is written out 40 characters at a time, that many milliseconds apart, the way
- * a live guide streams it, so the screen can be seen filling in.
+ * a live guide streams it, so the screen can be seen filling in. Like the SDK, it stops when the
+ * request's signal aborts.
  */
 export function fixtureRunner(dir: string, options: { paceMs?: number } = {}): AgentRunner {
   let replies: RecordedReplies | undefined;
@@ -161,7 +163,7 @@ export function fixtureRunner(dir: string, options: { paceMs?: number } = {}): A
     if (options.paceMs && reply.structured !== undefined && request.onOutput) {
       const json = JSON.stringify(reply.structured);
       for (let at = 40; at < json.length + 40; at += 40) {
-        await new Promise((resolve) => setTimeout(resolve, options.paceMs));
+        await sleep(options.paceMs, undefined, request.signal ? { signal: request.signal } : {});
         request.onOutput(json.slice(0, Math.min(at, json.length)));
       }
     }

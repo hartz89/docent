@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, open, readFile, rename, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { dirname } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 /** Who holds a lock: what's written in the lock file. */
 export type LockHolder = { pid: number; host: string; startedAt: number; token: string };
@@ -28,11 +29,15 @@ const MAX_WAIT_MS = 5 * 60_000;
  * A stale lock is broken: its holder's process is gone (same machine), or it has gone
  * `STALE_MS` without a heartbeat. Two waiters breaking the same stale lock at once could both
  * write; the holder's token is checked again just before the break to keep that window small.
+ *
+ * `signal` stops a wait at once. A write it stops is `write`'s to end; when `write` throws, the
+ * lock is released before this rejects, so a waiting process takes over.
  */
 export async function cachedOnce<T>(
   file: string,
   write: () => Promise<T>,
   onWait: (holder: LockHolder | null) => void,
+  signal?: AbortSignal,
 ): Promise<{ value: T; cached: boolean }> {
   const lockFile = `${file}.lock`;
   await mkdir(dirname(file), { recursive: true });
@@ -51,6 +56,7 @@ export async function cachedOnce<T>(
   };
   let waitingSince: number | null = null;
   for (;;) {
+    signal?.throwIfAborted();
     if (existsSync(file)) return { value: await readJson<T>(file), cached: true };
     const release = await tryLock(lockFile);
     if (release) {
@@ -72,7 +78,7 @@ export async function cachedOnce<T>(
     waitingSince ??= Date.now();
     if (Date.now() - waitingSince > MAX_WAIT_MS) return writeAndStore();
     onWait(lock.holder);
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+    await sleep(POLL_MS, undefined, signal ? { signal } : {});
   }
 }
 
