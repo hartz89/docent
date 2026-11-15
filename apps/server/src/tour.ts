@@ -976,7 +976,9 @@ ${prSection(pr, diff)}`,
   5: (pr: PrInfo, diff: Diff) => explainPrompt(`${ROUTE_RULES}\n\n${ROUTE_FIRST_RULES}`, pr, diff),
 
   // v6: v4 plus references, phrases of a stop's body that point at the lines they name, with its
-  // own schema (issue #70). The A/B against v4 is in docs/research/evals/.
+  // own schema (issue #70). Not shipped: it tied v4 on defects explained (9/11) but missed 2
+  // danger flags v4 raised, so it failed the gate. 27/27 references resolved, 0.39 per stop:
+  // docs/research/evals/2026-11-15-tours-v4-v6-references.md. Kept so that A/B can be rerun.
   6: (pr: PrInfo, diff: Diff) => explainPrompt(`${ROUTE_RULES}\n\n${REFERENCE_RULES}`, pr, diff),
 } as const satisfies Record<number, (pr: PrInfo, diff: Diff) => string>;
 
