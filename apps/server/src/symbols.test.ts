@@ -284,6 +284,25 @@ describe('GET /api/definition', () => {
     logged.mockRestore();
   }, 15_000);
 
+  test('a file the parser gives up on in time is logged as skipped too', async () => {
+    // With no time per file the parser cancels itself, usually before its grace period ends. A
+    // loaded machine decides which way it stops, so either way it must be logged the same.
+    const files = { 'a/slow.ts': 'export function f() { return [1, 2, 3]; }\n'.repeat(2_000) };
+    const { api } = await serve({ fileMs: 0 }, async () => ({
+      entries: Object.entries(files).map(([path, text]) => ({ path, bytes: text.length })),
+      truncated: false,
+      read: async function* (paths) {
+        for (const path of paths) yield { path, text: files[path as keyof typeof files] };
+      },
+    }));
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const found = await definition(api, { symbol: 'f' });
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('"a/slow.ts"'));
+    logged.mockRestore();
+    expect(found.candidates).toEqual([]);
+    expect(found.index).toMatchObject({ files: 0, skipped: 1 });
+  });
+
   test('after a few files that break the parser, only small files are tried', async () => {
     // Found by the security review: enough hostile files would spend the whole time budget.
     const bomb = 'a<b,\n'.repeat(20_000);
