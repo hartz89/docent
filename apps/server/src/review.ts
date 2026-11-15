@@ -854,8 +854,17 @@ Question: ${question}`,
       ended('missed');
 
       const diff = this.#diff;
-      const write = () =>
-        generateTour({
+      // Another Docent writing this same tour, like a `--prepare` warm-up, is waited for rather
+      // than paid for twice. The wait ends when its tour is read, or when this one writes it.
+      let waited = false;
+      let endWait = () => {};
+      const stopWaiting = () => {
+        endWait();
+        endWait = () => {};
+      };
+      const write = () => {
+        stopWaiting();
+        return generateTour({
           workspace,
           diff,
           runner: this.#options.runner,
@@ -867,10 +876,7 @@ Question: ${question}`,
           timings: time,
           log: this.#log,
         });
-      // Another Docent writing this same tour, like a `--prepare` warm-up, is waited for rather
-      // than paid for twice.
-      let waited = false;
-      let endWait = () => {};
+      };
       const written = cacheFile
         ? await cachedOnce(cacheFile, write, (holder) => {
             if (!waited) {
@@ -881,7 +887,7 @@ Question: ${question}`,
             this.#set(working('writing', writtenElsewhere(holder), 1, []));
           })
         : { value: await write(), cached: false };
-      endWait();
+      stopWaiting();
       const outcome: TourOutcome = written.cached
         ? { ...written.value, timing: written.value.timing ?? [], cached: true }
         : written.value;
@@ -1039,15 +1045,13 @@ const TYPICAL_TOUR_MS = 90_000;
 /** The wait screen's line while another process writes this tour, with a rough time left. */
 export function writtenElsewhere(holder: LockHolder | null, now = Date.now()): string {
   const left = holder ? TYPICAL_TOUR_MS - (now - holder.startedAt) : TYPICAL_TOUR_MS;
-  const minutes = Math.round(left / 60_000);
+  // Rounded up, so the line steps down only as whole minutes pass.
   const when =
     left <= 0
       ? 'it should be ready soon'
-      : minutes <= 1
-        ? left < 30_000
-          ? 'less than a minute left'
-          : 'about 1 min left'
-        : `about ${minutes} min left`;
+      : left < 60_000
+        ? 'less than a minute left'
+        : `about ${Math.ceil(left / 60_000)} min left`;
   return `${WRITTEN_ELSEWHERE}, ${when}`;
 }
 

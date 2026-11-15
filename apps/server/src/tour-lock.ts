@@ -15,12 +15,15 @@ const HEARTBEAT_MS = 5_000;
 /** A lock untouched for this long is stale: its holder hung, or died on another machine. */
 const STALE_MS = 30_000;
 const POLL_MS = 500;
+/** The longest a waiter waits on a live holder before writing the tour itself: a few tours' time. */
+const MAX_WAIT_MS = 5 * 60_000;
 
 /**
  * The value cached in `file`, or `write`'s, run here only if no other process is writing it.
  * While another process holds the lock, `onWait` is called on every poll with who holds it (null
  * for a lock file still being filled in). If that process stops without writing the file, this
- * one takes the lock and writes it. `cached` is true when this process didn't run `write`.
+ * one takes the lock and writes it. So it does, without the lock, after `MAX_WAIT_MS` on a holder
+ * that's alive but not finishing. `cached` is true when this process didn't run `write`.
  *
  * A stale lock is broken: its holder's process is gone (same machine), or it has gone
  * `STALE_MS` without a heartbeat. Two waiters breaking the same stale lock at once could both
@@ -33,6 +36,20 @@ export async function cachedOnce<T>(
 ): Promise<{ value: T; cached: boolean }> {
   const lockFile = `${file}.lock`;
   await mkdir(dirname(file), { recursive: true });
+  const writeAndStore = async () => {
+    const value = await write();
+    // Written aside, then renamed in, so a waiter never reads half a file.
+    const partial = `${file}.${process.pid}.partial`;
+    try {
+      await writeFile(partial, JSON.stringify(value, null, 2));
+      await rename(partial, file);
+    } catch (error) {
+      await unlink(partial).catch(() => {});
+      throw error;
+    }
+    return { value, cached: false };
+  };
+  let waitingSince: number | null = null;
   for (;;) {
     if (existsSync(file)) return { value: await readJson<T>(file), cached: true };
     const release = await tryLock(lockFile);
@@ -40,12 +57,7 @@ export async function cachedOnce<T>(
       try {
         // The last holder may have finished between the check above and taking the lock.
         if (existsSync(file)) return { value: await readJson<T>(file), cached: true };
-        const value = await write();
-        // Written aside, then renamed in, so a waiter never reads half a file.
-        const partial = `${file}.${process.pid}.partial`;
-        await writeFile(partial, JSON.stringify(value, null, 2));
-        await rename(partial, file);
-        return { value, cached: false };
+        return await writeAndStore();
       } finally {
         await release();
       }
@@ -56,6 +68,9 @@ export async function cachedOnce<T>(
       await breakLock(lockFile, lock.holder);
       continue;
     }
+    // A holder that's alive but stuck must not hold this review hostage: write it here instead.
+    waitingSince ??= Date.now();
+    if (Date.now() - waitingSince > MAX_WAIT_MS) return writeAndStore();
     onWait(lock.holder);
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }

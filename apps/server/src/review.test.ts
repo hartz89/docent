@@ -490,29 +490,72 @@ describe('GET /api/review', () => {
     expect(tours.map((t) => t.tour)).toEqual([tours[0]?.tour, tours[0]?.tour]);
     expect(tours.map((t) => t.cached).sort()).toEqual([false, true]);
     expect(waits[0]).toBe(
-      'A tour for this PR is being written by another Docent, about 1 min left',
+      'A tour for this PR is being written by another Docent, about 2 min left',
     );
   });
 
-  test('a lock left by a Docent that died is broken, and the tour is written', async () => {
-    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
-    await open(scripted(goodTour).runner, cacheDir);
-    const [tourFile] = await readdir(join(cacheDir, 'tours', 'acme__web'));
-    const cached = join(cacheDir, 'tours', 'acme__web', tourFile ?? '');
-    await rm(cached);
+  test.each([
     // A process that has exited, so its pid is gone.
-    const dead = spawnSync(process.execPath, ['-e', '']).pid;
-    await writeFile(
-      `${cached}.lock`,
-      JSON.stringify({ pid: dead, host: hostname(), startedAt: Date.now(), token: 'old' }),
-    );
+    ['died', () => ({ pid: spawnSync(process.execPath, ['-e', '']).pid, host: hostname() }), 0],
+    // Alive as far as anyone can tell, but its heartbeat stopped a minute ago.
+    ['hung on another machine', () => ({ pid: process.pid, host: 'elsewhere' }), 60],
+  ])(
+    'a lock left by a Docent that %s is broken, and the tour is written',
+    async (_, holder, ageS) => {
+      const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+      await open(scripted(goodTour).runner, cacheDir);
+      const [tourFile] = await readdir(join(cacheDir, 'tours', 'acme__web'));
+      const cached = join(cacheDir, 'tours', 'acme__web', tourFile ?? '');
+      await rm(cached);
+      const lock = `${cached}.lock`;
+      await writeFile(lock, JSON.stringify({ ...holder(), startedAt: Date.now(), token: 'old' }));
+      const then = new Date(Date.now() - ageS * 1000);
+      await utimes(lock, then, then);
+      const second = scripted(goodTour);
+
+      const { review } = await open(second.runner, cacheDir);
+
+      expect(second.requests).toHaveLength(1);
+      expect(ready(review.snapshot().tour).cached).toBe(false);
+      expect(existsSync(lock)).toBe(false);
+    },
+  );
+
+  test('when the Docent writing the tour fails, the one waiting writes it', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    const { promise: release, resolve } = Promise.withResolvers<void>();
+    // The first Docent's model fails once released; the second's works.
+    const failing: AgentRunner = async () => {
+      await release;
+      throw new Error('model unavailable');
+    };
     const second = scripted(goodTour);
+    const first = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: failing,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await vi.waitFor(async () =>
+      expect(await readdir(join(cacheDir, 'tours', 'acme__web'))).toHaveLength(1),
+    );
+    const waiter = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: second.runner,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await vi.waitFor(() =>
+      expect(waiter.snapshot().tour).toMatchObject({ detail: expect.stringContaining('another') }),
+    );
+    resolve();
+    await Promise.all([first.done, waiter.done]);
 
-    const { review } = await open(second.runner, cacheDir);
-
+    expect(first.snapshot().tour.state).toBe('failed');
     expect(second.requests).toHaveLength(1);
-    expect(ready(review.snapshot().tour).cached).toBe(false);
-    expect(existsSync(`${cached}.lock`)).toBe(false);
+    expect(ready(waiter.snapshot().tour).cached).toBe(false);
   });
 
   test('keeps the last good tour when a retry fails, and records what the failure cost', async () => {
