@@ -82,9 +82,22 @@ function fakeBinaries(opts: { exit?: number; extra?: string }): string {
   return BIN;
 }
 
-/** A fake GitHub API. `fail` makes one path answer with an error status. */
+/** A PR's head on the fake GitHub, and the reviews posted on it. */
+type Pull = { head: string; reviews: { login: string; state: string; commit_id: string }[] };
+
+/**
+ * A fake GitHub API. `fail` makes one path answer with an error status. `pull` is what
+ * /pulls/3 and its reviews return.
+ */
 function setup(
-  opts: { fail?: string; config?: object; exit?: number; extra?: string; cwd?: string } = {},
+  opts: {
+    fail?: string;
+    config?: object;
+    exit?: number;
+    extra?: string;
+    cwd?: string;
+    pull?: Pull;
+  } = {},
 ) {
   const configPath = join(dir, 'agent-apps.json');
   writeFileSync(configPath, JSON.stringify(opts.config ?? filled));
@@ -100,7 +113,7 @@ function setup(
       auth: headers.get('authorization') ?? '',
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     });
-    if (opts.fail && url.endsWith(opts.fail)) {
+    if (opts.fail && url.includes(opts.fail)) {
       // A hostile error body that echoes the token back, to prove output is scrubbed.
       return Response.json({ message: `Bad credentials ${TOKEN}` }, { status: 401 });
     }
@@ -111,6 +124,18 @@ function setup(
     }
     if (url.endsWith('/users/docent-builder%5Bbot%5D')) return Response.json(BOT);
     if (url.endsWith('/installation/token')) return new Response(null, { status: 204 });
+    const pull = opts.pull;
+    if (pull && url.endsWith('/repos/hartz89/docent/pulls/3')) {
+      return Response.json({ number: 3, head: { sha: pull.head } });
+    }
+    if (pull && url.includes('/repos/hartz89/docent/pulls/3/reviews?')) {
+      const reviews = pull.reviews.map(({ login, ...review }, i) => ({
+        id: 100 + i,
+        user: { login, type: 'Bot' },
+        ...review,
+      }));
+      return Response.json(reviews);
+    }
     return Response.json({ message: 'Not Found' }, { status: 404 });
   };
   const deps: Deps = {
@@ -496,8 +521,6 @@ describe('as-agent allowlist', () => {
   const allowed: [string, string][] = [
     ['git push origin feat/x', 'git push origin refs/heads/feat/x:refs/heads/feat/x'],
     ['gh pr create --title x --body short', 'gh pr create --title x --body short'],
-    ['gh pr merge 3 --squash', 'gh pr merge 3 --squash'],
-    ['gh pr merge 3 --squash --auto', 'gh pr merge 3 --squash --auto'],
     [
       'gh api /repos/hartz89/docent/pulls -X GET --paginate',
       'gh api /repos/hartz89/docent/pulls -X GET --paginate',
@@ -533,6 +556,96 @@ describe('as-agent allowlist', () => {
       repositories: ['docent'],
       permissions: { contents: 'write', pull_requests: 'write', checks: 'read', ...extra },
     });
+  });
+});
+
+// pull-requests.md: the reviewer's review is posted before the merge is queued. The runner checks
+// that it covers the head commit, so a fix pushed after the last review can't merge unreviewed.
+describe('as-agent merge gate', () => {
+  const HEAD = 'a'.repeat(40);
+  const OLD = 'b'.repeat(40);
+  const REVIEWER = 'docent-reviewer-hartz89[bot]';
+  const config = { ...filled, reviewer: { slug: 'docent-reviewer-hartz89' } };
+  const MERGE = ['gh', 'pr', 'merge', '3', '--squash', '--auto'];
+  const review = (state: string, commit_id: string, login = REVIEWER) => ({
+    login,
+    state,
+    commit_id,
+  });
+
+  async function merge(reviews: Pull['reviews'], opts: { fail?: string } = {}) {
+    const run = setup({ config, pull: { head: HEAD, reviews }, ...opts });
+    const code = await asAgent(['builder', '--', ...MERGE], run.deps);
+    const ranMerge = existsSync(join(dir, 'argv'));
+    return { ...run, code, ranMerge };
+  }
+
+  test('queues the merge, pinned to the head, when the reviewer reviewed the head', async () => {
+    const { code, ran, calls } = await merge([review('COMMENTED', HEAD)]);
+    expect(code).toBe(0);
+    expect(ran()).toEqual([`gh pr merge 3 --squash --auto --match-head-commit ${HEAD}`]);
+    // Asked with the builder's own token.
+    const reads = calls.filter((call) => call.url.includes('/pulls/3'));
+    expect(reads.map((call) => call.auth)).toEqual([`Bearer ${TOKEN}`, `Bearer ${TOKEN}`]);
+  });
+
+  test('refuses when the only reviewer review is on an older commit', async () => {
+    const { code, ranMerge, logs, calls } = await merge([
+      review('COMMENTED', OLD),
+      // The builder's replies show up as reviews on the head; they don't count.
+      review('COMMENTED', HEAD, 'docent-builder-hartz89[bot]'),
+    ]);
+    expect(code).toBe(1);
+    expect(ranMerge).toBe(false);
+    expect(logs()[0]).toContain(
+      `the head commit ${HEAD} has no reviewer review; post one before queueing the merge`,
+    );
+    expect(calls.at(-1)?.method).toBe('DELETE');
+  });
+
+  test('refuses when there is no review', async () => {
+    const { code, ranMerge, logs } = await merge([]);
+    expect(code).toBe(1);
+    expect(ranMerge).toBe(false);
+    expect(logs()[0]).toContain(`the head commit ${HEAD} has no reviewer review`);
+  });
+
+  test.each(['/pulls/3', '/pulls/3/reviews'])(
+    'refuses when GitHub fails to answer %s',
+    async (path) => {
+      const { code, ranMerge, printed } = await merge([review('COMMENTED', HEAD)], { fail: path });
+      expect(code).toBe(1);
+      expect(ranMerge).toBe(false);
+      expect(printed()).toContain('returned 401');
+      expect(printed()).toContain('The merge is refused');
+      expect(printed()).not.toContain(TOKEN);
+    },
+  );
+
+  test('refuses while the latest reviewer verdict requests changes', async () => {
+    const { code, ranMerge, logs } = await merge([
+      review('COMMENTED', OLD),
+      review('CHANGES_REQUESTED', HEAD),
+    ]);
+    expect(code).toBe(1);
+    expect(ranMerge).toBe(false);
+    expect(logs()[0]).toContain('requests changes');
+  });
+
+  test('allows changes requested, then a comment review, both on the head', async () => {
+    const { code, ran } = await merge([
+      review('CHANGES_REQUESTED', HEAD),
+      review('COMMENTED', HEAD),
+    ]);
+    expect(code).toBe(0);
+    expect(ran()).toEqual([`gh pr merge 3 --squash --auto --match-head-commit ${HEAD}`]);
+  });
+
+  test('refuses before minting a token when the reviewer app is not set up', async () => {
+    const { deps, calls, logs } = setup({ pull: { head: HEAD, reviews: [] } });
+    expect(await asAgent(['builder', '--', ...MERGE], deps)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(logs()[0]).toContain("the reviewer GitHub App isn't set up yet");
   });
 });
 
