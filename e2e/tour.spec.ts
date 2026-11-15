@@ -240,3 +240,16 @@ test('while the guide writes, the reviewer reads the PR, then the first stop bef
     await docent.stop();
   }
 });
+
+test('quitting while the guide writes stops Docent at once', async ({ page }) => {
+  // A slow replay stands in for a slow machine: the browser is still following the tour's
+  // progress when Docent is stopped. Stopping used to wait for that stream to end.
+  const docent = await launch('cli.js', ['review', '--fixture', fixture, '--replay-pace', '200']);
+  try {
+    await page.goto(docent.url);
+    await expect(page.locator('.upcoming-stop')).toBeVisible();
+  } finally {
+    // Throws if the server is still running 5 s after SIGTERM.
+    await docent.stop();
+  }
+});

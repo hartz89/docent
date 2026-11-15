@@ -215,12 +215,14 @@ class ParserWorker {
         worker.off('message', onMessage);
         worker.off('exit', onExit);
         worker.off('error', onError);
-        if (broken) {
+        // Logged however the file was stopped: the parser may cancel itself just in time, or be
+        // stopped here after its grace period. Which one wins depends on load, not on the file.
+        if (symbols === null) {
           console.error(
             `Docent skipped ${JSON.stringify(path)}: the parser failed or ran too long.`,
           );
-          this.#stop(worker);
         }
+        if (broken) this.#stop(worker);
         resolve(symbols);
       };
       const onMessage = (reply: ParseReply) => done(reply.symbols, false);
