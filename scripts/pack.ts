@@ -7,7 +7,7 @@
 //   package.json          name, version, bin, exact dependencies, `files`
 //   npm-shrinkwrap.json   pins the whole dependency tree for everyone who installs it
 //   server/dist/cli.js    the CLI and server, bundled with @docent/core
-//   server/package.json   just "type" and "version", read by the server at startup
+//   server/package.json   just "name", "type" and "version", read by the server at startup
 //   web/dist/             the built web app
 //   README.md, LICENSE, NOTICE, SECURITY.md, THIRD_PARTY_LICENSES.md
 
@@ -85,7 +85,12 @@ cpSync(webDist, join(out, 'web/dist'), { recursive: true });
 const write = (path: string, data: unknown) =>
   writeFileSync(join(out, path), `${JSON.stringify(data, null, 2)}\n`);
 
-write('server/package.json', { type: 'module', version: server.version });
+// The published name rides along too, so the CLI can print an `npx <name>@<version>` command.
+write('server/package.json', {
+  name: `${NPM_SCOPE}/docent`,
+  type: 'module',
+  version: server.version,
+});
 write('package.json', {
   name: `${NPM_SCOPE}/docent`,
   version: server.version,

@@ -3,7 +3,7 @@
 // GitHub or model calls, and nothing needs a login.
 // Run: node scripts/pack-smoke.ts dist/<tarball>.tgz (after pnpm pack:cli). Needs the network.
 
-import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
+import { type ChildProcess, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { cpSync, lstatSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -26,7 +26,8 @@ const env = Object.fromEntries(
 let child: ChildProcess | undefined;
 try {
   execFileSync('npm', ['init', '-y'], { cwd: scratch, env, stdio: 'ignore' });
-  execFileSync('npm', ['install', '--no-audit', '--no-fund', tarball], {
+  // As the README says to run it: without the Agent SDK's own ~305 MB Claude Code.
+  execFileSync('npm', ['install', '--omit=optional', '--no-audit', '--no-fund', tarball], {
     cwd: scratch,
     env,
     stdio: ['ignore', 'ignore', 'inherit'],
@@ -42,6 +43,28 @@ try {
   const help = execFileSync(bin, ['--help'], { cwd: scratch, encoding: 'utf8' });
   if (!help.includes('Usage: docent review')) throw new Error(`Unexpected --help output:\n${help}`);
   console.log('ok  docent --help');
+
+  const bundled = readdirSync(join(scratch, 'node_modules', '@anthropic-ai')).filter((name) =>
+    name.startsWith('claude-agent-sdk-'),
+  );
+  if (bundled.length) throw new Error(`The SDK's own Claude Code got installed: ${bundled}`);
+  // With no Claude Code to find, a real review stops before fetching anything, and says why.
+  const noClaude = spawnSync(
+    process.execPath,
+    [bin, 'review', 'https://github.com/hartz89/docent/pull/1', '--prepare', '--no-run-log'],
+    {
+      cwd: scratch,
+      env: { ...env, PATH: '/usr/bin:/bin', DOCENT_CLAUDE_PATH: '' },
+      encoding: 'utf8',
+    },
+  );
+  if (
+    noClaude.status !== 1 ||
+    !noClaude.stderr.includes('Install it from https://code.claude.com')
+  ) {
+    throw new Error(`Expected the install hint, got ${noClaude.status}:\n${noClaude.stderr}`);
+  }
+  console.log('ok  without Claude Code, says how to install it');
 
   // The fixture is test input only; copy it in so the run touches nothing in this repo.
   cpSync(fixture, join(scratch, 'fixture'), { recursive: true });
