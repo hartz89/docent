@@ -122,11 +122,21 @@ describe('the tour eval', () => {
 
   test('times the wait for the route and stop 1, and checks the route against the stops', async () => {
     // The recorded tour streams out with its route first, the way prompt v5 writes it.
-    const tour = fixtureRunner(RECORDED, { paceMs: 1 });
-    const runner: AgentRunner = async (request) =>
-      request.job === 'eval_judge'
-        ? { sessionId: 'j', text: '', structured: judgment, cost: cost(20_000), denials: [] }
-        : tour(request);
+    const recordedTour = fixtureRunner(RECORDED);
+    const runner: AgentRunner = async (request) => {
+      if (request.job === 'eval_judge') {
+        return { sessionId: 'j', text: '', structured: judgment, cost: cost(20_000), denials: [] };
+      }
+      const reply = await recordedTour(request);
+      const { stops } = reply.structured as { stops: { title: string }[] };
+      const structured = { route: stops.map((s) => s.title), stops };
+      const json = JSON.stringify(structured);
+      for (let at = 40; at < json.length + 40; at += 40) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        request.onOutput?.(json.slice(0, at));
+      }
+      return { ...reply, structured };
+    };
     const result = await runFixture({
       manifest,
       workspace: await fixtureSource(RECORDED)(() => {}),

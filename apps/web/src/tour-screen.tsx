@@ -322,12 +322,7 @@ export function TourScreen({ snapshot, tour }: Props) {
           aria-controls="pane-route"
           onClick={() => setPane('route')}
         >
-          Route{' '}
-          <span className="pane-count">
-            {writing && writing.route.length > stops.length
-              ? `${writing.route.length} planned`
-              : `${stops.length} stop${stops.length === 1 ? '' : 's'}`}
-          </span>
+          Route <span className="pane-count">{stops.length} stops</span>
         </button>
         <button
           type="button"
@@ -445,7 +440,7 @@ export function TourScreen({ snapshot, tour }: Props) {
           {!stop ? (
             <div className="narration">
               <div className="narration-body fade-in">
-                <TourProgress tour={writing} showRoute={drawer} />
+                <TourProgress tour={writing} />
               </div>
             </div>
           ) : (
@@ -761,7 +756,7 @@ function Route({
             </li>
           );
         })}
-        {writing && <StillToCome stops={stops} writing={writing} />}
+        {writing && <UpcomingStop stops={stops} writing={writing} />}
       </ol>
 
       {tour ? (
@@ -997,62 +992,26 @@ function FilePath({ path }: { path: string }) {
   );
 }
 
-/**
- * The route's rows still to come while the guide writes: the stops it planned, if it wrote a
- * route first, and what's happening now. Says what's true, never how long it'll take. The plan is
- * only a plan: each stop that arrives takes its row, and the finished tour replaces them all.
- */
-function StillToCome({ stops, writing }: { stops: readonly StopView[]; writing: Working }) {
+/** The route's next row while the guide writes: says what's happening, never how long it'll take. */
+function UpcomingStop({ stops, writing }: { stops: readonly StopView[]; writing: Working }) {
   const step = writing.steps.find((s) => s.status === 'active')?.id;
   const verdictIn = stops.at(-1)?.kind === 'verdict_prompt';
-  const writingNow = writing.attempt === 1 && step === 'writing' && !verdictIn;
-  const next = stops.length + 1;
-  // The stop the guide is writing. Ones before it that aren't shown were held back for the check.
-  const current = writingNow ? Math.max(writing.writing, next) : Number.POSITIVE_INFINITY;
-  const planned = writing.route.slice(stops.length).map((title, i) => ({ n: next + i, title }));
   const label =
     writing.attempt > 1
       ? 'Fixing what the checker found'
       : step === 'checking' || verdictIn
         ? 'Checking the whole tour'
         : step === 'writing'
-          ? `Writing stop ${current}`
+          ? `Writing stop ${Math.max(writing.writing, stops.length + 1)}`
           : 'Planning the route';
   return (
-    <>
-      {planned.map(({ n, title }) =>
-        n === current ? (
-          <li key={n} className="upcoming-stop" aria-live="polite">
-            <span className="upcoming-dot" aria-hidden="true">
-              {n}
-            </span>
-            <span>
-              <span className="stop-kind">Writing now</span>
-              <span className="upcoming-title">{inline(title)}</span>
-            </span>
-          </li>
-        ) : (
-          <li key={n} className="planned-stop fade-in">
-            <span className="planned-number" aria-hidden="true">
-              {n}
-            </span>
-            <span>
-              <span className="stop-kind">{n < current ? 'Waiting for the check' : 'Planned'}</span>
-              <span className="planned-title">{inline(title)}</span>
-            </span>
-          </li>
-        ),
-      )}
-      {(!writingNow || current > writing.route.length) && (
-        <li className="upcoming-stop" aria-live="polite">
-          <span className="upcoming-dot" aria-hidden="true" />
-          <span>
-            <span className="stop-kind">In progress</span>
-            <span className="upcoming-title">{label}…</span>
-          </span>
-        </li>
-      )}
-    </>
+    <li className="upcoming-stop" aria-live="polite">
+      <span className="upcoming-dot" aria-hidden="true" />
+      <span>
+        <span className="stop-kind">In progress</span>
+        <span className="upcoming-title">{label}…</span>
+      </span>
+    </li>
   );
 }
 

@@ -728,15 +728,16 @@ ${prSection(pr, diff)}`,
   // noise to the script. docs/research/2026-11-12-skip-ledger.md has the A/B against v3.
   4: (pr: PrInfo, diff: Diff) => explainPrompt(ROUTE_RULES, pr, diff),
 
-  // v5: v4 plus the route first: the stop titles, ahead of the stops, so the reviewer sees the
-  // plan about a second after writing starts (issue #67). It has its own schema with `route`.
+  // v5, never shipped: v4 plus the route first, the stop titles ahead of the stops, with its own
+  // schema (issue #67). It lost to v4 on defects and danger flags, and stop 1 came no sooner:
+  // docs/research/evals/2026-11-15-tours-v4-v5-route-first.md. Kept so that A/B can be rerun.
   5: (pr: PrInfo, diff: Diff) => explainPrompt(`${ROUTE_RULES}\n\n${ROUTE_FIRST_RULES}`, pr, diff),
 } as const satisfies Record<number, (pr: PrInfo, diff: Diff) => string>;
 
 export type TourPromptVersion = keyof typeof TOUR_PROMPTS;
 
 /** The prompt version new tours use. Part of the tour cache key, so a bump writes fresh tours. */
-export const TOUR_PROMPT_VERSION: TourPromptVersion = 5;
+export const TOUR_PROMPT_VERSION: TourPromptVersion = 4;
 
 /** v3's text, shared by v4: explain, don't narrate, and don't advise. Only the line rules differ. */
 function explainPrompt(rules: string, pr: PrInfo, diff: Diff): string {

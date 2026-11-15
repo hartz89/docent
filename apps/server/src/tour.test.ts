@@ -36,6 +36,10 @@ describe('tour prompt versions', () => {
     expect(sha(TOUR_PROMPTS[4](workspace.pr, diff))).toBe(
       '5c47b5a3540d1ec33dbe4b084465925962dfe08869e648d4d546d53c92b84e8e',
     );
+    // Never shipped, but evaluated: frozen so its A/B against v4 can be rerun.
+    expect(sha(TOUR_PROMPTS[5](workspace.pr, diff))).toBe(
+      '384efbbd8dd113722579ff40f6499ea4d95ffbb2c9080ea5c905e5a85a98c67d',
+    );
   });
 
   test('new tours use the current prompt, and an eval run can pick an older one', async () => {
@@ -50,16 +54,60 @@ describe('tour prompt versions', () => {
 
     await generateTour(job);
     const second = requests.length;
-    await generateTour({ ...job, promptVersion: 4 });
+    await generateTour({ ...job, promptVersion: 2 });
+    const third = requests.length;
+    await generateTour({ ...job, promptVersion: 5 });
 
-    expect(TOUR_PROMPT_VERSION).toBe(5);
-    expect(requests[0]?.prompt).toBe(TOUR_PROMPTS[5](workspace.pr, diff));
-    expect(requests[second]?.prompt).toBe(TOUR_PROMPTS[4](workspace.pr, diff));
-    // v5 asks for the route ahead of the stops; v4 keeps the schema it shipped with.
-    expect(requests[0]?.prompt).toContain('Write the route first');
-    expect(requests[0]?.schema).toBe(routeTourSchema);
+    expect(TOUR_PROMPT_VERSION).toBe(4);
+    expect(requests[0]?.prompt).toBe(TOUR_PROMPTS[4](workspace.pr, diff));
+    expect(requests[0]?.schema).toBe(tourSchema);
+    expect(requests[second]?.prompt).toBe(TOUR_PROMPTS[2](workspace.pr, diff));
+    // The v5 experiment asks for the route ahead of the stops, in a schema of its own.
+    expect(requests[third]?.prompt).toContain('Write the route first');
+    expect(requests[third]?.schema).toBe(routeTourSchema);
     expect(Object.keys(routeTourSchema.properties)[0]).toBe('route');
-    expect(requests[second]?.schema).toBe(tourSchema);
+  });
+
+  test('v5 streams its route ahead of the stops, and its repairs send no route', async () => {
+    const { workspace, diff } = await recorded();
+    const recordedReply = await fixtureRunner(FIXTURE)({
+      job: 'tour',
+      prompt: '',
+      cwd: '',
+      model: 'claude-test',
+    });
+    const { stops } = recordedReply.structured as { stops: { kind: string; title: string }[] };
+    const route = stops.map((s) => s.title);
+    // The first answer drops the verdict, so the checker asks for a repair that adds it.
+    const replies = [
+      { route, stops: stops.slice(0, -1) },
+      { route: [], stops: [{ ...stops.at(-1), replaces: 0 }] },
+    ];
+    const requests: AgentRequest[] = [];
+    const routes: string[][] = [];
+    const runner = async (request: AgentRequest) => {
+      const structured = replies[requests.length];
+      requests.push(request);
+      const json = JSON.stringify(structured);
+      for (let at = 50; at < json.length + 50; at += 50) request.onOutput?.(json.slice(0, at));
+      return { ...recordedReply, structured };
+    };
+
+    const outcome = await generateTour({
+      workspace,
+      diff,
+      runner,
+      model: 'claude-test',
+      promptVersion: 5,
+      onProgress: (p) => {
+        if (p.step === 'writing') routes.push(p.route);
+      },
+    });
+
+    expect(routes.at(-1)).toEqual(route);
+    expect(requests[1]?.prompt).toContain('"route": an empty list');
+    expect(outcome.problems).toEqual([]);
+    expect(outcome.tour.stops.map((s) => s.title)).toEqual(route);
   });
 });
 

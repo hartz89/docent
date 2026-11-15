@@ -821,68 +821,6 @@ describe('the tour, while it is written', () => {
     expect(ready(states.at(-1) as TourState).attempts).toBe(2);
   });
 
-  test('the planned route shows before any stop, title by title, and the finished tour drops it', async () => {
-    const planned = { route: ['Why', 'The origin is reflected', 'Your call'], ...goodTour };
-    const states = await watch(streaming([planned]).runner);
-
-    const working = states.flatMap((s) => (s.state === 'working' ? [s] : []));
-    const routes = [...new Set(working.map((s) => s.route.join('|')))].filter(Boolean);
-    // Each title appears as the guide closes it, before stop 1 is written.
-    expect(routes[0]).toBe('Why');
-    expect(routes.at(-1)).toBe(planned.route.join('|'));
-    const firstRoute = working.findIndex((s) => s.route.length > 0);
-    const firstStop = working.findIndex((s) => s.stops.length > 0);
-    expect(firstRoute).toBeLessThan(firstStop);
-    expect(working[firstRoute]?.detail).toBe('Route planned: 1 stop');
-    expect(ready(states.at(-1) as TourState)).not.toHaveProperty('route');
-  });
-
-  test('a route that the stops overrule gives way: the stops written are the tour', async () => {
-    // Planned four stops under other titles; wrote three.
-    const planned = { route: ['Why', 'How', 'Tests', 'Your call'], ...goodTour };
-    const log = RunLog.open({
-      dir: await mkdtemp(join(tmpdir(), 'docent-route-')),
-      label: 'route',
-      env: {},
-    });
-    const review = new Review({
-      source: sourceFor(fakeGitHub()),
-      runner: streaming([planned]).runner,
-      locator: noAuthor,
-      model: 'claude-test',
-      log,
-    });
-    await review.done;
-
-    const tour = ready(review.snapshot().tour);
-    expect(tour.problems).toEqual([]);
-    expect(tour.tour.stops.map((s) => s.title)).toEqual([
-      'Why',
-      'The origin is reflected',
-      'Your call',
-    ]);
-    const attempt = (await readFile(log.path ?? '', 'utf8'))
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => JSON.parse(line))
-      .find((e) => e.kind === 'tour.attempt');
-    expect(attempt.route).toEqual({ planned: 4, written: 3, sameTitles: 1, matches: false });
-  });
-
-  test('a repair asks for no route: the stops carry the change', async () => {
-    const fixed = { ...goodTour.stops[1], replaces: 2 };
-    const { runner, requests } = scripted(
-      { route: ['Why', 'x', 'Your call'], ...gappyTour },
-      repairOf(fixed),
-    );
-    const { api } = await open(runner);
-
-    const tour = ready((await snapshot(api)).tour);
-
-    expect(requests[1]?.prompt).toContain('"route": an empty list');
-    expect(tour.problems).toEqual([]);
-  });
-
   test('a missing verdict is repaired: the guide adds just that stop', async () => {
     const noVerdict = { ...goodTour, stops: goodTour.stops.slice(0, -1) };
     const verdict = { ...goodTour.stops[2], title: 'Over to you' };

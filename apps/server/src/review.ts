@@ -74,11 +74,6 @@ export type TourState =
       stops: StopView[];
       /** How many stops the guide has begun writing, shown or not. */
       writing: number;
-      /**
-       * The stop titles the guide planned before writing them, when its prompt asks for a route.
-       * Only a plan: the stops it writes win, and the finished tour drops it.
-       */
-      route: string[];
     }
   /** `ledger`: where every changed line stands, computed for this tour by core (L1–L4). */
   | ({ state: 'ready'; ledger: LedgerView } & TourOutcome)
@@ -228,7 +223,7 @@ export class Review {
   #lookup: Promise<void> | null = null;
   /** Who answers. Turns to the guide for the rest of the review if a fork runs over budget. */
   #author: AuthorSession | null = null;
-  #tour: TourState = working('reading', null);
+  #tour: TourState = working('reading', null, 1, []);
   /** Where this review's time goes, from when it opened. */
   #timings: Timings;
   #listeners = new Set<(tour: TourState) => void>();
@@ -793,7 +788,7 @@ Question: ${question}`,
       const workspace = await this.#options.source((detail) => {
         ended();
         ended = time.span(detail);
-        this.#set(working('reading', detail));
+        this.#set(working('reading', detail, 1, []));
       });
       ended();
       ended = time.span('Parse the diff');
@@ -889,7 +884,7 @@ Question: ${question}`,
               endWait = time.span('Wait for another Docent writing this tour');
               this.#log.event('tour.wait', holder ? { pid: holder.pid, host: holder.host } : {});
             }
-            this.#set(working('writing', writtenElsewhere(holder)));
+            this.#set(working('writing', writtenElsewhere(holder), 1, []));
           })
         : { value: await write(), cached: false };
       stopWaiting();
@@ -1019,11 +1014,13 @@ ${unfence(question)}
 </question>`;
 }
 
-/** What a working state carries from one update to the next. */
-type Carried = { attempt: number; stops: StopView[]; writing: number; route: string[] };
-const FRESH: Carried = { attempt: 1, stops: [], writing: 0, route: [] };
-
-function working(active: StepId, detail: string | null, carried: Carried = FRESH): TourState {
+function working(
+  active: StepId,
+  detail: string | null,
+  attempt: number,
+  stops: StopView[],
+  writing = 0,
+): TourState {
   const order: StepId[] = ['reading', 'planning', 'writing', 'checking'];
   const at = order.indexOf(active);
   return {
@@ -1034,7 +1031,9 @@ function working(active: StepId, detail: string | null, carried: Carried = FRESH
       status: i < at ? 'done' : i === at ? 'active' : 'pending',
     })),
     detail,
-    ...carried,
+    attempt,
+    stops,
+    writing,
   };
 }
 
@@ -1057,42 +1056,37 @@ export function writtenElsewhere(holder: LockHolder | null, now = Date.now()): s
 }
 
 function fromProgress(progress: TourProgress, previous: TourState): TourState {
-  // Stops already shown, and the route planned, stay until the finished tour replaces them.
-  const was: Carried =
-    previous.state === 'working'
-      ? {
-          attempt: previous.attempt,
-          stops: previous.stops,
-          writing: previous.writing,
-          route: previous.route,
-        }
-      : FRESH;
+  const was = previous.state === 'working' ? previous : null;
+  const attempt = was?.attempt ?? 1;
+  // Stops already shown stay shown until the finished tour replaces them.
+  const stops = was?.stops ?? [];
+  const writing = was?.writing ?? 0;
   switch (progress.step) {
     case 'planning': {
       // A file read while the stops are being written doesn't send the steps backwards.
-      const active =
-        previous.state === 'working' && previous.steps.find((s) => s.status === 'active')?.id;
-      const step = active === 'writing' ? 'writing' : 'planning';
-      const detail = progress.detail ?? (previous.state === 'working' ? previous.detail : null);
-      return working(step, detail, was);
+      const step =
+        was?.steps.find((s) => s.status === 'active')?.id === 'writing' ? 'writing' : 'planning';
+      return working(step, progress.detail ?? was?.detail ?? null, attempt, stops, writing);
     }
-    case 'writing': {
-      const { stops, writing, route } = progress;
-      const detail =
-        writing > stops.length
-          ? `Writing stop ${writing}`
-          : stops.length > 0
-            ? `${stops.length} stop${stops.length === 1 ? '' : 's'} written`
-            : `Route planned: ${route.length} stop${route.length === 1 ? '' : 's'}`;
-      return working('writing', detail, { ...was, stops, writing, route });
-    }
+    case 'writing':
+      return working(
+        'writing',
+        progress.writing > progress.stops.length
+          ? `Writing stop ${progress.writing}`
+          : `${progress.stops.length} stop${progress.stops.length === 1 ? '' : 's'} written`,
+        attempt,
+        progress.stops,
+        progress.writing,
+      );
     case 'checking':
-      return working('checking', null, { ...was, attempt: progress.attempt });
+      return working('checking', null, progress.attempt, stops, writing);
     case 'retrying':
       return working(
         'planning',
         `${progress.problems} problem${progress.problems === 1 ? '' : 's'} found, sending them back (retry ${progress.attempt} of 2)`,
-        { ...was, attempt: progress.attempt + 1 },
+        progress.attempt + 1,
+        stops,
+        writing,
       );
   }
 }
