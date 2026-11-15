@@ -8,6 +8,7 @@ import type {
   PostedReview,
   ProofLabel,
   QuestionView,
+  RefView,
   ReviewSnapshot,
   StopView,
 } from '@docent/server';
@@ -69,6 +70,9 @@ export function TourScreen({ snapshot, tour }: Props) {
   const [anchorIndex, setAnchorIndex] = useState(0);
   // A file opened from the ledger, the overview or the file tree, in place of the stop's citation.
   const [viewing, setViewing] = useState<Viewing | null>(null);
+  // The lines a phrase of the stop points at, while it's hovered or focused. Shown over whatever
+  // the code column shows, and gone when the phrase lets go.
+  const [peek, setPeek] = useState<CurrentRef | null>(null);
   // The left pane shows the route or the whole repo's files.
   const [pane, setPane] = useState<'route' | 'files'>('route');
   const goToFile = useRef<HTMLInputElement>(null);
@@ -209,6 +213,7 @@ export function TourScreen({ snapshot, tour }: Props) {
   // scrolls in its own column, or, in the stacked phone layout, the columns scroll together.
   const guide = useRef<HTMLElement>(null);
   const columns = useRef<HTMLDivElement>(null);
+  const codeColumn = useRef<HTMLElement>(null);
   const scrollByStop = useRef(new Map<string, [number, number]>());
   const go = useCallback(
     (next: number) => {
@@ -219,6 +224,7 @@ export function TourScreen({ snapshot, tour }: Props) {
       setAnchorIndex(0);
       setOverviewFirst(false);
       setViewing(null);
+      setPeek(null);
     },
     [stop, stops.length],
   );
@@ -302,6 +308,28 @@ export function TourScreen({ snapshot, tour }: Props) {
           ),
     [ledger, stops],
   );
+  // A phrase pointing at code shows its lines while hovered or focused. A click or tap opens them
+  // in the code column, with the way back to the stop; on a phone, that also scrolls down to it.
+  const refHandlers = useMemo(
+    (): RefHandlers => ({
+      onPeek: setPeek,
+      onPin: ({ path, side, startLine, endLine }) => {
+        setViewing({
+          path,
+          side,
+          focus: { path, side, startLine, endLine },
+          label: `${linesLabel({ startLine, endLine })} · named in the text`,
+        });
+        if (!stacked) return;
+        const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        codeColumn.current?.scrollIntoView({
+          block: 'start',
+          behavior: smooth ? 'smooth' : 'auto',
+        });
+      },
+    }),
+    [stacked],
+  );
   if (!snapshot.pr) return null;
 
   const anchor = stop?.anchors[anchorIndex] ?? null;
@@ -309,6 +337,11 @@ export function TourScreen({ snapshot, tour }: Props) {
     viewing ?? (anchor && !overviewFirst ? { path: anchor.path, side: anchor.side } : null);
   const cited =
     shown && stop ? stop.anchors.filter((a) => a.path === shown.path && a.side === shown.side) : [];
+  // A peek at another file shows that file until the phrase lets go; one in this file only marks
+  // its lines, so the view doesn't jump back when it ends.
+  const peekElsewhere =
+    peek !== null && (shown === null || peek.path !== shown.path || peek.side !== shown.side);
+  const showing = peekElsewhere ? { path: peek.path, side: peek.side } : shown;
 
   // The route and the file tree, as tabs: in their own column, or in the drawer.
   const leftPane = (
@@ -387,26 +420,28 @@ export function TourScreen({ snapshot, tour }: Props) {
             {leftPane}
           </nav>
         )}
-        <section className="column code-column" aria-label="Code">
-          {shown ? (
+        <section className="column code-column" aria-label="Code" ref={codeColumn}>
+          {showing ? (
             <>
               <div className="code-header">
                 {/* Truncates from the start, so the file name stays in view. */}
-                <span className="code-path" title={shown.path}>
-                  <bdi>{shown.path}</bdi>
+                <span className="code-path" title={showing.path}>
+                  <bdi>{showing.path}</bdi>
                 </span>
                 <span className="code-range">
-                  {viewing
-                    ? (viewing.label ??
-                      (diff.files.some((f) => f.path === shown.path)
-                        ? 'changed in this PR'
-                        : 'not changed by this PR · read-only'))
-                    : anchor
-                      ? `lines ${anchor.startLine}–${anchor.endLine} · cited by this stop`
-                      : ''}
+                  {peek
+                    ? `${linesLabel(peek)} · named in the text`
+                    : viewing
+                      ? (viewing.label ??
+                        (diff.files.some((f) => f.path === showing.path)
+                          ? 'changed in this PR'
+                          : 'not changed by this PR · read-only'))
+                      : anchor
+                        ? `lines ${anchor.startLine}–${anchor.endLine} · cited by this stop`
+                        : ''}
                 </span>
-                <span className="code-side">{shown.side === 'new' ? 'head' : 'base'}</span>
-                {viewing && (
+                <span className="code-side">{showing.side === 'new' ? 'head' : 'base'}</span>
+                {viewing && !peekElsewhere && (
                   <button
                     type="button"
                     className="secondary-button back-to-stop"
@@ -418,18 +453,30 @@ export function TourScreen({ snapshot, tour }: Props) {
                 )}
               </div>
               <CodeView
-                path={shown.path}
-                side={shown.side}
-                cited={viewing ? (viewing.focus ? [viewing.focus] : []) : cited}
-                focus={
-                  viewing
-                    ? (viewing.focus ??
-                      (viewing.at ? { startLine: viewing.at, endLine: viewing.at } : null))
-                    : anchor
+                path={showing.path}
+                side={showing.side}
+                cited={
+                  peekElsewhere
+                    ? (stop?.anchors.filter((a) => a.path === peek.path && a.side === peek.side) ??
+                      [])
+                    : viewing
+                      ? viewing.focus
+                        ? [viewing.focus]
+                        : []
+                      : cited
                 }
-                changed={changes.get(`${shown.side}:${shown.path}`) ?? new Set()}
-                offRoute={offRoute.get(`${shown.side}:${shown.path}`) ?? new Set()}
-                onStep={viewing ? undefined : stepAnchor}
+                focus={
+                  peekElsewhere
+                    ? peek
+                    : viewing
+                      ? (viewing.focus ??
+                        (viewing.at ? { startLine: viewing.at, endLine: viewing.at } : null))
+                      : anchor
+                }
+                named={peek}
+                changed={changes.get(`${showing.side}:${showing.path}`) ?? new Set()}
+                offRoute={offRoute.get(`${showing.side}:${showing.path}`) ?? new Set()}
+                onStep={viewing || peekElsewhere ? undefined : stepAnchor}
               />
             </>
           ) : (
@@ -466,6 +513,7 @@ export function TourScreen({ snapshot, tour }: Props) {
                 setAnchorIndex(i);
                 setViewing(null);
               }}
+              refHandlers={refHandlers}
               isLast={index === stops.length - 1}
               onNext={() => go(index + 1)}
               finished={ready !== null}
@@ -1104,6 +1152,7 @@ function Narration({
   onOpenCite,
   activeAnchor,
   onAnchor,
+  refHandlers,
   isLast,
   onNext,
   finished,
@@ -1121,6 +1170,7 @@ function Narration({
   onOpenCite: (cite: AnchorView) => void;
   activeAnchor: number;
   onAnchor: (index: number) => void;
+  refHandlers: RefHandlers;
   isLast: boolean;
   onNext: () => void;
   /** False while the rest of the tour is still being written and checked. */
@@ -1156,7 +1206,7 @@ function Narration({
       <div className="narration-body fade-in">
         <div className="narration-kind">{KIND_LABELS[stop.kind]}</div>
         <h2 className="narration-title">{inline(stop.title)}</h2>
-        <div className="narration-text">{paragraphs(stop.body)}</div>
+        <div className="narration-text">{prose(stop.body, stop.refs, refHandlers)}</div>
 
         {stop.anchors.length > 0 && (
           <div className="chips">
@@ -1316,15 +1366,97 @@ function Correction({
   );
 }
 
-/** Plain paragraphs, with `backticks` shown as code. The guide's text is never parsed as HTML. */
-function paragraphs(text: string): ReactNode {
-  return text
-    .split(/\n\s*\n/)
-    .filter((p) => p.trim())
-    .map((p, i) => (
-      // biome-ignore lint/suspicious/noArrayIndexKey: paragraphs are positional.
-      <p key={i}>{inline(p)}</p>
-    ));
+/** What a phrase pointing at code does when it's hovered or focused, and when it's clicked. */
+type RefHandlers = { onPeek: (ref: CurrentRef | null) => void; onPin: (ref: CurrentRef) => void };
+
+/**
+ * Plain paragraphs, with `backticks` shown as code and the stop's references as phrases that
+ * point at code. The guide's text is never parsed as HTML. A reference never spans a paragraph
+ * or splits a code span (core's T7), so each piece renders on its own.
+ */
+function prose(text: string, refs: readonly RefView[], handlers: RefHandlers): ReactNode {
+  const paragraphs: [number, number][] = [];
+  let start = 0;
+  for (const gap of text.matchAll(/\n\s*\n/g)) {
+    paragraphs.push([start, gap.index]);
+    start = gap.index + gap[0].length;
+  }
+  paragraphs.push([start, text.length]);
+  return paragraphs
+    .filter(([from, to]) => text.slice(from, to).trim())
+    .map(([from, to]) => {
+      const pieces: ReactNode[] = [];
+      let at = from;
+      for (const ref of refs) {
+        if (ref.start < at || ref.end > to) continue;
+        if (ref.start > at) pieces.push(inline(text.slice(at, ref.start)));
+        pieces.push(
+          <RefPhrase key={ref.start} target={ref} handlers={handlers}>
+            {inline(text.slice(ref.start, ref.end))}
+          </RefPhrase>,
+        );
+        at = ref.end;
+      }
+      if (at < to) pieces.push(inline(text.slice(at, to)));
+      return <p key={from}>{pieces}</p>;
+    });
+}
+
+type CurrentRef = Extract<RefView, { state: 'current' }>;
+
+/**
+ * A phrase that points at code. Hovering it with a mouse, or focusing it, shows its lines in the
+ * code view; clicking or tapping opens them there, with a way back to the stop. One whose code is
+ * gone is plain text with a note, never pointing at the wrong lines.
+ */
+function RefPhrase({
+  target: ref,
+  handlers: { onPeek, onPin },
+  children,
+}: {
+  target: RefView;
+  handlers: RefHandlers;
+  children: ReactNode;
+}) {
+  const file = ref.path.split('/').at(-1) ?? ref.path;
+  if (ref.state === 'out_of_date') {
+    return (
+      <span className="ref stale" title={`The code this named in ${file} has changed since.`}>
+        {children}
+      </span>
+    );
+  }
+  const where = `${file} ${linesLabel(ref)}${ref.side === 'old' ? ' (base)' : ''}`;
+  return (
+    // A span, not a <button>: a button can't wrap across lines, and a phrase in prose must.
+    // biome-ignore lint/a11y/useSemanticElements: see above; it takes the keys a button does.
+    <span
+      role="button"
+      tabIndex={0}
+      className="ref"
+      title={where}
+      onPointerEnter={(event) => {
+        if (event.pointerType === 'mouse') onPeek(ref);
+      }}
+      onPointerLeave={(event) => {
+        // Keyboard focus keeps the lines shown until it moves on.
+        if (event.pointerType === 'mouse' && !event.currentTarget.matches(':focus-visible')) {
+          onPeek(null);
+        }
+      }}
+      onFocus={() => onPeek(ref)}
+      onBlur={() => onPeek(null)}
+      onClick={() => onPin(ref)}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        onPin(ref);
+      }}
+    >
+      {children}
+      <span className="sr-only"> ({where})</span>
+    </span>
+  );
 }
 
 /** One line of the guide's text, with `backticks` shown as code. */
@@ -1338,6 +1470,11 @@ function inline(text: string): ReactNode {
       <Fragment key={j}>{part}</Fragment>
     ),
   );
+}
+
+/** "line 4" or "lines 4–9". */
+function linesLabel({ startLine, endLine }: { startLine: number; endLine: number }): string {
+  return startLine === endLine ? `line ${startLine}` : `lines ${startLine}–${endLine}`;
 }
 
 function chipLabel(anchor: AnchorView): string {

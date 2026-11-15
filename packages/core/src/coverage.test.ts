@@ -50,7 +50,7 @@ const explaining = (
 ): Stop | null => {
   const [first, ...rest] = anchorsOver(lines);
   if (first === undefined) return null;
-  return { id: stopId(id), kind, title: '', body: '', flags, anchors: [first, ...rest] };
+  return { id: stopId(id), kind, title: '', body: [], flags, anchors: [first, ...rest] };
 };
 
 const flagSets = fc.subarray<StopFlag>(['mismatch', 'danger']);
@@ -117,13 +117,30 @@ describe('explainedBy', () => {
             id: stopId('overview'),
             kind,
             title: '',
-            body: '',
+            body: [],
             flags: [],
             anchors: anchorsOver(changedLines(diff)),
           };
           expect(entries(diff, [...stops, citesEverything])).toEqual(entries(diff, stops));
         },
       ),
+    );
+  });
+
+  test('C5: references in a body explain nothing, whatever code they point at', () => {
+    fc.assert(
+      fc.property(citedDiffs, ({ diff, stops }) => {
+        const referring = stops.map(
+          (stop): Stop => ({
+            ...stop,
+            body: anchorsOver(changedLines(diff)).flatMap((anchor) => [
+              ' see ',
+              { phrase: 'this', anchor },
+            ]),
+          }),
+        );
+        expect(entries(diff, referring)).toEqual(entries(diff, stops));
+      }),
     );
   });
 
@@ -169,7 +186,7 @@ describe('explainedBy, by example', () => {
     id: stopId('core'),
     kind: 'core_change',
     title: '',
-    body: '',
+    body: [],
     flags: [],
     anchors,
   });

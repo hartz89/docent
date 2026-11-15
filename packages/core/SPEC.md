@@ -42,6 +42,9 @@ A tour is the docent's walk through the diff: ordered stops that cite the code t
 - **T3.** `core_change` and `edge` stops cite at least one anchor. (type) The other kinds may cite none.
 - **T4.** Stops appear in kind order: intent, map, core change, edge, verdict prompt. A kind may repeat or be absent, except that the tour ends with exactly one `verdict_prompt`.
 - **T5.** A stop's flags mark what it surfaces beyond the change itself: `mismatch` (the handoff or description disagrees with the code) and `danger` (an obvious, dangerous problem). Any kind may carry flags, and flags play no part in which lines it explains. (type)
+- **T6.** A stop's body is text plus reference spans: a list of parts, each plain text or a **reference**, a phrase of the text with one anchor to the code it names. The text is the parts joined, so a reference can't overlap another or fall outside the text. A body with no references is plain text. (type)
+- **T7.** Placing references in a text never changes the text. Each reference, in the order given, takes the first occurrence of its exact phrase that no earlier one took. A phrase that is blank, spans lines, would split a `` `code` `` span, or has no free occurrence is left unplaced and reported, never guessed at.
+- **T8.** References heal like anchors: re-anchoring a body re-anchors each reference by A4–A6. A reference whose code is gone stays in the text, flagged out of date, and never points at the wrong lines.
 
 ## Explained lines
 
@@ -51,6 +54,7 @@ Which changed lines a tour's stops explain. These are the lines on the route (L2
 - **C2.** `intent`, `map` and `verdict_prompt` stops explain nothing. A map or intent stop may cite any lines, but citing them doesn't count, so a broad map can't put lines on the route.
 - **C3.** Stale citations count for nothing. Anchors that are out of date or at any other commit explain nothing. So a stale tour shows up as lines not on the route, not as a false route.
 - **C4.** Several stops may explain the same line. Each of them is listed.
+- **C5.** A body's references explain nothing. Only a stop's anchors put lines on the route, so a phrase pointing at code is a reading aid, never a citation.
 
 ## Proven skip
 
