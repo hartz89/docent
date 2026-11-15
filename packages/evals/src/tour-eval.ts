@@ -5,9 +5,11 @@ import { type LedgerLine, parseUnifiedDiff } from '@docent/core';
 import {
   AgentError,
   type AgentRunner,
+  compareRoute,
   generateTour,
   placeLines,
   proveForReview,
+  type RouteComparison,
   TourError,
   type TourPromptVersion,
   type TourView,
@@ -67,6 +69,14 @@ export type FixtureRun =
       problemsLeft: number;
       /** One plus the retries. */
       attempts: number;
+      /**
+       * How long the reviewer waits, in ms from the tour job's start: until the planned route
+       * shows (null for prompts without one), until stop 1 shows (null if no stop streamed), and
+       * until the whole tour is checked. Runs share the machine, so compare prompts in one run.
+       */
+      speed: { firstRouteMs: number | null; firstStopMs: number | null; tourMs: number };
+      /** How the route shown while writing compared with the stops written. Null without one. */
+      route: RouteComparison | null;
       /** The skip ledger: where every changed line stands (core's L1–L4). */
       ledger: { onRoute: number; provenSkip: number; notOnRoute: number };
       /**
@@ -138,6 +148,10 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
   const diff = parseUnifiedDiff(workspace.diffText, workspace.pr.base, workspace.pr.head);
 
   let outcome: Awaited<ReturnType<typeof generateTour>>;
+  const started = Date.now();
+  let firstRouteMs: number | null = null;
+  let firstStopMs: number | null = null;
+  let route: string[] = [];
   try {
     outcome = await generateTour({
       workspace,
@@ -145,7 +159,14 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
       runner,
       model: options.model,
       promptVersion: prompt,
-      onProgress: () => {},
+      onProgress: (progress) => {
+        if (progress.step !== 'writing') return;
+        if (progress.route.length) {
+          firstRouteMs ??= Date.now() - started;
+          route = progress.route;
+        }
+        if (progress.stops.length) firstStopMs ??= Date.now() - started;
+      },
     });
   } catch (error) {
     const tourUsd = error instanceof TourError ? usd(error.costs) : 0;
@@ -153,6 +174,7 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
   }
   const tourUsd = usd(outcome.costs);
   const { tour } = outcome;
+  const speed = { firstRouteMs, firstStopMs, tourMs: Date.now() - started };
 
   let lines: readonly LedgerLine[];
   try {
@@ -232,6 +254,13 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
     maxStops: scoring.maxStops,
     problemsLeft: outcome.problems.length,
     attempts: outcome.attempts,
+    speed,
+    route: route.length
+      ? compareRoute(
+          route,
+          tour.stops.map((s) => s.title),
+        )
+      : null,
     ledger: {
       onRoute: placed('on_route'),
       provenSkip: placed('proven_skip'),
@@ -323,6 +352,12 @@ export type PromptTotals = {
   neutral: { clear: number; read: number };
   /** Retries over every tour that ran, and how many tours needed one. */
   retries: { total: number; tours: number; ran: number };
+  /** Of the tours that retried, how many passed every check in the end. */
+  repaired: { passed: number; retried: number };
+  /** Medians over the tours that ran, in ms; null when none had one. */
+  speed: { firstRouteMs: number | null; firstStopMs: number | null; tourMs: number | null };
+  /** Tours whose planned route matched the stops written, of those that planned one. */
+  routes: { matched: number; planned: number };
   /** Changed lines summed over the tours that ran, by where the ledger put them. */
   ledger: { onRoute: number; provenSkip: number; notOnRoute: number };
   /** `mustNotSkip` lines not on the route, of all of them. Target zero. */
@@ -332,6 +367,16 @@ export type PromptTotals = {
 };
 
 const share = (count: number, total: number) => (total === 0 ? 0 : count / total);
+
+/** The middle value, or the mean of the two middle ones; null for none. */
+function median(values: readonly number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? (sorted[mid] ?? null)
+    : ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
+}
 
 export function totals(runs: readonly FixtureRun[], prompt: TourPromptVersion): PromptTotals {
   const mine = runs.filter((r) => r.prompt === prompt);
@@ -367,6 +412,23 @@ export function totals(runs: readonly FixtureRun[], prompt: TourPromptVersion): 
       clear: stops.filter((s) => s.neutralClear === true).length,
       read: stops.filter((s) => s.neutralClear !== null).length,
     },
+    repaired: {
+      passed: ok.filter((r) => r.attempts > 1 && r.problemsLeft === 0).length,
+      retried: ok.filter((r) => r.attempts > 1).length,
+    },
+    speed: {
+      firstRouteMs: median(
+        ok.flatMap((r) => (r.speed.firstRouteMs === null ? [] : [r.speed.firstRouteMs])),
+      ),
+      firstStopMs: median(
+        ok.flatMap((r) => (r.speed.firstStopMs === null ? [] : [r.speed.firstStopMs])),
+      ),
+      tourMs: median(ok.map((r) => r.speed.tourMs)),
+    },
+    routes: {
+      matched: ok.filter((r) => r.route?.matches).length,
+      planned: ok.filter((r) => r.route !== null).length,
+    },
     retries: {
       total: ok.reduce((sum, r) => sum + r.attempts - 1, 0),
       tours: ok.filter((r) => r.attempts > 1).length,
@@ -400,6 +462,7 @@ const failedMark = (t: PromptTotals) =>
   t.failed ? ` (${t.failed} failed run${t.failed === 1 ? '' : 's'}, counted as missed)` : '';
 const pct = (n: number) => `${Math.round(n * 100)}%`;
 const money = (n: number) => `$${n.toFixed(2)}`;
+const secs = (ms: number | null) => (ms === null ? '-' : `${(ms / 1000).toFixed(1)}s`);
 
 export function renderMarkdown(input: {
   date: string;
@@ -435,7 +498,12 @@ export function renderMarkdown(input: {
         ? `${read.filter((g) => g.neutralClear).length}/${read.length}`
         : 'not run';
       const { onRoute, provenSkip, notOnRoute } = run.ledger;
-      const route = `${run.attempts} attempt${run.attempts === 1 ? '' : 's'}; lines ${onRoute} on the route, ${provenSkip} proven, ${notOnRoute} not; important off route ${run.important.offRoute}/${run.important.lines}${run.important.flagged ? ', flagged' : ''}`;
+      const { firstRouteMs, firstStopMs, tourMs } = run.speed;
+      const plan = run.route
+        ? `route ${run.route.matches ? 'matched' : `${run.route.sameTitles}/${run.route.written} titles kept, ${run.route.planned} planned`}; `
+        : '';
+      const timing = `${plan}route ${secs(firstRouteMs)}, stop 1 ${secs(firstStopMs)}, tour ${secs(tourMs)}`;
+      const route = `${timing}; ${run.attempts} attempt${run.attempts === 1 ? '' : 's'}; lines ${onRoute} on the route, ${provenSkip} proven, ${notOnRoute} not; important off route ${run.important.offRoute}/${run.important.lines}${run.important.flagged ? ', flagged' : ''}`;
       return `${found}; opinions ${n((g) => g.judged.unfoundedOpinion)}, behavior-first ${n((g) => g.judged.behaviorFirst)}, neutral clear ${neutral}, plain first ${n((g) => !g.mechanical.codeInFirstSentence)}; ${run.stopCount} stops; ${route}; ${money(run.tourUsd + run.judgeUsd)}`;
     });
     return `| ${id} | ${cells.join(' | ')} |`;
@@ -460,6 +528,11 @@ ${row('First sentence names no code (script)', (t) => pct(t.quality.plainFirstSe
 ${row('Within length (script)', (t) => pct(t.quality.withinLength))}
 ${row('Tours over the stop cap', (t) => `${t.overLongTours}`)}
 ${row('Retries per tour (tours that retried)', (t) => `${(t.retries.total / Math.max(t.retries.ran, 1)).toFixed(2)} (${t.retries.tours}/${t.retries.ran})`)}
+${row('Retried tours that passed in the end', (t) => `${t.repaired.passed}/${t.repaired.retried}`)}
+${row('Median time to the route shown', (t) => secs(t.speed.firstRouteMs))}
+${row('Median time to stop 1 shown', (t) => secs(t.speed.firstStopMs))}
+${row('Median time to the whole tour', (t) => secs(t.speed.tourMs))}
+${row('Planned routes that matched the stops', (t) => (t.routes.planned ? `${t.routes.matched}/${t.routes.planned}` : 'no route'))}
 ${row('Changed lines not on the route (attention saved)', (t) => {
   const off = t.ledger.provenSkip + t.ledger.notOnRoute;
   return `${pct(share(off, off + t.ledger.onRoute))} (${off}/${off + t.ledger.onRoute}; ${t.ledger.provenSkip} proven)`;

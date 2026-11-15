@@ -20,7 +20,9 @@ export {
 export { gitHeadFiles } from './head-files.ts';
 export { type LedgerView, ledgerFor, placeLines, proveForReview } from './ledger.ts';
 export {
+  compareRoute,
   generateTour,
+  type RouteComparison,
   TOUR_PROMPT_VERSION,
   TOUR_PROMPTS,
   TourError,

@@ -4,7 +4,14 @@ import { parseUnifiedDiff } from '@docent/core';
 import { describe, expect, test } from 'vitest';
 import type { AgentRequest } from './agent.ts';
 import { fixtureRunner, fixtureSource } from './fixture.ts';
-import { generateTour, TOUR_PROMPT_VERSION, TOUR_PROMPTS } from './tour.ts';
+import {
+  compareRoute,
+  generateTour,
+  routeTourSchema,
+  TOUR_PROMPT_VERSION,
+  TOUR_PROMPTS,
+  tourSchema,
+} from './tour.ts';
 
 const FIXTURE = join(import.meta.dirname, '..', '..', '..', 'e2e', 'fixtures', 'hono-4813');
 
@@ -26,24 +33,48 @@ describe('tour prompt versions', () => {
     expect(sha(TOUR_PROMPTS[3](workspace.pr, diff))).toBe(
       'f62bda8b9f6694ee41d3a11347f95dcb66f268c897a3aa372e008239cf9eff1a',
     );
+    expect(sha(TOUR_PROMPTS[4](workspace.pr, diff))).toBe(
+      '5c47b5a3540d1ec33dbe4b084465925962dfe08869e648d4d546d53c92b84e8e',
+    );
   });
 
   test('new tours use the current prompt, and an eval run can pick an older one', async () => {
     const { workspace, diff } = await recorded();
-    const prompts: string[] = [];
+    const requests: AgentRequest[] = [];
     const replay = fixtureRunner(FIXTURE);
     const runner = (request: AgentRequest) => {
-      prompts.push(request.prompt);
+      requests.push(request);
       return replay(request);
     };
     const job = { workspace, diff, runner, model: 'claude-test', onProgress: () => {} };
 
     await generateTour(job);
-    const second = prompts.length;
-    await generateTour({ ...job, promptVersion: 2 });
+    const second = requests.length;
+    await generateTour({ ...job, promptVersion: 4 });
 
-    expect(TOUR_PROMPT_VERSION).toBe(4);
-    expect(prompts[0]).toBe(TOUR_PROMPTS[4](workspace.pr, diff));
-    expect(prompts[second]).toBe(TOUR_PROMPTS[2](workspace.pr, diff));
+    expect(TOUR_PROMPT_VERSION).toBe(5);
+    expect(requests[0]?.prompt).toBe(TOUR_PROMPTS[5](workspace.pr, diff));
+    expect(requests[second]?.prompt).toBe(TOUR_PROMPTS[4](workspace.pr, diff));
+    // v5 asks for the route ahead of the stops; v4 keeps the schema it shipped with.
+    expect(requests[0]?.prompt).toContain('Write the route first');
+    expect(requests[0]?.schema).toBe(routeTourSchema);
+    expect(Object.keys(routeTourSchema.properties)[0]).toBe('route');
+    expect(requests[second]?.schema).toBe(tourSchema);
+  });
+});
+
+describe('compareRoute', () => {
+  test('a route matches only with the same titles, in the same order, and no more', () => {
+    expect(compareRoute(['Why', 'The  fix'], ['Why', 'The fix'])).toEqual({
+      planned: 2,
+      written: 2,
+      sameTitles: 2,
+      matches: true,
+    });
+    expect(compareRoute(['Why', 'The fix', 'Your call'], ['Why', 'A new title'])).toMatchObject({
+      sameTitles: 1,
+      matches: false,
+    });
+    expect(compareRoute([], ['Why'])).toMatchObject({ planned: 0, sameTitles: 0, matches: false });
   });
 });
