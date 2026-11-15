@@ -1284,32 +1284,40 @@ describe('POST /api/questions', () => {
   test('the deadline starts when a question leaves the line, not when it joins', async () => {
     const guide = scripted(goodTour);
     const forks: AgentRequest[] = [];
-    // The first fork takes 100 ms; the second waits until it's aborted.
+    // When the second fork started, and when it was aborted. Measured, not slept for, so a slow
+    // machine can't decide the result.
+    let started = 0;
+    let aborted = 0;
+    // The first fork takes 200 ms; the second waits until it's aborted.
     const runner: AgentRunner = async (request) => {
       if (!request.fork) return guide.runner(request);
       const reply = { structured: undefined, denials: [], cost: cost('question', 2500) };
       if (request.keepIn !== undefined) return { ...reply, sessionId: 'primed', text: 'Ready.' };
       forks.push(request);
-      if (forks.length === 1) await new Promise((resolve) => setTimeout(resolve, 100));
-      else
+      if (forks.length === 1) await new Promise((resolve) => setTimeout(resolve, 200));
+      else {
+        started = performance.now();
         await new Promise((_, reject) =>
-          request.signal?.addEventListener('abort', () => reject(new Error('aborted'))),
+          request.signal?.addEventListener('abort', () => {
+            aborted = performance.now();
+            reject(new Error('aborted'));
+          }),
         );
+      }
       return { ...reply, sessionId: 'fork', text: 'Because.' };
     };
     const { api } = await open(runner, undefined, 'claude-test', authorFound, {
-      questionTimeoutMs: 150,
+      questionTimeoutMs: 300,
     });
 
     void ask(api, 'First?');
     const second = ask(api, 'Second?');
-    await vi.waitFor(() => expect(forks).toHaveLength(2));
-    // 170 ms after joining the line, but only about 70 ms after leaving it.
-    await new Promise((resolve) => setTimeout(resolve, 70));
-    expect(forks[1]?.signal?.aborted).toBe(false);
 
     expect(await (await second).json()).toMatchObject({ answer: { source: 'guide' } });
     expect(forks[1]?.signal?.aborted).toBe(true);
+    // Timed from joining the line, the abort would land about 100 ms after the fork started.
+    // Timed from leaving it, a full 300 ms, however slow the machine.
+    expect(aborted - started).toBeGreaterThanOrEqual(290);
   });
 
   test('a fork that takes too long is abandoned, and the guide answers', async () => {

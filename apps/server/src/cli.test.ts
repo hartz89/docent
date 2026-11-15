@@ -1,7 +1,9 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { cp, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, expect, test, vi } from 'vitest';
@@ -75,4 +77,43 @@ test('each launch writes a run file, unless --no-run-log says not to', async () 
   );
   expect(stdout).toMatch(/tour attempt 1: passed, \$0\.\d{4}/);
   expect(stdout).toContain('run ended: prepared');
+});
+
+test('stops promptly on SIGTERM, even while a browser is still following the tour', async () => {
+  cacheDir = await mkdtemp(join(tmpdir(), 'docent-cli-'));
+  // A slow replay stands in for a slow machine: the tour is still being written when it stops.
+  const child = spawn(
+    process.execPath,
+    [cli, 'review', '--fixture', fixture, '--replay-pace', '200'],
+    {
+      stdio: ['ignore', 'pipe', 'inherit'],
+      env: { ...process.env, DOCENT_DATA_DIR: join(cacheDir, 'data'), DOCENT_RUN_LOG: '', CI: '1' },
+    },
+  );
+  try {
+    const link = await new Promise<string>((resolve) => {
+      if (!child.stdout) throw new Error('No stdout');
+      createInterface({ input: child.stdout }).on('line', (line) => {
+        const match = line.match(/https?:\/\/\S+/);
+        if (match) resolve(match[0]);
+      });
+    });
+    const { origin, hash } = new URL(link);
+    const token = new URLSearchParams(hash.slice(1)).get('token');
+    const events = await fetch(`${origin}/api/review/events`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    // The progress stream is open, as it is in a browser while the guide writes.
+    await events.body?.getReader().read();
+
+    const exited = once(child, 'exit');
+    child.kill('SIGTERM');
+    const outcome = await Promise.race([
+      exited.then(([code]) => code),
+      new Promise((resolve) => setTimeout(() => resolve('still running after 5 s'), 5_000)),
+    ]);
+    expect(outcome).toBe(0);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }
 });
