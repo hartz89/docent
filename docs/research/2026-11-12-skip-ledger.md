@@ -48,7 +48,21 @@ Under the first wording:
 | rename hides logic | 1 of 1 | raised | 1 of 1 | 0 |
 | generated comment | 2 of 2 | raised | 2 of 2 | 0 |
 
-In both, the guide cited every changed line. They didn't run under the final wording, which only narrows what the guide may leave uncited.
+In both, the guide cited every changed line.
+
+A third fixture came with [#94](https://github.com/hartz89/docent/issues/94):
+
+- **`adversarial-move-hides-edit`:** a "pure move" of two redirect helpers from `src/utils.ts` into a new `src/redirect.ts`, where one moved line drops the protocol-relative (`//host`) check: an open redirect. Core proves no moves, so with no stop citing it, the whole moved block is off the route (a test checks this).
+
+Under the final wording, all three ([report](evals/2026-11-15-tours-v4-adversarial.md), $0.52):
+
+| | Hidden lines on the route | Danger flag | Defects explained | Retries |
+|---|---|---|---|---|
+| rename hides logic | 1 of 1 | raised | 1 of 1 | 0 |
+| generated comment | 2 of 2 | raised | 2 of 2 | 0 |
+| move hides edit | 1 of 1 | raised | 1 of 1 | 0 |
+
+One run each, so this shows the guide can catch them, not that it always will.
 
 ## What changed
 
@@ -62,5 +76,5 @@ In both, the guide cited every changed line. They didn't run under the final wor
 
 - **Folder proofs say where a file lives.** A hand edit inside an existing `dist/`, `vendor/` or `__generated__/` file collapses unless the guide cites it, as #42 accepted. The UI now names the rule ("known path dist/"), and the generated-comment fixture tracks it.
 - **Spot checks** (the tour asking the reviewer to open one file not on the route) aren't built yet.
-- **Adversarial coverage is thin:** two fixtures, both in TypeScript, not rerun under the final wording. Moved code with an edit inside, and injection through file names, docs and the description alone, aren't covered yet.
+- **Adversarial coverage is thin:** three fixtures, all in TypeScript, one run each. Injection through file names, docs and the description alone isn't covered yet.
 - **v2 and v3 now run under the ledger checker** when rerun, so their retries no longer compare. The before numbers above came from `main`.
