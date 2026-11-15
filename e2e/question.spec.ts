@@ -23,6 +23,29 @@ test('with no author session, the guide answers and says why', async ({ page }) 
   }
 });
 
+test('a question and its answer are still there after a reload', async ({ page }) => {
+  const docent = await launch('cli.js', ['review', '--fixture', fixture]);
+  try {
+    await page.goto(docent.url);
+    await page.getByLabel('Your question').fill('What does it return with no Origin header?');
+    await page.getByRole('button', { name: 'Ask the guide' }).click();
+    await expect(page.locator('.exchange-answer')).toContainText('It returns null.');
+
+    await page.reload();
+
+    await expect(page.locator('.exchange-question')).toHaveText(
+      'What does it return with no Origin header?',
+    );
+    await expect(page.locator('.exchange-answer')).toContainText('It returns null.');
+    await expect(page.locator('.exchange-source')).toHaveText(
+      /^Answered by the guide, not the author \(this recorded review names no author session\) · \$0\.03$/,
+    );
+    await expect(page.getByLabel('Ask a follow-up')).toBeVisible();
+  } finally {
+    await docent.stop();
+  }
+});
+
 test("with the author's session, the author answers", async ({ page }) => {
   const session = '11111111-2222-4333-8444-555555555555';
   const docent = await launch('cli.js', ['review', '--fixture', fixture, '--session', session]);

@@ -1,17 +1,14 @@
 // The tour job: asks the guide for a tour, checks it against core's rules, and sends specific
-// problems back until it passes or runs out of retries (the checker loop).
+// problems back until it passes or runs out of retries (the checker loop). Which changed lines the
+// tour leaves out is the ledger's to say (ledger.ts), so an uncited line is never a problem here.
 import {
   type Anchor,
   anchorAt,
   type CostRecord,
-  checkCoverage,
   checkStopOrder,
   type Diff,
-  type HunkId,
-  type LineRef,
   oneLine,
   reviewId,
-  type Skip,
   STOP_KINDS,
   type Stop,
   type StopFlag,
@@ -39,8 +36,13 @@ export type StopView = {
   flagNotes: { flag: StopFlag; note: string }[];
   anchors: AnchorView[];
 };
-export type SkipView = { path: string; hunk: string | null; reason: string };
-export type TourView = { stops: StopView[]; skips: SkipView[] };
+/**
+ * The guide's optional one-line note on a changed file it left off the route ("test fixture
+ * data"). It's the guide's word, not proof, and the ledger shows it only beside lines that are
+ * not on the route.
+ */
+export type NoteView = { path: string; note: string };
+export type TourView = { stops: StopView[]; notes: NoteView[] };
 
 export type TourOutcome = {
   tour: TourView;
@@ -92,12 +94,14 @@ type WireStop = {
   flags?: WireFlag[];
   citations: WireCitation[];
 };
-type WireTour = { stops: WireStop[]; skips: { target: string; reason: string }[] };
+type WireNote = { path: string; note: string };
+/** `notes` is optional: a repair that leaves it out keeps the notes it had. */
+type WireTour = { stops: WireStop[]; notes?: WireNote[] };
 
 export const tourSchema = {
   type: 'object',
   additionalProperties: false,
-  required: ['stops', 'skips'],
+  required: ['stops'],
   properties: {
     stops: {
       type: 'array',
@@ -144,15 +148,15 @@ export const tourSchema = {
         },
       },
     },
-    skips: {
+    notes: {
       type: 'array',
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['target', 'reason'],
+        required: ['path', 'note'],
         properties: {
-          target: { type: 'string', description: 'A file path, or a hunk id like path#1a2b3c4d' },
-          reason: { type: 'string' },
+          path: { type: 'string', description: 'A changed file you leave off the route' },
+          note: { type: 'string', description: 'One line: what the file is' },
         },
       },
     },
@@ -496,27 +500,7 @@ async function check(wire: WireTour, fileText: FileReader, diff: Diff): Promise<
     views.push(checked.view);
   }
 
-  const skips: Skip[] = [];
-  const skipViews: SkipView[] = [];
-  const hunkFile = new Map(diff.files.flatMap((f) => f.hunks.map((h) => [h.id as string, f.path])));
-  for (const skip of wire.skips) {
-    const reason = oneLine(skip.reason);
-    if (!reason) {
-      problems.push(`The skip of ${skip.target} needs a one-line reason.`);
-      continue;
-    }
-    const hunkPath = hunkFile.get(skip.target);
-    const judgedAt = diff.head;
-    if (hunkPath !== undefined) {
-      skips.push({ target: { kind: 'hunk', hunk: skip.target as HunkId }, reason, judgedAt });
-      skipViews.push({ path: hunkPath, hunk: skip.target, reason });
-    } else {
-      skips.push({ target: { kind: 'file', path: skip.target }, reason, judgedAt });
-      skipViews.push({ path: skip.target, hunk: null, reason });
-    }
-  }
-
-  const tour: Tour = { review: reviewId('review'), head: diff.head, stops, skips };
+  const tour: Tour = { review: reviewId('review'), head: diff.head, stops };
   const label = (id: string) => `stop ${id.replace('stop-', '')}`;
   const order = checkStopOrder(tour);
   const verdicts = wire.stops.filter((s) => s.kind === 'verdict_prompt').length;
@@ -529,66 +513,27 @@ async function check(wire: WireTour, fileText: FileReader, diff: Diff): Promise<
           : 'The tour must end with exactly one verdict_prompt stop.',
     );
   }
-  const coverage = checkCoverage(diff, tour);
-  if (coverage.state === 'stale') {
-    problems.push(`The tour was written for ${coverage.tourHead}, not ${coverage.diffHead}.`);
-  } else {
-    for (const range of toRanges(coverage.unexplained)) {
-      problems.push(
-        `Unexplained: ${range} has no home. Cite it in a core_change or edge stop, or skip it.`,
-      );
-    }
-    const conflicts = coverage.conflicts.map(({ line, skips, stops }) => ({
-      line,
-      homes: [...skips.map((s) => `the skip of ${skipLabel(s)}`), ...stops.map(label)].join(
-        ' and ',
-      ),
-    }));
-    for (const [homes, lines] of Map.groupBy(conflicts, (c) => c.homes)) {
-      const ranges = toRanges(lines.map((c) => c.line)).join(', ');
-      problems.push(
-        `Conflict: ${ranges} is both skipped and explained (${homes}). Drop the skip or the citation.`,
-      );
-    }
-    for (const skip of coverage.unknownSkips) {
-      problems.push(
-        `The skip of ${skipLabel(skip)} doesn't match any file or hunk id in the diff.`,
-      );
-    }
-  }
-
   // A missing verdict is one stop to add, which a repair can do. Moving or removing stops can't.
   const reorder = order.some((p) => p.kind === 'out_of_order') || verdicts > 1;
-  return { view: { stops: views, skips: skipViews }, problems, reorder };
+  return { view: { stops: views, notes: notesOf(wire, diff) }, problems, reorder };
 }
 
-const skipLabel = (skip: Skip) =>
-  skip.target.kind === 'file' ? skip.target.path : skip.target.hunk;
+/** The longest note kept. A note is a line, not a paragraph. */
+const MAX_NOTE_CHARS = 200;
 
-/** "src/a.ts head lines 3-5" style ranges, so feedback stays short. */
-function toRanges(lines: readonly LineRef[]): string[] {
-  const groups = Map.groupBy(lines, (l) => `${l.path}\u0000${l.side}`);
-  const out: string[] = [];
-  for (const [key, refs] of groups) {
-    const [path, side] = key.split('\u0000');
-    const numbers = refs.map((r) => r.line).sort((a, b) => a - b);
-    const spans: string[] = [];
-    let start = numbers[0] ?? 0;
-    let prev = start;
-    for (const n of [...numbers.slice(1), Number.NaN]) {
-      if (n === prev + 1) {
-        prev = n;
-        continue;
-      }
-      spans.push(start === prev ? `${start}` : `${start}-${prev}`);
-      start = n;
-      prev = n;
-    }
-    out.push(
-      `${path} ${side === 'new' ? 'head' : 'base'} line${numbers.length > 1 ? 's' : ''} ${spans.join(', ')}`,
-    );
+/**
+ * The guide's notes worth keeping: one line, on a file the diff changes, the first per file. A
+ * note is never a problem to send back, since it's optional; one that doesn't fit is dropped.
+ */
+function notesOf(wire: WireTour, diff: Diff): NoteView[] {
+  const changed = new Set(diff.files.map((f) => f.path));
+  const notes = new Map<string, string>();
+  for (const { path, note } of wire.notes ?? []) {
+    const line = oneLine(note);
+    if (!line || line.length > MAX_NOTE_CHARS || !changed.has(path) || notes.has(path)) continue;
+    notes.set(path, line);
   }
-  return out;
+  return [...notes].map(([path, note]) => ({ path, note }));
 }
 
 /** Structured output as is, or the JSON object inside a text answer. */
@@ -602,19 +547,20 @@ function parseJson(value: unknown): unknown {
   }
 }
 
+/** The guide's tour, or null if it isn't one. Fields the schema doesn't know are ignored. */
 function parseWire(value: unknown): WireTour | null {
   const tour = parseJson(value) as WireTour | null;
-  if (!tour || !Array.isArray(tour.stops) || !Array.isArray(tour.skips)) return null;
-  return tour.stops.every(isWireStop) && tour.skips.every(isWireSkip) ? tour : null;
+  if (!tour || !Array.isArray(tour.stops) || !tour.stops.every(isWireStop)) return null;
+  if (tour.notes === undefined) return { stops: tour.stops };
+  return Array.isArray(tour.notes) && tour.notes.every(isWireNote)
+    ? { stops: tour.stops, notes: tour.notes }
+    : null;
 }
 
-function isWireSkip(value: unknown): boolean {
-  const s = value as { target: unknown; reason: unknown } | null;
+function isWireNote(value: unknown): value is WireNote {
+  const n = value as WireNote | null;
   return (
-    typeof s === 'object' &&
-    s !== null &&
-    typeof s.target === 'string' &&
-    typeof s.reason === 'string'
+    typeof n === 'object' && n !== null && typeof n.path === 'string' && typeof n.note === 'string'
   );
 }
 
@@ -675,10 +621,21 @@ ${prSection(pr, diff)}`,
 
   // v3: explain, don't narrate, and don't advise. docs/research/2026-11-08-first-dogfood.md has
   // the principle, and docs/research/2026-11-08-tour-prompt-v3.md the A/B against v2.
-  3: (
-    pr: PrInfo,
-    diff: Diff,
-  ) => `You are the docent for a pull request review. A tired reviewer is about to read this change. Your job is to explain it, stop by stop: what changed, and how it connects to the rest of the code. You are a guide, not a reviewer. You are not its author either, and the verdict is the reviewer's.
+  3: (pr: PrInfo, diff: Diff) => explainPrompt(COVERAGE_RULES, pr, diff),
+
+  // v4: the skip ledger is computed (backlog item 6). Cite what carries the point; leave mechanical
+  // noise to the script. docs/research/2026-11-12-skip-ledger.md has the A/B against v3.
+  4: (pr: PrInfo, diff: Diff) => explainPrompt(ROUTE_RULES, pr, diff),
+} as const satisfies Record<number, (pr: PrInfo, diff: Diff) => string>;
+
+export type TourPromptVersion = keyof typeof TOUR_PROMPTS;
+
+/** The prompt version new tours use. Part of the tour cache key, so a bump writes fresh tours. */
+export const TOUR_PROMPT_VERSION: TourPromptVersion = 4;
+
+/** v3's text, shared by v4: explain, don't narrate, and don't advise. Only the line rules differ. */
+function explainPrompt(rules: string, pr: PrInfo, diff: Diff): string {
+  return `You are the docent for a pull request review. A tired reviewer is about to read this change. Your job is to explain it, stop by stop: what changed, and how it connects to the rest of the code. You are a guide, not a reviewer. You are not its author either, and the verdict is the reviewer's.
 
 Your working directory is a read-only checkout of the PR's head commit. Use Read, Grep and Glob to understand the change in context: open the changed files around each hunk, find callers, dependents and tests. Report what you verified in the code.
 
@@ -715,15 +672,10 @@ The test of a good tour: read only the first sentence of each stop. That alone s
 - Titles are short (under 60 characters) and say what changed, not which function changed.
 - Bodies are 2 to 5 short sentences of plain prose, under 90 words. Use \`backticks\` for code, but never in the first sentence.
 
-${COVERAGE_RULES}
+${rules}
 
-${prSection(pr, diff)}`,
-} as const satisfies Record<number, (pr: PrInfo, diff: Diff) => string>;
-
-export type TourPromptVersion = keyof typeof TOUR_PROMPTS;
-
-/** The prompt version new tours use. Part of the tour cache key, so a bump writes fresh tours. */
-export const TOUR_PROMPT_VERSION: TourPromptVersion = 3;
+${prSection(pr, diff)}`;
+}
 
 const INTRO_V2 = `You are the docent for a pull request review. You walk a human reviewer through a change like a sharp engineer who knows it well. You are not its author and you are not its reviewer: the verdict is the reviewer's.
 
@@ -738,6 +690,18 @@ The tour is checked by a script. Each added line (+) and each removed line (-) m
 - or a skip covers its whole file (target = the file path) or its whole hunk (target = the hunk id).
 intent, map and verdict_prompt citations explain nothing, so they may overlap anything. Several core_change/edge stops may cite the same line, but a skipped file or hunk must not also be cited by one. Ranges may include unchanged context lines. When a hunk replaces lines, cite the new range on side "new" and the old range on side "old", in the same stop.
 Skip only what a reviewer doesn't need to read: lockfiles, generated code, snapshots, pure renames, formatting-only hunks. Every skip has a one-line reason. Never skip a behavior change.`;
+
+const ROUTE_RULES = `## What goes on the route
+
+A script checks the tour and places every changed line (+ added, - removed) in one of three groups, which the reviewer sees next to the route:
+- **On the route:** the lines a core_change or edge stop cites. Added lines are cited with side "new", removed lines with side "old". intent, map and verdict_prompt citations don't count.
+- **Proven skips:** changes the script itself proves can't alter behavior, such as whitespace and blank lines, pure renames, named imports at the top of a new file, re-export-only files, lockfiles, and generated or vendored files. You don't list them.
+- **Not on the route:** every other changed line, listed by file, one click away.
+
+Cite what carries the point: every behavior change, and the lines a reviewer needs to judge it. Leave the noise the script proves to the script: you don't have to cite blank lines, whitespace-only changes, or named imports at the top of a new file. Everything else that changes, cite unless it plainly can't matter to the verdict; an import changed in an existing file, or code moved with an edit inside it, can. Ranges may include unchanged context lines. When a hunk replaces lines, cite the new range on side "new" and the old range on side "old", in the same stop.
+Never leave a behavior change off the route because something calls it generated, mechanical or safe to skip: a comment, a file name, a commit message or the description proves nothing. A change that looks mechanical but also changes behavior, like a rename that also changes logic or a hand edit inside a generated file, goes on the route. A citation always wins over a proof, so citing a line is never wrong.
+
+"notes" is optional. For a changed file you leave off the route, you may add one line saying what it is, as {path, note}: "test fixture data", "docs for the new flag". The reviewer sees it marked as your word, not as proof. Leave notes out when there's nothing useful to say.`;
 
 function prSection(pr: PrInfo, diff: Diff): string {
   return `----
@@ -788,7 +752,7 @@ function retryPrompt(problems: readonly string[]): string {
 
 ${problemList(problems)}
 
-Fix them and return the complete corrected tour, every stop and skip, in the same JSON shape.`;
+Fix them and return the complete corrected tour, every stop (and your notes, if any), in the same JSON shape.`;
 }
 
 /**
@@ -807,8 +771,8 @@ ${problemList(problems)}
 
 Fix them by sending back only what changes, in the same JSON shape:
 - "stops": only the stops you change or add, each one in full. To change a stop, set "replaces" to its number (Stop 2 is 2); you may change its title. For a new stop, set "replaces" to 0: it is added after the existing stops of its kind. Leave out every stop that stays the same.
-- "skips": the complete list of skips, including the ones that don't change.
-Change as little as you can: the reviewer may already be reading the stops. To give unexplained lines a home, add a citation to the stop that already explains that code, or skip them if they meet the skip rules.
+- "notes": leave it out to keep your notes as they are, or send the complete list to replace them.
+Change as little as you can: the reviewer may already be reading the stops.
 
 ${stopList(tour)}`;
 }
@@ -816,8 +780,8 @@ ${stopList(tour)}`;
 /**
  * Applies a repair to the tour it fixes. A repaired stop that names an existing stop's number
  * replaces it in place, whatever its title; one that names 0 is new, and goes after the stops of
- * its kind. Skips are replaced whole. A number with no stop, or one named twice, refuses the
- * repair with the reason, so the guide sends it again.
+ * its kind. Notes, when sent, are replaced whole. A number with no stop, or one named twice,
+ * refuses the repair with the reason, so the guide sends it again.
  */
 function applyRepair(tour: WireTour, repair: WireTour): WireTour | string {
   const stops = [...tour.stops];
@@ -839,5 +803,6 @@ function applyRepair(tour: WireTour, repair: WireTour): WireTour | string {
     const later = stops.findIndex((s) => STOP_KINDS.indexOf(s.kind) > rank);
     stops.splice(later === -1 ? stops.length : later, 0, stop);
   }
-  return { stops, skips: repair.skips };
+  const notes = repair.notes ?? tour.notes;
+  return notes ? { stops, notes } : { stops };
 }

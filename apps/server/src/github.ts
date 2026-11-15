@@ -54,6 +54,21 @@ export type Workspace = {
   postReview: (review: ReviewPost) => Promise<{ url: string }>;
   /** The files at head, for the symbol index: read from git's objects, never the working tree. */
   headFiles: () => Promise<HeadFiles>;
+  /**
+   * Every `.gitattributes` file at the base commit, by path. Generated-file proofs read these,
+   * never the PR's own (core's P8). Null when git couldn't list or read every one of them.
+   */
+  baseGitattributes: () => Promise<Map<string, string> | null>;
+  /**
+   * The paths where each word appears as a whole word, at the base or head commit, across the
+   * whole repo (`git grep -lw`). Rename proofs ask these (core's P9). A word the answer leaves
+   * out is unknown, and proves nothing.
+   */
+  findWords: (
+    side: 'old' | 'new',
+    words: readonly string[],
+    signal?: AbortSignal,
+  ) => Promise<Map<string, string[]>>;
 };
 
 /** One path in the repo at head. Folders are implied by the paths under them. */
@@ -242,7 +257,7 @@ export function commitReader(
   base: CommitSha,
   head: CommitSha,
   maxTreeEntries = MAX_TREE_ENTRIES,
-): Pick<Workspace, 'readFile' | 'open' | 'tree'> {
+): Pick<Workspace, 'readFile' | 'open' | 'tree' | 'baseGitattributes' | 'findWords'> {
   const blob = async (sha: CommitSha, path: string, maxBytes: number): Promise<RepoFile> => {
     if (!isSafeRepoPath(path)) return { kind: 'missing' };
     let entry: string;
@@ -294,7 +309,76 @@ export function commitReader(
       });
       return listing;
     },
+    baseGitattributes: async () => {
+      // A listing cut short, or one that can't be read as text, might hide the file that opts a
+      // folder back into review, so the whole answer is unknown.
+      const listed = await listTree(dir, base, maxTreeEntries);
+      if (listed.truncated) return null;
+      const found = new Map<string, string>();
+      for (const { path } of listed.entries) {
+        if (path !== '.gitattributes' && !path.endsWith('/.gitattributes')) continue;
+        const file = await blob(base, path, MAX_FILE_BYTES);
+        if (file.kind !== 'text') return null;
+        found.set(path, file.text);
+      }
+      return found;
+    },
+    findWords: async (side, words, signal) => {
+      const found = new Map<string, string[]>();
+      if (words.length > MAX_WORD_LOOKUPS) return found;
+      const queue = [...words];
+      const worker = async () => {
+        for (let word = queue.shift(); word !== undefined; word = queue.shift()) {
+          if (signal?.aborted) return;
+          const paths = await grepWord(dir, at(side), word, signal);
+          if (paths !== null) found.set(word, paths);
+        }
+      };
+      await Promise.all(Array.from({ length: GREP_CONCURRENCY }, worker));
+      return found;
+    },
   };
+}
+
+/** More rename candidates than this aren't looked up at all, so they prove nothing. */
+const MAX_WORD_LOOKUPS = 200;
+/** Word lookups run at once. */
+const GREP_CONCURRENCY = 4;
+
+/**
+ * The paths that contain `word` as a whole word at a commit, or null when git couldn't say (a
+ * timeout, say), which callers must treat as unknown. The word is a fixed string, never a pattern.
+ */
+async function grepWord(
+  dir: string,
+  sha: CommitSha,
+  word: string,
+  signal?: AbortSignal,
+): Promise<string[] | null> {
+  if (!/^[\w$]+$/.test(word)) return null;
+  try {
+    const { stdout } = await git(
+      dir,
+      ['grep', '-l', '-z', '-w', '-F', '--no-color', '-e', word, sha, '--'],
+      { timeout: 30_000, ...(signal ? { signal } : {}) },
+    );
+    // `-l` with a commit names each file `<sha>:<path>`.
+    return stdout
+      .split('\0')
+      .filter(Boolean)
+      .map((name) => (name.startsWith(`${sha}:`) ? name.slice(sha.length + 1) : name));
+  } catch (error) {
+    // git grep exits 1, with no output, when nothing matches. It also exits 1 when it can't read
+    // a blob, but then it says so on stderr: that's unknown, never "found nowhere".
+    const failure = error as {
+      code?: unknown;
+      stdout?: unknown;
+      stderr?: unknown;
+      killed?: unknown;
+    };
+    const quiet = failure.stdout === '' && failure.stderr === '' && !failure.killed;
+    return failure.code === 1 && quiet ? [] : null;
+  }
 }
 
 /** Every file, symlink and submodule at a commit, up to `max` of them. */
@@ -333,10 +417,16 @@ async function listTree(dir: string, sha: CommitSha, max: number): Promise<RepoT
  * - symlinks check out as plain files holding the link text, so nothing points out of the
  *   checkout.
  */
-export function git(dir: string, args: readonly string[], options: { maxBuffer?: number } = {}) {
+export function git(
+  dir: string,
+  args: readonly string[],
+  options: { maxBuffer?: number; timeout?: number; signal?: AbortSignal } = {},
+) {
   return run('git', hardenedGitArgs(dir, args), {
     maxBuffer: options.maxBuffer ?? 1 << 26,
     env: hardenedGitEnv(),
+    ...(options.timeout ? { timeout: options.timeout } : {}),
+    ...(options.signal ? { signal: options.signal } : {}),
   });
 }
 

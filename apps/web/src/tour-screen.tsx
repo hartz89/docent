@@ -3,7 +3,11 @@ import type {
   AnswerView,
   AuthorView,
   CorrectionView,
+  LedgerFileView,
+  LedgerView,
   PostedReview,
+  ProofLabel,
+  QuestionView,
   ReviewSnapshot,
   StopView,
 } from '@docent/server';
@@ -19,7 +23,7 @@ import {
 } from 'react';
 import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
-import { FileTree } from './file-tree.tsx';
+import { FileTree, type Place } from './file-tree.tsx';
 import {
   back,
   canGoBack,
@@ -51,12 +55,19 @@ type Diff = NonNullable<ReviewSnapshot['diff']>;
 type Viewing = {
   path: string;
   side: 'old' | 'new';
-  focus?: { startLine: number; endLine: number };
+  focus?: AnchorView;
   label?: string;
+  /** A line to scroll to without marking it cited, like the first line not on the route. */
+  at?: number;
 };
+/** Opens a file on one side (by default head, or base if the PR deleted it), at a line if given. */
+type OpenFile = (path: string, side?: 'old' | 'new', at?: number) => void;
 
 const sameView = (a: Viewing, b: Viewing) =>
-  a.path === b.path && a.side === b.side && a.focus?.startLine === b.focus?.startLine;
+  a.path === b.path &&
+  a.side === b.side &&
+  a.focus?.startLine === b.focus?.startLine &&
+  a.at === b.at;
 
 /** Alt+← and Alt+→ move through explored files, as an editor's back and forward do. */
 const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
@@ -74,11 +85,10 @@ const KIND_LABELS: Record<StopView['kind'], string> = {
 export function TourScreen({ snapshot, tour }: Props) {
   const ready = tour.state === 'ready' ? tour : null;
   const stops = ready ? ready.tour.stops : (tour as Working).stops;
-  const skips = ready?.tour.skips ?? [];
   const writing = ready ? null : (tour as Working);
   const [index, setIndex] = useState(0);
   const [anchorIndex, setAnchorIndex] = useState(0);
-  // Files opened from the skip list, the overview, the file tree or a jump to definition, in place
+  // Files opened from the ledger, the overview, the file tree or a jump to definition, in place
   // of the stop's citation. Back and forward move along the trail; the stop is always its start.
   const [trail, setTrail] = useState<Trail<Viewing>>(emptyTrail);
   const viewing = current(trail);
@@ -90,48 +100,94 @@ export function TourScreen({ snapshot, tour }: Props) {
   // A reviewer who opened the review while the tour was still being written is reading the PR's
   // description. Stops arriving don't take the code column away from it; moving does.
   const [overviewFirst, setOverviewFirst] = useState(tour.state !== 'ready');
-  // Each stop's questions and answers, kept here so they survive moving between stops.
+  // Each stop's questions and answers, kept here so they survive moving between stops. The server
+  // keeps the answered ones too, so a reload or a relaunch reads them back.
   const [threads, setThreads] = useState<Record<string, Exchange[]>>({});
+  // Questions open once the earlier threads are in, so a new one never lands above them.
+  const [threadsLoaded, setThreadsLoaded] = useState(false);
   // The review posted to GitHub from here, if any. A reload gets it from the snapshot.
   const [posted, setPosted] = useState<PostedReview | null>(snapshot.posted);
-  const ask = useCallback(async (stopId: string, question: string) => {
-    // Each exchange has its own id, so an answer always lands on the question it answers.
-    const id = crypto.randomUUID();
-    const settle = (patch: Partial<Exchange>) =>
+  const settle = useCallback(
+    (stopId: string, id: string, patch: Partial<Exchange>) =>
       setThreads((all) => ({
         ...all,
         [stopId]: (all[stopId] ?? []).map((e) => (e.id === id ? { ...e, ...patch } : e)),
+      })),
+    [],
+  );
+  // The guide's check of an author answer comes after it, and only ever adds a correction. If it
+  // fails, or the check was lost with an earlier launch, it says nothing.
+  const followCheck = useCallback(
+    async (stopId: string, id: string, checkId: string) => {
+      try {
+        const res = await api['answer-checks'][':id'].$get({ param: { id: checkId } });
+        if (res.status !== 200) return;
+        const { correction } = await res.json();
+        if (correction) settle(stopId, id, { correction });
+      } catch {
+        // Silence, as when the answer holds up.
+      }
+    },
+    [settle],
+  );
+  const isReady = ready !== null;
+  useEffect(() => {
+    if (!isReady) return;
+    let live = true;
+    void (async () => {
+      try {
+        const res = await api.questions.$get();
+        if (res.status !== 200 || !live) return;
+        const { questions } = await res.json();
+        if (!live) return;
+        const loaded: Record<string, Exchange[]> = {};
+        for (const q of questions) loaded[q.stopId] = [...(loaded[q.stopId] ?? []), fromStored(q)];
+        setThreads(loaded);
+        for (const q of questions) {
+          if (q.answer.source === 'author_session' && !q.checked && !q.correction) {
+            void followCheck(q.stopId, q.id, q.answer.checkId);
+          }
+        }
+      } catch (error) {
+        report({
+          kind: 'client.error',
+          source: 'api',
+          message: `Couldn't load earlier questions: ${String(error)}`,
+        });
+      } finally {
+        if (live) setThreadsLoaded(true);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [isReady, followCheck]);
+  const ask = useCallback(
+    async (stopId: string, question: string) => {
+      // Each exchange has its own id, so an answer always lands on the question it answers.
+      const id = crypto.randomUUID();
+      setThreads((all) => ({
+        ...all,
+        [stopId]: [
+          ...(all[stopId] ?? []),
+          { id, question, answer: null, error: null, correction: null, earlier: null },
+        ],
       }));
-    setThreads((all) => ({
-      ...all,
-      [stopId]: [
-        ...(all[stopId] ?? []),
-        { id, question, answer: null, error: null, correction: null },
-      ],
-    }));
-    let checkId: string | null = null;
-    try {
-      const res = await api.questions.$post({ json: { stopId, question } });
-      const body = await res.json();
-      if ('answer' in body) {
-        settle({ answer: body.answer });
-        if (body.answer.source === 'author_session') checkId = body.answer.checkId;
-      } else settle({ error: body.error });
-    } catch (error) {
-      settle({ error: error instanceof Error ? error.message : String(error) });
-    }
-    // The guide's check of the author's answer comes after it, and only ever adds a correction.
-    // If it fails, it says nothing.
-    if (!checkId) return;
-    try {
-      const res = await api['answer-checks'][':id'].$get({ param: { id: checkId } });
-      if (res.status !== 200) return;
-      const { correction } = await res.json();
-      if (correction) settle({ correction });
-    } catch {
-      // Silence, as when the answer holds up.
-    }
-  }, []);
+      let checkId: string | null = null;
+      try {
+        const res = await api.questions.$post({ json: { stopId, question } });
+        const body = await res.json();
+        if ('answer' in body) {
+          settle(stopId, id, { answer: body.answer });
+          if (body.answer.source === 'author_session') checkId = body.answer.checkId;
+        } else settle(stopId, id, { error: body.error });
+      } catch (error) {
+        settle(stopId, id, { error: error instanceof Error ? error.message : String(error) });
+      }
+      if (checkId) await followCheck(stopId, id, checkId);
+    },
+    [settle, followCheck],
+  );
 
   // Under 1200px wide the route leaves its column for a drawer; under 800px the layout stacks,
   // and a bottom bar moves between stops.
@@ -266,9 +322,30 @@ export function TourScreen({ snapshot, tour }: Props) {
 
   const diff = snapshot.diff as Diff;
   const changes = useMemo(() => changedLines(diff), [diff]);
-  const onRoute = useMemo(
-    () => new Set(stops.flatMap((s) => s.anchors.map((a) => a.path))),
-    [stops],
+  // The ledger places each file once the tour is checked; until then, a cited file is on the route.
+  const ledger = ready?.ledger ?? null;
+  // Changed lines not on the route per `side:path`, so the code view marks them where they are.
+  const offRoute = useMemo(() => {
+    const map = new Map<string, ReadonlySet<number>>();
+    for (const file of ledger?.files ?? []) {
+      if (!file.notOnRoute) continue;
+      const { added, removed } = file.notOnRoute;
+      // Only sides with lines: a new file at a moved file's old path mustn't wipe its base side.
+      if (added.length) map.set(`new:${file.path}`, new Set(added));
+      if (removed.length) map.set(`old:${file.oldPath}`, new Set(removed));
+    }
+    return map;
+  }, [ledger]);
+  const places = useMemo(
+    (): ReadonlyMap<string, Place> =>
+      ledger
+        ? new Map(ledger.files.map((f) => [f.path, f.place]))
+        : new Map(
+            stops
+              .filter((s) => s.kind === 'core_change' || s.kind === 'edge')
+              .flatMap((s) => s.anchors.map((a) => [a.path, 'on_route'] as const)),
+          ),
+    [ledger, stops],
   );
   if (!snapshot.pr) return null;
 
@@ -311,9 +388,8 @@ export function TourScreen({ snapshot, tour }: Props) {
             go(i);
             closeRoute();
           }}
-          skips={skips}
-          onOpenSkip={(path) => {
-            explore({ path, side: sideFor(diff, path) });
+          onOpenFile={(path, side, at) => {
+            explore({ path, side: side ?? sideFor(diff, path), ...(at ? { at } : {}) });
             closeRoute();
           }}
           tour={ready}
@@ -323,7 +399,7 @@ export function TourScreen({ snapshot, tour }: Props) {
       <div role="tabpanel" id="pane-files" aria-labelledby="tab-files" hidden={pane !== 'files'}>
         <FileTree
           diff={diff}
-          onRoute={onRoute}
+          places={places}
           selected={shown?.side === 'new' ? shown.path : null}
           onOpen={(path) => {
             explore({ path, side: 'new' });
@@ -415,14 +491,29 @@ export function TourScreen({ snapshot, tour }: Props) {
                 path={shown.path}
                 side={shown.side}
                 cited={viewing ? (viewing.focus ? [viewing.focus] : []) : cited}
-                focus={viewing ? (viewing.focus ?? null) : anchor}
+                focus={
+                  viewing
+                    ? (viewing.focus ??
+                      (viewing.at ? { startLine: viewing.at, endLine: viewing.at } : null))
+                    : anchor
+                }
                 changed={changes.get(`${shown.side}:${shown.path}`) ?? new Set()}
+                offRoute={offRoute.get(`${shown.side}:${shown.path}`) ?? new Set()}
                 onStep={viewing ? undefined : stepAnchor}
                 onJump={(to) =>
                   explore({
                     path: to.path,
                     side: 'new',
-                    ...(to.line ? { focus: { startLine: to.line, endLine: to.line } } : {}),
+                    ...(to.line
+                      ? {
+                          focus: {
+                            path: to.path,
+                            side: 'new',
+                            startLine: to.line,
+                            endLine: to.line,
+                          },
+                        }
+                      : {}),
                     label: to.line ? `line ${to.line} · ${to.label}` : to.label,
                   })
                 }
@@ -445,6 +536,8 @@ export function TourScreen({ snapshot, tour }: Props) {
               stop={stop}
               author={snapshot.author}
               exchanges={threads[stop.id] ?? []}
+              threadsLoaded={threadsLoaded}
+              head={snapshot.pr?.head ?? ''}
               onAsk={(question) => void ask(stop.id, question)}
               onOpenCite={(cite) =>
                 explore({
@@ -704,16 +797,14 @@ function Route({
   stops,
   index,
   onSelect,
-  skips,
-  onOpenSkip,
+  onOpenFile,
   tour,
   writing,
 }: {
   stops: readonly StopView[];
   index: number;
   onSelect: (index: number) => void;
-  skips: Ready['tour']['skips'];
-  onOpenSkip: (path: string) => void;
+  onOpenFile: OpenFile;
   /** The finished tour, or null while it's still being written. */
   tour: Ready | null;
   writing: Working | null;
@@ -721,7 +812,8 @@ function Route({
   const spent = tour?.costs.reduce((sum, c) => sum + c.costMicroUsd, 0) ?? 0;
   return (
     <div className="route">
-      <h2 className="section-label">The route</h2>
+      {tour && <LedgerSummary ledger={tour.ledger} />}
+      <h2 className="section-label">On the route</h2>
       <ol className="stops">
         {stops.map((stop, i) => {
           const state = i < index ? 'done' : i === index ? 'current' : 'upcoming';
@@ -754,28 +846,13 @@ function Route({
         {writing && <UpcomingStop stops={stops} writing={writing} />}
       </ol>
 
-      <section className="skips" aria-label="Skipped">
-        <h2 className="section-label">Skipped, with reasons{tour ? ` (${skips.length})` : ''}</h2>
-        {!tour ? (
-          <p className="empty-note">Listed once the whole tour is checked.</p>
-        ) : skips.length === 0 ? (
-          <p className="empty-note">Nothing skipped: every changed line is on the route.</p>
-        ) : (
-          <ul className="skip-list">
-            {skips.map((skip) => (
-              <li key={`${skip.path}${skip.hunk ?? ''}`}>
-                <button type="button" className="skip-button" onClick={() => onOpenSkip(skip.path)}>
-                  <span className="skip-path">
-                    {skip.path}
-                    {skip.hunk ? ' (one hunk)' : ''}
-                  </span>
-                  <span className="skip-reason">{inline(skip.reason)}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      {tour ? (
+        <LedgerGroups ledger={tour.ledger} onOpen={onOpenFile} />
+      ) : (
+        <p className="empty-note ledger-pending">
+          Proven skips and the lines not on the route are listed once the whole tour is checked.
+        </p>
+      )}
 
       {tour && tour.problems.length > 0 && (
         <details className="checks">
@@ -798,6 +875,207 @@ function Route({
             : `Tour written for ${formatUsd(spent)} · ${tour.attempts} attempt${tour.attempts === 1 ? '' : 's'} · ${tour.model}`}
       </p>
     </div>
+  );
+}
+
+/** What a proof's label says, after the word "proven". Each one names what a script checked. */
+const PROOF_LABELS: Record<ProofLabel, string> = {
+  rename: 'rename',
+  whitespace: 'whitespace only',
+  blank_line: 'blank lines',
+  import_in_new_file: 'imports',
+  re_export: 're-exports only',
+  lockfile: 'lockfile',
+  generated: 'generated',
+  vendored: 'vendored',
+};
+
+/** Rename mappings shown per file before the rest are summed up. */
+const SHOWN_RENAMES = 3;
+
+const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+
+/** One bar for the three groups, so the reviewer sees at once that every changed line is shown. */
+function LedgerSummary({ ledger }: { ledger: LedgerView }) {
+  const { onRoute, provenSkip, notOnRoute } = ledger.lines;
+  const total = onRoute + provenSkip + notOnRoute;
+  const groups = [
+    { key: 'on', label: 'On the route', count: onRoute },
+    { key: 'proven', label: 'Proven skips', count: provenSkip },
+    { key: 'off', label: 'Not on the route', count: notOnRoute },
+  ];
+  return (
+    <section className="ledger" aria-label="Every changed line">
+      <div className="ledger-head">
+        <span>
+          <b>{total.toLocaleString()}</b> changed line{total === 1 ? '' : 's'}
+        </span>
+        <span className="ledger-ok">✓ every line shown</span>
+      </div>
+      <div className="ledger-bar" aria-hidden="true">
+        {groups.map((g) =>
+          g.count > 0 ? <i key={g.key} className={g.key} style={{ flexGrow: g.count }} /> : null,
+        )}
+      </div>
+      <dl className="ledger-key">
+        {groups.map((g) => (
+          <div key={g.key}>
+            <dt>
+              <i className={g.key} aria-hidden="true" />
+              {g.label}
+            </dt>
+            <dd>{g.count.toLocaleString()}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+/** The two groups off the route: what a script proved, then everything else, by file. */
+function LedgerGroups({ ledger, onOpen }: { ledger: LedgerView; onOpen: OpenFile }) {
+  const proven = ledger.files.filter(
+    (f): f is LedgerFileView & { proven: NonNullable<LedgerFileView['proven']> } =>
+      f.proven !== null,
+  );
+  const off = ledger.files.filter(
+    (f): f is LedgerFileView & { notOnRoute: NonNullable<LedgerFileView['notOnRoute']> } =>
+      f.notOnRoute !== null,
+  );
+  return (
+    <>
+      <section className="ledger-group" aria-label="Proven skips">
+        <h2 className="section-label">
+          Proven skips
+          <span className="group-count">
+            {plural(proven.length, 'file')} · {plural(ledger.lines.provenSkip, 'line')}
+          </span>
+        </h2>
+        {proven.length === 0 ? (
+          <p className="empty-note">Nothing here: no changed line was proven safe to skip.</p>
+        ) : (
+          <ul className="ledger-files">
+            {proven.map((file) => (
+              <li key={file.path}>
+                <button type="button" className="ledger-file" onClick={() => onOpen(file.path)}>
+                  <FilePath path={file.path} />
+                  <span className="ledger-lines">{plural(file.proven.lines, 'line')}</span>
+                  <span className="proofs">
+                    {file.proven.labels.map((label) => (
+                      <span key={label} className="proof">
+                        <span className="proof-word">proven</span> {PROOF_LABELS[label]}
+                      </span>
+                    ))}
+                  </span>
+                  {file.proven.renames.length > 0 && (
+                    <span className="renames">
+                      {file.proven.renames.slice(0, SHOWN_RENAMES).map(({ from, to }) => (
+                        <span key={`${from}\u0000${to}`} className="rename">
+                          {from} → {to}
+                        </span>
+                      ))}
+                      {file.proven.renames.length > SHOWN_RENAMES && (
+                        <span className="rename-more">
+                          and {file.proven.renames.length - SHOWN_RENAMES} more
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  {file.proven.rules.length > 0 && (
+                    <span className="proof-rules">by {file.proven.rules.join(', ')}</span>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="ledger-group" aria-label="Not on the route">
+        <h2 className="section-label">
+          Not on the route
+          <span className="group-count">
+            {plural(off.length, 'file')} · {plural(ledger.lines.notOnRoute, 'line')}
+          </span>
+        </h2>
+        {off.length === 0 ? (
+          <p className="empty-note">Nothing here: every changed line is on the route or proven.</p>
+        ) : (
+          <ul className="ledger-files">
+            {off.map((file) => (
+              <li key={file.path} className="ledger-row">
+                <OffRouteFile file={file} onOpen={onOpen} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </>
+  );
+}
+
+/**
+ * A file with lines not on the route. The row opens the file where those lines are; each count
+ * opens its own side, so removed lines are always one click away at base.
+ */
+function OffRouteFile({
+  file,
+  onOpen,
+}: {
+  file: LedgerFileView & { notOnRoute: NonNullable<LedgerFileView['notOnRoute']> };
+  onOpen: OpenFile;
+}) {
+  const { added, removed } = file.notOnRoute;
+  const openAdded = () => onOpen(file.path, 'new', added[0]);
+  const openRemoved = () => onOpen(file.oldPath, 'old', removed[0]);
+  return (
+    <>
+      <button
+        type="button"
+        className="ledger-file"
+        onClick={added.length > 0 ? openAdded : openRemoved}
+      >
+        <FilePath path={file.path} />
+        {file.note && (
+          <span className="guide-note">
+            <span className="guide-word">guide:</span> {file.note}
+          </span>
+        )}
+      </button>
+      <span className="ledger-sides">
+        {added.length > 0 && (
+          <button
+            type="button"
+            className="side-count added"
+            aria-label={`Open ${plural(added.length, 'added line')} at head`}
+            onClick={openAdded}
+          >
+            +{added.length}
+          </button>
+        )}
+        {removed.length > 0 && (
+          <button
+            type="button"
+            className="side-count removed"
+            aria-label={`Open ${plural(removed.length, 'removed line')} at base`}
+            onClick={openRemoved}
+          >
+            −{removed.length}
+          </button>
+        )}
+      </span>
+    </>
+  );
+}
+
+/** A path as its file name, with its folder underneath. */
+function FilePath({ path }: { path: string }) {
+  const slash = path.lastIndexOf('/');
+  return (
+    <span className="ledger-path" title={path}>
+      {path.slice(slash + 1)}
+      {slash > 0 && <span className="ledger-dir">{path.slice(0, slash)}</span>}
+    </span>
   );
 }
 
@@ -871,7 +1149,26 @@ type Exchange = {
   error: string | null;
   /** The guide's note when the code contradicts the author's answer. Usually never set. */
   correction: CorrectionView | null;
+  /** Set for a question asked at another head commit, or at a stop this tour doesn't have. */
+  earlier: QuestionView['earlier'];
 };
+
+const fromStored = (q: QuestionView): Exchange => ({
+  id: q.id,
+  question: q.question,
+  answer: q.answer,
+  error: null,
+  correction: q.correction,
+  earlier: q.earlier,
+});
+
+/** Where an earlier question was asked, when that isn't this commit and this stop. */
+function earlierNote({ commit, stopTitle }: NonNullable<Exchange['earlier']>, head: string) {
+  const at = stopTitle ? ` at the stop “${stopTitle}”` : '';
+  return commit === head
+    ? `Asked earlier${at}, in another tour of this commit`
+    : `Asked at an earlier commit, ${commit.slice(0, 7)}${at}`;
+}
 
 /** Who answered, and what it cost: the author's session, or the guide and why. */
 function answerSource(answer: AnswerView): string {
@@ -888,6 +1185,8 @@ function Narration({
   stop,
   author,
   exchanges,
+  threadsLoaded,
+  head,
   onAsk,
   onOpenCite,
   activeAnchor,
@@ -901,6 +1200,10 @@ function Narration({
   stop: StopView;
   author: AuthorView;
   exchanges: readonly Exchange[];
+  /** False until the questions kept from before this page load are in. */
+  threadsLoaded: boolean;
+  /** The head commit this tour covers. */
+  head: string;
   onAsk: (question: string) => void;
   onOpenCite: (cite: AnchorView) => void;
   activeAnchor: number;
@@ -972,10 +1275,15 @@ function Narration({
 
         {!finished ? (
           <p className="waiting-note">Questions open once the whole tour is written and checked.</p>
+        ) : !threadsLoaded ? (
+          <p className="waiting-note">Loading earlier questions…</p>
         ) : (
           <div className="question">
             {exchanges.map((exchange, i) => (
               <div className="exchange fade-in" key={exchange.id}>
+                {exchange.earlier && (
+                  <div className="exchange-earlier">{earlierNote(exchange.earlier, head)}</div>
+                )}
                 <p
                   className="exchange-question"
                   ref={i === exchanges.length - 1 ? newest : undefined}

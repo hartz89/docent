@@ -1,0 +1,12 @@
+{
+  "url": "https://github.com/acme/greeter/pull/12",
+  "repo": "acme/greeter",
+  "number": 12,
+  "title": "Excited greetings",
+  "body": "Adds an `excited` flag to `greet`, and renames `getName` to `readName`.",
+  "author": "someone",
+  "base": "8cce077e154f36072b0614016c769e36b91fa7af",
+  "head": "0cc5480725ab619c6c372f757750d7ac22089249",
+  "baseRef": "main",
+  "headRef": "excited"
+}

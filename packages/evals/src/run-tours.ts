@@ -12,9 +12,12 @@ import {
   TOUR_PROMPT_VERSION,
   TOUR_PROMPTS,
   type TourPromptVersion,
+  type Workspace,
 } from '@docent/server/evals';
+import { loadAdversarial, openAdversarial } from './adversarial.ts';
 import { loadFixtures, PUBLIC_FIXTURES_DIR } from './fixtures.ts';
 import { DEFAULT_JUDGE_MODEL, JUDGE_RUBRIC_VERSION } from './judge.ts';
+import type { FixtureManifest } from './manifest.ts';
 import {
   type FixtureRun,
   failedRun,
@@ -29,7 +32,8 @@ const usage = `Usage: pnpm eval:tours [options]
 
 Options:
   --prompt <v>        Tour prompt version, like v2. Repeat to compare. (default: v${TOUR_PROMPT_VERSION})
-  --fixture <id>      Only this fixture. Repeat for several. (default: every public tour fixture)
+  --fixture <id>      Only this fixture. Repeat for several. (default: every public tour fixture,
+                      and every adversarial one)
   --model <id>        Tour model (default: $DOCENT_MODEL or claude-opus-5-5)
   --judge-model <id>  Judge model (default: ${DEFAULT_JUDGE_MODEL})
   --budget <usd>      Start no new fixture unless spend so far, plus $0.75 held back per
@@ -71,6 +75,7 @@ if (!Number.isFinite(budget) || budget <= 0) {
   process.exit(1);
 }
 const model = values.model ?? process.env.DOCENT_MODEL ?? 'claude-opus-5-5';
+const cacheDir = defaultCacheDir();
 const judgeModel = values['judge-model'] ?? DEFAULT_JUDGE_MODEL;
 
 const { manifests, problems } = loadFixtures(PUBLIC_FIXTURES_DIR, 'public');
@@ -79,9 +84,34 @@ if (problems.length) {
   process.exit(1);
 }
 const wanted = values.fixture;
-const fixtures = manifests.filter(
-  (m) => m.jobs.includes('tour') && (!wanted || wanted.includes(m.id)),
-);
+type Opened = { workspace: Workspace; manifest: FixtureManifest; cleanup?: () => Promise<void> };
+/** Each fixture to run, and how to open its PR: from GitHub, or built locally (adversarial). */
+const fixtures: {
+  id: string;
+  /** Known before opening for a GitHub fixture, so a failure to open counts its findings missed. */
+  manifest: FixtureManifest | null;
+  open: () => Promise<Opened | 'moved'>;
+}[] = [
+  ...manifests
+    .filter((m) => m.jobs.includes('tour'))
+    .map((manifest) => ({
+      id: manifest.id,
+      manifest,
+      open: async (): Promise<Opened | 'moved'> => {
+        const { repo, pr } = manifest.source;
+        const workspace = await githubSource(
+          `https://github.com/${repo}/pull/${pr}`,
+          cacheDir,
+        )(() => {});
+        return workspace.pr.head === manifest.source.head ? { workspace, manifest } : 'moved';
+      },
+    })),
+  ...(await loadAdversarial()).map((fixture) => ({
+    id: fixture.id,
+    manifest: null,
+    open: () => openAdversarial(fixture),
+  })),
+].filter((f) => !wanted || wanted.includes(f.id));
 if (wanted && fixtures.length !== wanted.length) {
   console.error(`Unknown or non-tour fixture in: ${wanted.join(', ')}`);
   process.exit(1);
@@ -89,7 +119,6 @@ if (wanted && fixtures.length !== wanted.length) {
 
 const date = new Date().toISOString().slice(0, 10);
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-const cacheDir = defaultCacheDir();
 const rawDir = join(cacheDir, 'evals', stamp);
 await mkdir(rawDir, { recursive: true });
 const judgeCwd = await mkdtemp(join(tmpdir(), 'docent-judge-'));
@@ -108,26 +137,31 @@ const RESERVE_PER_RUN_USD = 0.75;
 let inFlight = 0;
 const queue = [...fixtures];
 async function worker() {
-  for (let manifest = queue.shift(); manifest; manifest = queue.shift()) {
+  for (let fixture = queue.shift(); fixture; fixture = queue.shift()) {
     // Reserve an estimate for every tour still running, so parallel workers can't all start on
     // the same stale total and overshoot together.
     if (spent() + (inFlight + prompts.length) * RESERVE_PER_RUN_USD > budget) {
-      skipped.push(manifest.id);
+      skipped.push(fixture.id);
       continue;
     }
-    const { repo, pr } = manifest.source;
-    let workspace: Awaited<ReturnType<ReturnType<typeof githubSource>>>;
+    let opened: Opened | 'moved';
     try {
-      workspace = await githubSource(`https://github.com/${repo}/pull/${pr}`, cacheDir)(() => {});
+      opened = await fixture.open();
     } catch (error) {
-      for (const prompt of prompts) runs.push(failedRun(manifest, prompt, String(error)));
+      if (fixture.manifest) {
+        for (const prompt of prompts) runs.push(failedRun(fixture.manifest, prompt, String(error)));
+      } else {
+        console.error(`${fixture.id}: ${String(error)}. Skipping.`);
+        skipped.push(fixture.id);
+      }
       continue;
     }
-    if (workspace.pr.head !== manifest.source.head) {
-      console.error(`${manifest.id}: the PR's head moved; run check:fixtures. Skipping.`);
-      skipped.push(manifest.id);
+    if (opened === 'moved') {
+      console.error(`${fixture.id}: the PR's head moved; run check:fixtures. Skipping.`);
+      skipped.push(fixture.id);
       continue;
     }
+    const { workspace, manifest } = opened;
     inFlight += prompts.length;
     const mine = await Promise.all(
       prompts.map(async (prompt) => {
@@ -154,6 +188,7 @@ async function worker() {
       judgeCwd,
     });
     if (neutralError) console.error(`${manifest.id}: ${neutralError}`);
+    await opened.cleanup?.();
     for (const run of mine) {
       await writeFile(
         join(rawDir, `${manifest.id}-v${run.prompt}.json`),
@@ -172,7 +207,7 @@ async function worker() {
 }
 await Promise.all([worker(), worker(), worker()]);
 
-const order = (r: FixtureRun) => fixtures.findIndex((m) => m.id === r.fixture) * 100 + r.prompt;
+const order = (r: FixtureRun) => fixtures.findIndex((f) => f.id === r.fixture) * 100 + r.prompt;
 runs.sort((a, b) => order(a) - order(b));
 
 const label = values.label ?? prompts.map((p) => `v${p}`).join('-');

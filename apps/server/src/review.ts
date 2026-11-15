@@ -11,6 +11,7 @@ import {
   type CommitSha,
   type CostRecord,
   type Diff,
+  type Proof,
   parseUnifiedDiff,
   type SessionId,
 } from '@docent/core';
@@ -41,6 +42,8 @@ import {
   type ReviewEvent,
   type Workspace,
 } from './github.ts';
+import { type LedgerView, ledgerFor, proveForReview } from './ledger.ts';
+import { type AskedQuestion, QuestionStore } from './questions.ts';
 import { describeError, RunLog } from './run-log.ts';
 import { type BuiltIndex, buildIndex, type IndexLimits, type IndexStatus } from './symbols.ts';
 import { type Timings, timings } from './timings.ts';
@@ -71,7 +74,8 @@ export type TourState =
       /** How many stops the guide has begun writing, shown or not. */
       writing: number;
     }
-  | ({ state: 'ready' } & TourOutcome)
+  /** `ledger`: where every changed line stands, computed for this tour by core (L1–L4). */
+  | ({ state: 'ready'; ledger: LedgerView } & TourOutcome)
   | { state: 'failed'; reason: string; costs: CostRecord[] };
 
 /** Who answers questions: the author's session, or the guide and why. Null while still looking. */
@@ -181,6 +185,20 @@ export type ReviewOptions = {
   indexRetryMs?: number;
   /** Where this run's events go: the tour, each question, the submit. Default: nowhere. */
   log?: RunLog;
+  /**
+   * Where answered questions are kept, one file per PR, so a relaunch shows them again. Leave
+   * out to keep them for this launch only.
+   */
+  questionsDir?: string;
+};
+
+/**
+ * An answered question, placed in this review's tour. `earlier` is set when it was asked at
+ * another head commit, or at a stop this tour doesn't have: then it names the stop it was asked
+ * at, and `stopId` is where it's shown now.
+ */
+export type QuestionView = Omit<AskedQuestion, 'stopTitle'> & {
+  earlier: { commit: string; stopTitle: string | null } | null;
 };
 
 /** A jump returns at most this many candidates; `truncated` says when there were more. */
@@ -224,6 +242,8 @@ export class Review {
   #forkEstimate: ForkEstimate | null = null;
   /** Questions in the order they arrived, so they reach the author's session in that order. */
   #arrivals = new Arrivals();
+  /** Answered questions, this launch's and earlier ones for the same PR. */
+  #questions: QuestionStore = QuestionStore.memory();
   #log: RunLog;
   readonly done: Promise<void>;
 
@@ -352,17 +372,26 @@ export class Review {
         answer: answer.text,
         ...(answer.source === 'author_session' ? { checkId: answer.checkId } : {}),
       });
+      const kept = this.#questions.add({
+        stopId,
+        stopTitle: stops[at]?.title ?? '',
+        question,
+        answer,
+        correction: null,
+        checked: answer.source !== 'author_session',
+      });
       // The check finishes on its own, after the answer has gone out. Checks never reject.
       if (answer.source === 'author_session') {
         const { checkId } = answer;
-        void this.#checks.get(checkId)?.then(({ result, costs, correction }) =>
+        void this.#checks.get(checkId)?.then(({ result, costs, correction }) => {
+          this.#questions.checked(kept.id, correction);
           this.#log.event('question.check', {
             checkId,
             result,
             costMicroUsd: totalMicroUsd(costs),
             ...(correction ? { correction: correction.text } : {}),
-          }),
-        );
+          });
+        });
       }
       return answer;
     } catch (error) {
@@ -516,6 +545,34 @@ Question: ${question}`,
   }
 
   /**
+   * Every answered question for this PR, oldest first, each placed at a stop of this tour. One
+   * asked at an earlier head, or at a stop this tour doesn't have, goes to the stop with the same
+   * title, or else the first stop, and says where it was asked. Null until the tour is ready.
+   */
+  questions(): QuestionView[] | null {
+    const tour = this.#tour;
+    const head = this.#workspace?.pr.head;
+    if (tour.state !== 'ready' || !head) return null;
+    const stops = tour.tour.stops;
+    return this.#questions.list().map(({ stopTitle, ...asked }) => {
+      const sameHead = asked.answer.askedAt === head;
+      const stop =
+        stops.find((s) => s.id === asked.stopId && s.title === stopTitle) ??
+        stops.find((s) => s.title === stopTitle) ??
+        (sameHead ? stops.find((s) => s.id === asked.stopId) : undefined);
+      const stopId = stop?.id ?? stops[0]?.id ?? asked.stopId;
+      return {
+        ...asked,
+        stopId,
+        earlier:
+          sameHead && stop
+            ? null
+            : { commit: asked.answer.askedAt, stopTitle: stop ? null : stopTitle },
+      };
+    });
+  }
+
+  /**
    * The guide's check of an author answer, once it's done: a correction with cited lines, or
    * null when the answer holds up or the check couldn't run. Undefined for an unknown id.
    */
@@ -619,6 +676,8 @@ Question: ${question}`,
     this.#primed = null;
     this.#primedDir = null;
     if (dir) await rm(dir, { recursive: true, force: true });
+    // A question answered just now is on disk before the process goes.
+    await this.#questions.settled();
   }
 
   #questionModel(): string {
@@ -737,6 +796,15 @@ Question: ${question}`,
       const lines = this.#diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
       const changed = lines.filter((l) => l.kind !== 'context').length;
       ended(`${this.#diff.files.length} files, ${changed} changed lines`);
+      if (this.#options.questionsDir) {
+        ended = time.span('Read earlier questions');
+        this.#questions = await QuestionStore.open({
+          dir: this.#options.questionsDir,
+          pr: workspace.pr,
+          onError: (where, error) => this.#log.error(where, error),
+        });
+        ended(`${this.#questions.list().length} kept`);
+      }
       ended = time.span('Look up the cached tour');
       const { pr } = workspace;
       this.#log.event('pr', {
@@ -752,6 +820,8 @@ Question: ${question}`,
       });
       // Settled before the tour is ready, so the screen knows who will answer questions.
       const lookup = this.#findAuthor(workspace);
+      // Proofs need only the diff and git, so they're found while the guide writes.
+      const proofs = this.#prove(workspace, this.#diff);
 
       const cacheFile = this.#options.cacheDir
         ? join(
@@ -773,7 +843,11 @@ Question: ${question}`,
         const outcome = JSON.parse(await readFile(cacheFile, 'utf8')) as TourOutcome;
         await lookup;
         ended('hit');
-        this.#tourReady({ ...outcome, timing: outcome.timing ?? [], cached: true }, tourStarted);
+        await this.#tourReady(
+          { ...outcome, timing: outcome.timing ?? [], cached: true },
+          await proofs,
+          tourStarted,
+        );
         return;
       }
       ended('missed');
@@ -795,7 +869,7 @@ Question: ${question}`,
         await writeFile(cacheFile, JSON.stringify(outcome, null, 2));
       }
       await lookup;
-      this.#tourReady(outcome, tourStarted);
+      await this.#tourReady(outcome, await proofs, tourStarted);
     } catch (error) {
       const costs = error instanceof TourError ? error.costs : [];
       this.#log.event('tour.failed', {
@@ -811,19 +885,48 @@ Question: ${question}`,
     }
   }
 
-  #tourReady(outcome: TourOutcome, started: number) {
+  /**
+   * Every proof core finds in the diff. A failure proves nothing, which is the safe direction:
+   * those lines stay in the ledger as "not on the route".
+   */
+  async #prove(workspace: Workspace, diff: Diff): Promise<Proof[]> {
+    const end = this.#timings.span('Prove skips');
+    try {
+      const proofs = await proveForReview(workspace, diff);
+      end(`${proofs.length} proofs`);
+      return proofs;
+    } catch (error) {
+      end(`failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.#log.error('skip proofs', error);
+      return [];
+    }
+  }
+
+  async #tourReady(outcome: TourOutcome, proofs: readonly Proof[], started: number) {
+    const workspace = this.#workspace as Workspace;
+    let ledger: LedgerView;
+    try {
+      ledger = await ledgerFor(this.#diff as Diff, outcome.tour, proofs, workspace.readFile);
+    } catch (error) {
+      // The tour is paid for, so its costs stay on the record even though it can't be shown.
+      throw new TourError(
+        `Docent couldn't place the changed lines: ${error instanceof Error ? error.message : String(error)}`,
+        outcome.cached ? [] : outcome.costs,
+      );
+    }
     this.#log.event('tour.ready', {
       cached: outcome.cached,
       stops: outcome.tour.stops.length,
-      skips: outcome.tour.skips.length,
+      ledger: ledger.lines,
       attempts: outcome.attempts,
+      retries: outcome.attempts - 1,
       problems: outcome.problems,
       model: outcome.model,
       // A cached tour cost nothing this run.
       costMicroUsd: outcome.cached ? 0 : totalMicroUsd(outcome.costs),
       ms: Date.now() - started,
     });
-    this.#set({ state: 'ready', ...outcome });
+    this.#set({ state: 'ready', ledger, ...outcome });
   }
 }
 

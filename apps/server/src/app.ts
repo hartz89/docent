@@ -59,7 +59,8 @@ export function createApp({
   const app = new Hono()
     .use(ownOriginOnly(origin))
     .use('/api/questions', async (c, next) => {
-      const place = review?.placeInLine();
+      // Only asking takes a place; reading the threads back waits for no one.
+      const place = c.req.method === 'POST' ? review?.placeInLine() : undefined;
       if (place) places.set(c.req.raw, place);
       try {
         await next();
@@ -226,6 +227,13 @@ export function createApp({
         }
       },
     )
+    // Every answered question for this PR, this launch's and earlier ones, placed in the tour.
+    .get('/api/questions', (c) => {
+      if (!review) return c.json(noReview, 404);
+      const questions = review.questions();
+      if (!questions) return c.json(stillLoading, 503);
+      return c.json({ questions }, 200);
+    })
     .post(
       '/api/questions',
       validator('json', (body: { stopId?: unknown; question?: unknown } | null, c) => {

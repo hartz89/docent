@@ -11,13 +11,26 @@ const token = (page: Page, line: number, text: string) =>
     hasText: new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`),
   });
 
+/**
+ * Shows stop 1's code. A page that loads before the tour is ready shows the PR's description
+ * until the reviewer moves, so step forward and back rather than racing the tour.
+ */
+async function showFirstStop(page: Page) {
+  await expect(page.getByText(/^Stop 1 of/).filter({ visible: true })).toBeVisible();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByText(/^Stop 2 of/).filter({ visible: true })).toBeVisible();
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.getByText(/^Stop 1 of/).filter({ visible: true })).toBeVisible();
+  await expect(page.locator('.code-range')).toBeVisible();
+}
+
 test('⌘-click follows a name to its definition, and the reviewer returns to the stop', async ({
   page,
 }) => {
   const docent = await launch('cli.js', ['review', '--fixture', fixture]);
   try {
     await page.goto(docent.url);
-    await expect(page.getByText(/^Stop 1 of/)).toBeVisible();
+    await showFirstStop(page);
     const citation = await page.locator('.code-range').textContent();
 
     await test.step('a plain click leaves the stop alone', async () => {
@@ -146,6 +159,7 @@ test('at phone width, the code header still fits after a jump', async ({ page })
   try {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(docent.url);
+    await showFirstStop(page);
     await page.locator('[data-line="63"]').scrollIntoViewIfNeeded();
     await token(page, 63, 'CORSOptions').click({ modifiers: ['ControlOrMeta'] });
     await expect(page.locator('.code-range')).toHaveText('line 9 · definition of CORSOptions');

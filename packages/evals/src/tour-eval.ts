@@ -1,11 +1,13 @@
 // The tour eval: runs the server's real tour job over fixtures, then scores each tour on defects
 // found, cost, and stop quality. GitHub and the model sit behind injected boundaries, so tests
 // replay recorded output and never make a call.
-import { parseUnifiedDiff } from '@docent/core';
+import { type LedgerLine, parseUnifiedDiff } from '@docent/core';
 import {
   AgentError,
   type AgentRunner,
   generateTour,
+  placeLines,
+  proveForReview,
   TourError,
   type TourPromptVersion,
   type TourView,
@@ -63,7 +65,16 @@ export type FixtureRun =
       maxStops: number;
       /** Checker problems left after the last retry. Zero means the tour passed every check. */
       problemsLeft: number;
+      /** One plus the retries. */
       attempts: number;
+      /** The skip ledger: where every changed line stands (core's L1–L4). */
+      ledger: { onRoute: number; provenSkip: number; notOnRoute: number };
+      /**
+       * Changed lines inside the manifest's `mustNotSkip` ranges, and how many of them aren't on
+       * the route (proven skip or not on the route). Target zero. `flagged`: a stop that cites
+       * one of them carries a danger or mismatch flag.
+       */
+      important: { lines: number; offRoute: number; flagged: boolean };
       /** Only for fixtures that exercise the danger job. */
       danger: { expected: boolean; raised: boolean } | null;
       stops: GradedStop[];
@@ -143,6 +154,23 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
   const tourUsd = usd(outcome.costs);
   const { tour } = outcome;
 
+  let lines: readonly LedgerLine[];
+  try {
+    lines = await placeLines(diff, tour, await proveForReview(workspace, diff), workspace.readFile);
+  } catch (error) {
+    return { ...base, tourUsd, status: 'failed', error: `Ledger: ${String(error)}` };
+  }
+  const placed = (kind: LedgerLine['place']['kind']) =>
+    lines.filter((l) => l.place.kind === kind).length;
+  const important = lines.filter(
+    ({ line }) =>
+      line.side === 'new' &&
+      manifest.mustNotSkip.some(
+        (m) => m.file === line.path && line.line >= m.lines.start && line.line <= m.lines.end,
+      ),
+  );
+  const flaggedStops = new Set(tour.stops.filter((s) => s.flags.length > 0).map((s) => s.id));
+
   let judgment: Judgment;
   try {
     judgment = await judgeTour({
@@ -204,6 +232,18 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
     maxStops: scoring.maxStops,
     problemsLeft: outcome.problems.length,
     attempts: outcome.attempts,
+    ledger: {
+      onRoute: placed('on_route'),
+      provenSkip: placed('proven_skip'),
+      notOnRoute: placed('not_on_route'),
+    },
+    important: {
+      lines: important.length,
+      offRoute: important.filter((l) => l.place.kind !== 'on_route').length,
+      flagged: important.some(
+        (l) => l.place.kind === 'on_route' && l.place.stops.some((id) => flaggedStops.has(id)),
+      ),
+    },
     findings,
     danger: manifest.jobs.includes('danger')
       ? {
@@ -281,6 +321,12 @@ export type PromptTotals = {
   };
   /** The neutral check: first sentences a blind reader found clear, of those it read. */
   neutral: { clear: number; read: number };
+  /** Retries over every tour that ran, and how many tours needed one. */
+  retries: { total: number; tours: number; ran: number };
+  /** Changed lines summed over the tours that ran, by where the ledger put them. */
+  ledger: { onRoute: number; provenSkip: number; notOnRoute: number };
+  /** `mustNotSkip` lines not on the route, of all of them. Target zero. */
+  important: { lines: number; offRoute: number };
   tourUsd: number;
   judgeUsd: number;
 };
@@ -320,6 +366,20 @@ export function totals(runs: readonly FixtureRun[], prompt: TourPromptVersion): 
     neutral: {
       clear: stops.filter((s) => s.neutralClear === true).length,
       read: stops.filter((s) => s.neutralClear !== null).length,
+    },
+    retries: {
+      total: ok.reduce((sum, r) => sum + r.attempts - 1, 0),
+      tours: ok.filter((r) => r.attempts > 1).length,
+      ran: ok.length,
+    },
+    ledger: {
+      onRoute: ok.reduce((sum, r) => sum + r.ledger.onRoute, 0),
+      provenSkip: ok.reduce((sum, r) => sum + r.ledger.provenSkip, 0),
+      notOnRoute: ok.reduce((sum, r) => sum + r.ledger.notOnRoute, 0),
+    },
+    important: {
+      lines: ok.reduce((sum, r) => sum + r.important.lines, 0),
+      offRoute: ok.reduce((sum, r) => sum + r.important.offRoute, 0),
     },
     tourUsd: mine.reduce((sum, r) => sum + r.tourUsd, 0),
     judgeUsd: mine.reduce((sum, r) => sum + r.judgeUsd, 0),
@@ -374,7 +434,9 @@ export function renderMarkdown(input: {
       const neutral = read.length
         ? `${read.filter((g) => g.neutralClear).length}/${read.length}`
         : 'not run';
-      return `${found}; opinions ${n((g) => g.judged.unfoundedOpinion)}, behavior-first ${n((g) => g.judged.behaviorFirst)}, neutral clear ${neutral}, plain first ${n((g) => !g.mechanical.codeInFirstSentence)}; ${run.stopCount} stops; ${money(run.tourUsd + run.judgeUsd)}`;
+      const { onRoute, provenSkip, notOnRoute } = run.ledger;
+      const route = `${run.attempts} attempt${run.attempts === 1 ? '' : 's'}; lines ${onRoute} on the route, ${provenSkip} proven, ${notOnRoute} not; important off route ${run.important.offRoute}/${run.important.lines}${run.important.flagged ? ', flagged' : ''}`;
+      return `${found}; opinions ${n((g) => g.judged.unfoundedOpinion)}, behavior-first ${n((g) => g.judged.behaviorFirst)}, neutral clear ${neutral}, plain first ${n((g) => !g.mechanical.codeInFirstSentence)}; ${run.stopCount} stops; ${route}; ${money(run.tourUsd + run.judgeUsd)}`;
     });
     return `| ${id} | ${cells.join(' | ')} |`;
   });
@@ -397,6 +459,12 @@ ${row('First sentence clear to a blind reader (neutral check)', (t) => (t.neutra
 ${row('First sentence names no code (script)', (t) => pct(t.quality.plainFirstSentence))}
 ${row('Within length (script)', (t) => pct(t.quality.withinLength))}
 ${row('Tours over the stop cap', (t) => `${t.overLongTours}`)}
+${row('Retries per tour (tours that retried)', (t) => `${(t.retries.total / Math.max(t.retries.ran, 1)).toFixed(2)} (${t.retries.tours}/${t.retries.ran})`)}
+${row('Changed lines not on the route (attention saved)', (t) => {
+  const off = t.ledger.provenSkip + t.ledger.notOnRoute;
+  return `${pct(share(off, off + t.ledger.onRoute))} (${off}/${off + t.ledger.onRoute}; ${t.ledger.provenSkip} proven)`;
+})}
+${row('Important lines not on the route (target 0)', (t) => `${t.important.offRoute}/${t.important.lines}`)}
 ${row('Failed runs', (t) => `${t.failed}/${t.fixtures}`)}
 ${row('Tour cost', (t) => money(t.tourUsd))}
 ${row('Judge cost', (t) => money(t.judgeUsd))}

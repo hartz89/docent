@@ -1,6 +1,5 @@
 import type { Anchor } from './anchor.ts';
-import type { Brand, CommitSha, NonEmpty, OneLine } from './basics.ts';
-import type { HunkId } from './diff.ts';
+import type { Brand, CommitSha, NonEmpty } from './basics.ts';
 import type { ReviewId } from './review.ts';
 
 export type StopId = Brand<string, 'StopId'>;
@@ -10,7 +9,7 @@ export const stopId = (id: string): StopId => id as StopId;
 export const STOP_KINDS = ['intent', 'map', 'core_change', 'edge', 'verdict_prompt'] as const;
 export type StopKind = (typeof STOP_KINDS)[number];
 
-/** T5: what a stop surfaces beyond the change itself. Flags play no part in coverage. */
+/** T5: what a stop surfaces beyond the change itself. Flags play no part in what it explains. */
 export type StopFlag = 'mismatch' | 'danger';
 
 type StopText = {
@@ -31,21 +30,11 @@ export type Stop =
       readonly anchors: readonly Anchor[];
     });
 
-/** S1: a skipped file or hunk, with a one-line reason and the head it was judged at. */
-export type Skip = {
-  readonly target:
-    | { readonly kind: 'file'; readonly path: string }
-    | { readonly kind: 'hunk'; readonly hunk: HunkId };
-  readonly reason: OneLine;
-  readonly judgedAt: CommitSha;
-};
-
-/** T1 */
+/** T1. What it leaves out is the ledger's to say, never the tour's (L4). */
 export type Tour = {
   readonly review: ReviewId;
   readonly head: CommitSha;
   readonly stops: readonly Stop[];
-  readonly skips: readonly Skip[];
 };
 
 export type OrderProblem =

@@ -1,0 +1,3 @@
+# Notes
+
+Greetings are plain.

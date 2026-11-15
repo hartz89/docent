@@ -2,7 +2,7 @@ import fc from 'fast-check';
 import { describe, expect, test } from 'vitest';
 import type { Anchor } from './anchor.ts';
 import { base, elsewhere, head, rawFiles } from './arbitraries.testing.ts';
-import { type CommitSha, type OneLine, oneLine } from './basics.ts';
+import type { CommitSha } from './basics.ts';
 import { changes } from './changes.testing.ts';
 import { lineKey } from './coverage.ts';
 import { proveBlankLines, proveGenerated, proveLockfiles, proveWhitespace } from './detect.ts';
@@ -44,7 +44,6 @@ const tourOf = (stops: readonly (Stop | null)[], tourHead: CommitSha = head): To
   review: reviewId('r'),
   head: tourHead,
   stops: stops.filter((s) => s !== null),
-  skips: [],
 });
 
 const computed = (ledger: Ledger) => {
@@ -221,19 +220,9 @@ describe('the skip ledger', () => {
     ]);
   });
 
-  test("L4: the tour's skips play no part", () => {
+  test('L4: a changed line no stop explains and no proof covers is not on the route', () => {
     const { diff } = changes([{ path: 'a.ts', before: lines('a();'), after: lines('b();') }]);
-    const tour: Tour = {
-      ...tourOf([]),
-      skips: [
-        {
-          target: { kind: 'file', path: 'a.ts' },
-          reason: oneLine('generated, skip') as OneLine,
-          judgedAt: head,
-        },
-      ],
-    };
-    expect(computed(computeLedger(diff, tour, [])).map((l) => l.place.kind)).toEqual([
+    expect(computed(computeLedger(diff, tourOf([]), [])).map((l) => l.place.kind)).toEqual([
       'not_on_route',
       'not_on_route',
     ]);

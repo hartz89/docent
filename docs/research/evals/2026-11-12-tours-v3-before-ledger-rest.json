@@ -1,0 +1,456 @@
+{
+  "date": "2026-11-12",
+  "model": "claude-opus-5-5",
+  "judgeModel": "claude-sonnet-5",
+  "judgeRubric": 2,
+  "totals": [
+    {
+      "prompt": 3,
+      "fixtures": 3,
+      "failed": 0,
+      "findings": {
+        "expected": 2,
+        "cited": 2,
+        "explained": 1
+      },
+      "externalFindings": {
+        "expected": 0,
+        "cited": 0,
+        "explained": 0
+      },
+      "danger": {
+        "falseAlarms": 0,
+        "missed": 0
+      },
+      "overLongTours": 1,
+      "stops": 19,
+      "unfoundedOpinions": 0,
+      "quality": {
+        "plainFirstSentence": 0.5789473684210527,
+        "withinLength": 0.8421052631578947,
+        "behaviorFirst": 0.7368421052631579
+      },
+      "neutral": {
+        "clear": 16,
+        "read": 19
+      },
+      "tourUsd": 0.723373,
+      "judgeUsd": 0.21893
+    }
+  ],
+  "runs": [
+    {
+      "fixture": "ky-571-jsdoc-typo",
+      "prompt": 3,
+      "tourUsd": 0.037846,
+      "judgeUsd": 0.01976,
+      "findings": [],
+      "status": "ok",
+      "stopCount": 3,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "danger": {
+        "expected": false,
+        "raised": false
+      },
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Fix typos in a hook doc comment",
+          "mechanical": {
+            "firstSentence": "Nothing changes in behavior: this PR only corrects spelling in the documentation for the before-request hook.",
+            "codeInFirstSentence": false,
+            "sentences": 2,
+            "words": 31,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states no behavior change, only spelling fixed."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "core_change",
+          "title": "Spelling corrected in beforeRequest JSDoc",
+          "mechanical": {
+            "firstSentence": "Behavior and types are unchanged; only the comment text for the before-request hook differs.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 45,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states behavior and types are unchanged, only comment text differs."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "vite-15365-env-file-watch",
+      "prompt": 3,
+      "tourUsd": 0.15715,
+      "judgeUsd": 0.058064000000000004,
+      "findings": [
+        {
+          "file": "packages/vite/src/node/server/hmr.ts",
+          "lines": {
+            "start": 77,
+            "end": 77
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 6,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Watch only the env files Vite actually reads",
+          "mechanical": {
+            "firstSentence": "The dev server's file watcher now watches only the four env files for the current mode, not the whole env directory.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 60,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the watcher now watches only four env files instead of the whole directory; rest is factual, no advice or speculation."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "One helper now returns full env file paths",
+          "mechanical": {
+            "firstSentence": "The helper that lists env files now returns full paths under the env directory instead of bare names like `.env.local`.",
+            "codeInFirstSentence": true,
+            "sentences": 2,
+            "words": 56,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the helper now returns full paths instead of bare names; remainder just lists factual callers."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Env file list now holds full paths",
+          "mechanical": {
+            "firstSentence": "Loading env files works the same as before.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 51,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence says loading 'works the same as before,' which hides the actual structural change (paths now absolute) rather than stating it."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "Watcher watches env files instead of the env dir",
+          "mechanical": {
+            "firstSentence": "The dev server no longer watches the whole env directory.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 55,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the dev server no longer watches the whole env directory; later statements (files no longer watched, duplicates possible) are factual code consequences, not speculative opinions."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 5,
+          "kind": "core_change",
+          "title": "Env-change restart check now compares mismatched forms",
+          "mechanical": {
+            "firstSentence": "The check that restarts the server when an env file changes now compares the changed file's base name against full paths.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 55,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence describes an internal comparison mechanism change rather than the resulting user-facing behavior (no restart on env edits); the flag is a description of a PR-description/code mismatch, not an opinion."
+          },
+          "neutralClear": false
+        }
+      ]
+    },
+    {
+      "fixture": "yargs-766-command-validation",
+      "prompt": 3,
+      "tourUsd": 0.528377,
+      "judgeUsd": 0.141106,
+      "findings": [
+        {
+          "file": "lib/command.js",
+          "lines": {
+            "start": 176,
+            "end": 184
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": false
+        }
+      ],
+      "status": "ok",
+      "stopCount": 13,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 2,
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Options now carry into commands by default",
+          "mechanical": {
+            "firstSentence": "Options and most parser settings set at the top level now reach sub-commands unless they are marked local.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 63,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states options now reach sub-commands by default, and the rest only reports facts and the PR's own stated rationale."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "Which behaviors change and where",
+          "mechanical": {
+            "firstSentence": "Several things change.",
+            "codeInFirstSentence": false,
+            "sentences": 7,
+            "words": 64,
+            "withinLength": false
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence 'Several things change' is too vague to tell a reviewer what changed, but the rest is a neutral list of facts with no advice or unestablished risk."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Reset keeps everything except keys marked local",
+          "mechanical": {
+            "firstSentence": "When yargs resets for a command, it now keeps every option, type, alias, default, choice, demand, coerce rule and group unless the key (or one of its aliases) is in the new `local` list.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 73,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states plainly that reset now keeps everything except local keys, and the body only describes the mechanics."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "global() can now mark keys local",
+          "mechanical": {
+            "firstSentence": "A key is now made local with `.global(keys, false)` or with `global: false` in an `.option()` object.",
+            "codeInFirstSentence": true,
+            "sentences": 6,
+            "words": 73,
+            "withinLength": false
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the concrete new way to mark a key local, and the rest just reports facts about help/version and the updated test."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 5,
+          "kind": "core_change",
+          "title": "Descriptions, implies, conflicts survive into commands",
+          "mechanical": {
+            "firstSentence": "Usage descriptions, implies rules and conflicts rules are now kept for commands unless their key is local.",
+            "codeInFirstSentence": false,
+            "sentences": 5,
+            "words": 69,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states that descriptions/implies/conflicts now survive into commands unless local, and the body only describes mechanics without advice or risk."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 6,
+          "kind": "core_change",
+          "title": "Command handlers now run before validation",
+          "mechanical": {
+            "firstSentence": "In a command, the handler now runs before validation.",
+            "codeInFirstSentence": false,
+            "sentences": 7,
+            "words": 79,
+            "withinLength": false
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states the handler now runs before validation, and the body (including the missing-guard detail) states facts/differences rather than advice or speculative risk; the mismatch flag is a cited description/code gap, not an opinion."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 7,
+          "kind": "core_change",
+          "title": "parseArgs is now exposed as _parseArgs",
+          "mechanical": {
+            "firstSentence": "No behavior changes for existing callers.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 44,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states there is no behavior change for existing callers, and the rest is a factual rename/fallback description."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 8,
+          "kind": "core_change",
+          "title": "strict() and check() apply to commands by default",
+          "mechanical": {
+            "firstSentence": "`.strict()` and `.check(fn)` now carry into sub-commands.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 38,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states plainly that strict() and check() now carry into sub-commands, and the rest is factual mechanics."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 9,
+          "kind": "edge",
+          "title": "demandCommand() defaults to one and stays top-level",
+          "mechanical": {
+            "firstSentence": "Calling `.demandCommand()` with no arguments now requires one command.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 36,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the concrete new default behavior of demandCommand(), and the rest reports facts about scope and tests."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 10,
+          "kind": "edge",
+          "title": "Parser-hint setters share two helpers",
+          "mechanical": {
+            "firstSentence": "The array setters (such as `boolean` and `string`) and the keyed setters (such as `alias` and `demandOption`) now go through two shared helpers.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 54,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence describes implementation ('go through two shared helpers') rather than user-visible behavior, but the body states the demandOption difference as fact, and the mismatch flag is a cited description/code gap, not an opinion."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 11,
+          "kind": "edge",
+          "title": "README documents the new defaults",
+          "mechanical": {
+            "firstSentence": "The README now documents the new defaults: the `[global=true]` parameters on `check`, `strict` and `global`, `demandCommand`'s `[min=1]`, and \"Options default to being global.\" The `.global()` example now passes `global: false`, and other examples call `.demandCommand()` with no argument.",
+            "codeInFirstSentence": true,
+            "sentences": 2,
+            "words": 47,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states plainly what the README now documents as the new defaults, and the rest only lists further doc edits as fact."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 12,
+          "kind": "edge",
+          "title": "Tests lock in inherit-by-default and opt-outs",
+          "mechanical": {
+            "firstSentence": "New tests check that config, conflicts, checks, demandOption, strict, array, choices, aliases, coerce, defaults, descriptions, help, version and groups reach commands, and that `global: false` opts out where tested.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 63,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence narrates what the new tests check rather than stating the behavior itself, but the body (including the missing-test note) states plain facts, not advice or speculative risk."
+          },
+          "neutralClear": true
+        }
+      ]
+    }
+  ],
+  "skipped": []
+}

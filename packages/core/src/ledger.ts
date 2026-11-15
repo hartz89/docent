@@ -25,7 +25,7 @@ export type Ledger =
 
 /**
  * Places every changed line: on the route if a stop explains it, else a proven skip if a valid
- * proof covers it, else not on the route (L1–L4). The model's skips play no part.
+ * proof covers it, else not on the route (L1–L4).
  */
 export function computeLedger(diff: Diff, tour: Tour, proofs: readonly Proof[]): Ledger {
   if (tour.head !== diff.head) {
