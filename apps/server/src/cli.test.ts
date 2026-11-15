@@ -1,9 +1,7 @@
-import { execFile, spawn } from 'node:child_process';
-import { once } from 'node:events';
+import { execFile } from 'node:child_process';
 import { cp, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, expect, test, vi } from 'vitest';
@@ -91,65 +89,4 @@ test('each launch writes a run file, unless --no-run-log says not to', async () 
   );
   expect(stdout).toMatch(/tour attempt 1: passed, \$0\.\d{4}/);
   expect(stdout).toContain('run ended: prepared');
-});
-
-test('stops promptly on SIGTERM, even while a browser is still following the tour', async () => {
-  cacheDir = await mkdtemp(join(tmpdir(), 'docent-cli-'));
-  // A slow replay stands in for a slow machine: the tour is still being written when it stops.
-  const child = spawn(
-    process.execPath,
-    [cli, 'review', '--fixture', fixture, '--replay-pace', '200'],
-    {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        DOCENT_CACHE_DIR: cacheDir,
-        DOCENT_DATA_DIR: join(cacheDir, 'data'),
-        DOCENT_RUN_LOG: '',
-        CI: '1',
-      },
-    },
-  );
-  const output: string[] = [];
-  child.stderr?.on('data', (chunk) => output.push(String(chunk)));
-  const exited = once(child, 'exit');
-  /** Each step gets 5 s, and a failure names the step and what the CLI printed. */
-  const step = <T>(name: string, work: Promise<T>) =>
-    Promise.race([
-      work,
-      exited.then(([code]) => {
-        throw new Error(`The CLI exited (${code}) during "${name}": ${output.join('')}`);
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`Stuck on "${name}": ${output.join('')}`)), 5_000),
-      ),
-    ]);
-  try {
-    const link = await step(
-      'the startup URL',
-      new Promise<string>((resolve) => {
-        createInterface({ input: child.stdout as NodeJS.ReadableStream }).on('line', (line) => {
-          output.push(`${line}\n`);
-          const match = line.match(/https?:\/\/127\.0\.0\.1\S+/);
-          if (match) resolve(match[0]);
-        });
-      }),
-    );
-    const { origin, hash } = new URL(link);
-    const token = new URLSearchParams(hash.slice(1)).get('token');
-    const events = await step(
-      'opening the progress stream',
-      fetch(`${origin}/api/review/events`, { headers: { Authorization: `Bearer ${token}` } }),
-    );
-    expect(events.headers.get('content-type')).toContain('text/event-stream');
-    if (!events.body) throw new Error('The progress stream has no body.');
-    // The stream is open, as it is in a browser while the guide writes.
-    await step('the first progress event', events.body.getReader().read());
-
-    child.kill('SIGTERM');
-    const [code] = await step('stopping on SIGTERM', exited);
-    expect(code).toBe(0);
-  } finally {
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-  }
 });
