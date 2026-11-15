@@ -963,6 +963,31 @@ describe('the tour, while it is written', () => {
     ]);
   });
 
+  test('a tour that is only a verdict is sent back, and the repair adds the change it skipped', async () => {
+    // The first answer has nothing on the route, though src/cors.ts changes behavior.
+    const verdictOnly = { stops: [goodTour.stops[0], goodTour.stops[2]] };
+    const { runner, requests } = scripted(verdictOnly, repairOf({ ...goodTour.stops[1] }));
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(requests[1]?.prompt).toContain('The tour has no core_change or edge stop');
+    expect(requests[1]?.prompt).toContain('sending back only what changes');
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.stops.map((s) => s.kind)).toEqual(['intent', 'core_change', 'verdict_prompt']);
+  });
+
+  test('a verdict-only tour the guide never fixes reaches the reviewer with the problem on it', async () => {
+    const verdictOnly = { stops: [goodTour.stops[2]] };
+    const { runner } = scripted(verdictOnly, repairOf(), repairOf());
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(tour.attempts).toBe(3);
+    expect(tour.problems).toEqual([expect.stringContaining('no core_change or edge stop')]);
+  });
+
   test('order problems get a whole new tour, since a repair can only replace or add stops', async () => {
     const twoVerdicts = {
       ...goodTour,

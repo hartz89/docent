@@ -875,6 +875,7 @@ Question: ${question}`,
           diff,
           runner: this.#options.runner,
           model: this.#options.model,
+          proofs,
           // Progress only moves a tour that's still being written, never a ready or failed one.
           onProgress: (progress) => {
             if (this.#tour.state === 'working') this.#set(fromProgress(progress, this.#tour));

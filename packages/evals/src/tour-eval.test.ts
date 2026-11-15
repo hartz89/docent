@@ -168,6 +168,40 @@ describe('the tour eval', () => {
     expect(markdown).toContain('| Retried tours that passed in the end | 0/0 |');
   });
 
+  test('a tour that is only a verdict never scores as passing, however many retries it gets', async () => {
+    const recordedTour = fixtureRunner(RECORDED);
+    const runner: AgentRunner = async (request) => {
+      if (request.job === 'eval_judge') {
+        const findings = [{ finding: 1, explained: false, stop: null, why: 'Nothing cites it.' }];
+        return {
+          sessionId: 'j',
+          text: '',
+          structured: { stops: [], findings },
+          cost: cost(20_000),
+          denials: [],
+        };
+      }
+      const reply = await recordedTour(request);
+      const { stops } = reply.structured as { stops: { kind: string }[] };
+      return { ...reply, structured: { stops: stops.filter((s) => s.kind === 'verdict_prompt') } };
+    };
+    const result = await run(runner);
+
+    if (result.status !== 'ok') throw new Error(result.error);
+    expect(result.stopCount).toBe(1);
+    expect(result.problemsLeft).toBeGreaterThan(0);
+    expect(totals([result], 2).repaired).toEqual({ passed: 0, retried: 1 });
+    const markdown = renderMarkdown({
+      date: '2026-11-08',
+      model: 'm',
+      judgeModel: 'j',
+      judgeRubric: 1,
+      runs: [result],
+      prompts: [2],
+    });
+    expect(markdown).toContain('3 attempts, **1 checker problem left**');
+  });
+
   test('a judge that skips a stop fails the run, and its paid call still counts', async () => {
     const { runner } = scripted({ ...judgment, stops: judgment.stops.slice(1) });
     const result = await run(runner);

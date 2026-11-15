@@ -50,7 +50,7 @@ describe('tour prompt versions', () => {
       requests.push(request);
       return replay(request);
     };
-    const job = { workspace, diff, runner, model: 'claude-test', onProgress: () => {} };
+    const job = { workspace, diff, runner, model: 'claude-test', proofs: [], onProgress: () => {} };
 
     await generateTour(job);
     const second = requests.length;
@@ -99,6 +99,7 @@ describe('tour prompt versions', () => {
       runner,
       model: 'claude-test',
       promptVersion: 5,
+      proofs: [],
       onProgress: (p) => {
         if (p.step === 'writing') routes.push(p.route);
       },

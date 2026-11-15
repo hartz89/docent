@@ -147,6 +147,14 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
   };
   const diff = parseUnifiedDiff(workspace.diffText, workspace.pr.base, workspace.pr.head);
 
+  // Found before the tour's clock starts: the server finds them while the guide writes.
+  let proofs: Awaited<ReturnType<typeof proveForReview>>;
+  try {
+    proofs = await proveForReview(workspace, diff);
+  } catch (error) {
+    return { ...base, status: 'failed', error: `Proofs: ${String(error)}` };
+  }
+
   let outcome: Awaited<ReturnType<typeof generateTour>>;
   const started = Date.now();
   let firstRouteMs: number | null = null;
@@ -159,6 +167,7 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
       runner,
       model: options.model,
       promptVersion: prompt,
+      proofs,
       onProgress: (progress) => {
         if (progress.step !== 'writing') return;
         if (progress.route.length) {
@@ -178,7 +187,7 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
 
   let lines: readonly LedgerLine[];
   try {
-    lines = await placeLines(diff, tour, await proveForReview(workspace, diff), workspace.readFile);
+    lines = await placeLines(diff, tour, proofs, workspace.readFile);
   } catch (error) {
     return { ...base, tourUsd, status: 'failed', error: `Ledger: ${String(error)}` };
   }
@@ -503,7 +512,7 @@ export function renderMarkdown(input: {
         ? `route ${run.route.matches ? 'matched' : `${run.route.sameTitles}/${run.route.written} titles kept, ${run.route.planned} planned`}; `
         : '';
       const timing = `${plan}route ${secs(firstRouteMs)}, stop 1 ${secs(firstStopMs)}, tour ${secs(tourMs)}`;
-      const route = `${timing}; ${run.attempts} attempt${run.attempts === 1 ? '' : 's'}; lines ${onRoute} on the route, ${provenSkip} proven, ${notOnRoute} not; important off route ${run.important.offRoute}/${run.important.lines}${run.important.flagged ? ', flagged' : ''}`;
+      const route = `${timing}; ${run.attempts} attempt${run.attempts === 1 ? '' : 's'}${run.problemsLeft ? `, **${run.problemsLeft} checker problem${run.problemsLeft === 1 ? '' : 's'} left**` : ''}; lines ${onRoute} on the route, ${provenSkip} proven, ${notOnRoute} not; important off route ${run.important.offRoute}/${run.important.lines}${run.important.flagged ? ', flagged' : ''}`;
       return `${found}; opinions ${n((g) => g.judged.unfoundedOpinion)}, behavior-first ${n((g) => g.judged.behaviorFirst)}, neutral clear ${neutral}, plain first ${n((g) => !g.mechanical.codeInFirstSentence)}; ${run.stopCount} stops; ${route}; ${money(run.tourUsd + run.judgeUsd)}`;
     });
     return `| ${id} | ${cells.join(' | ')} |`;

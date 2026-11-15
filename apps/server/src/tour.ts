@@ -5,9 +5,12 @@ import {
   type Anchor,
   anchorAt,
   type CostRecord,
+  changedLines,
   checkStopOrder,
+  computeLedger,
   type Diff,
   oneLine,
+  type Proof,
   reviewId,
   STOP_KINDS,
   type Stop,
@@ -235,6 +238,11 @@ export type TourJob = {
   model: string;
   /** Which prompt to use. Leave out for the current one; the eval runner sets it for A/B runs. */
   promptVersion?: TourPromptVersion;
+  /**
+   * Every proof core found in the diff. The checker needs them to tell whether a tour with no
+   * core_change or edge stop leaves out lines nothing proved. An empty list is the strict answer.
+   */
+  proofs: readonly Proof[] | Promise<readonly Proof[]>;
   onProgress: (progress: TourProgress) => void;
   /** Stops the job: the call in flight is aborted, and no attempt or repair starts after it. */
   signal?: AbortSignal;
@@ -346,7 +354,7 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
         : 'Your answer did not match the tour schema. Return the complete tour as JSON.';
       continue;
     }
-    best = { ...(await check(wire, files, diff)), wire };
+    best = { ...(await check(wire, files, diff, await job.proofs)), wire };
     ended(best.problems.length ? best.problems.join(' | ') : 'passed');
     attempt({
       outcome: best.problems.length ? 'rejected' : 'passed',
@@ -590,7 +598,12 @@ async function checkStop(
 }
 
 /** Turns the guide's tour into core's Tour, and lists every rule it breaks, in words. */
-async function check(wire: WireTour, fileText: FileReader, diff: Diff): Promise<Checked> {
+async function check(
+  wire: WireTour,
+  fileText: FileReader,
+  diff: Diff,
+  proofs: readonly Proof[],
+): Promise<Checked> {
   const problems: string[] = [];
   const stops: Stop[] = [];
   const views: StopView[] = [];
@@ -614,9 +627,31 @@ async function check(wire: WireTour, fileText: FileReader, diff: Diff): Promise<
           : 'The tour must end with exactly one verdict_prompt stop.',
     );
   }
-  // A missing verdict is one stop to add, which a repair can do. Moving or removing stops can't.
+  const unproven = withoutStops(diff, proofs);
+  if (unproven && !wire.stops.some((s) => s.kind === 'core_change' || s.kind === 'edge')) {
+    problems.push(
+      `The tour has no core_change or edge stop, but ${unproven} changed lines are not proven safe to skip. Add at least one core_change stop that explains what the change does, citing its lines.`,
+    );
+  }
+  // A missing verdict or a missing core_change is a stop to add, which a repair can do. Moving or
+  // removing stops can't.
   const reorder = order.some((p) => p.kind === 'out_of_order') || verdicts > 1;
   return { view: { stops: views, notes: notesOf(wire, diff) }, problems, reorder };
+}
+
+/**
+ * How many changed lines no proof covers: where the ledger puts them when no stop cites anything.
+ * Any at all, and the tour has a change to explain.
+ */
+function withoutStops(diff: Diff, proofs: readonly Proof[]): number {
+  const ledger = computeLedger(
+    diff,
+    { review: reviewId('review'), head: diff.head, stops: [] },
+    proofs,
+  );
+  // Never stale, since the empty tour is at the diff's own head. If it were, nothing is proven.
+  if (ledger.state === 'stale') return changedLines(diff).length;
+  return ledger.lines.filter((l) => l.place.kind === 'not_on_route').length;
 }
 
 /** The longest note kept. A note is a line, not a paragraph. */
