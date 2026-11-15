@@ -352,8 +352,9 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
       // empty by design, so only a whole tour's is measured.
       ...(routeFirst && !repairing
         ? {
+            // The route as the screen got it, so this agrees with what the eval measures.
             route: compareRoute(
-              wire.route ?? [],
+              cleanRoute(wire.route ?? []),
               wire.stops.map((s) => s.title),
             ),
           }
