@@ -200,9 +200,19 @@ test('while the guide writes, the reviewer reads the PR, then the first stop bef
         'Access-Control-Allow-Origin',
       );
       await expect(page.locator('.upcoming-stop')).toContainText(
-        // Stop 1 may already be in by now; the row says what comes next either way.
-        /Planning the route|Writing stop \d+/,
+        // The route or stop 1 may already be in by now; the row says what comes next either way.
+        /Planning the route|Writing now/,
       );
+    });
+
+    await test.step('the planned route shows as upcoming stops, ahead of the stops themselves', async () => {
+      // The guide writes its route first, so the last stop is on screen long before it's written.
+      const planned = page.locator('.planned-stop');
+      await expect(planned.last()).toContainText(titles.at(-1) ?? '');
+      await expect(planned.last()).toContainText('Planned');
+      await expect(page.locator('.upcoming-stop')).toContainText('Writing now');
+      // Planned rows aren't stops yet: nothing to open.
+      await expect(planned.getByRole('button')).toHaveCount(0);
     });
 
     await test.step('the first stop opens while later stops are still being written', async () => {
@@ -233,6 +243,8 @@ test('while the guide writes, the reviewer reads the PR, then the first stop bef
         timeout: 20_000,
       });
       await expect(page.locator('.upcoming-stop')).toHaveCount(0);
+      await expect(page.locator('.planned-stop')).toHaveCount(0);
+      await expect(page.locator('.stop-button')).toHaveCount(titles.length);
       await expect(page.locator('.narration-title')).toHaveText(titles[0] ?? '');
       await expect(page.getByRole('button', { name: 'Ask the guide' })).toBeVisible();
     });

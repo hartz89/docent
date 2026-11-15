@@ -62,9 +62,10 @@ export type TourProgress =
   | { step: 'planning'; detail: string | null }
   /**
    * The guide is writing the tour. `stops` are the ones finished so far that passed every check a
-   * single stop can pass on its own, in order. `writing` is how many it has begun.
+   * single stop can pass on its own, in order. `writing` is how many it has begun. `route` is the
+   * titles it planned ahead of the stops (v5 on), only a plan: the stops it writes win.
    */
-  | { step: 'writing'; stops: StopView[]; writing: number }
+  | { step: 'writing'; stops: StopView[]; writing: number; route: string[] }
   | { step: 'checking'; attempt: number }
   | { step: 'retrying'; attempt: number; problems: number };
 
@@ -95,8 +96,11 @@ type WireStop = {
   citations: WireCitation[];
 };
 type WireNote = { path: string; note: string };
-/** `notes` is optional: a repair that leaves it out keeps the notes it had. */
-type WireTour = { stops: WireStop[]; notes?: WireNote[] };
+/**
+ * `notes` is optional: a repair that leaves it out keeps the notes it had. `route` is the plan
+ * written ahead of the stops; only the stream reads it, and the stops always win over it.
+ */
+type WireTour = { route?: string[]; stops: WireStop[]; notes?: WireNote[] };
 
 export const tourSchema = {
   type: 'object',
@@ -163,6 +167,67 @@ export const tourSchema = {
   },
 } as const;
 
+/**
+ * v5's schema: the route comes first, so it streams about a second after writing starts. A
+ * different schema from v4's, so v4 runs stay as they were; repairs reuse their session's schema.
+ */
+export const routeTourSchema = {
+  ...tourSchema,
+  required: ['route', 'stops'],
+  properties: {
+    route: {
+      type: 'array',
+      description:
+        'Write this first: the title of every stop, in order, as you will write them. In a repair, an empty list.',
+      items: { type: 'string' },
+    },
+    ...tourSchema.properties,
+  },
+} as const;
+
+/** The prompt versions that ask for the route ahead of the stops. */
+const ROUTE_FIRST: ReadonlySet<TourPromptVersion> = new Set([5]);
+
+/** The longest route the screen shows, and the longest title in it. */
+const MAX_ROUTE_STOPS = 30;
+const MAX_ROUTE_TITLE_CHARS = 120;
+
+/** A title on one line, with runs of whitespace as one space. */
+const flat = (title: string) => title.replace(/\s+/g, ' ').trim();
+
+/** The guide's planned titles as the screen shows them: one line each, none empty, capped. */
+function cleanRoute(titles: readonly string[]): string[] {
+  return titles
+    .map(flat)
+    .filter((t) => t.length > 0)
+    .slice(0, MAX_ROUTE_STOPS)
+    .map((t) =>
+      t.length > MAX_ROUTE_TITLE_CHARS ? `${t.slice(0, MAX_ROUTE_TITLE_CHARS - 1)}…` : t,
+    );
+}
+
+export type RouteComparison = {
+  planned: number;
+  written: number;
+  /** Stops titled as the route planned at the same place. */
+  sameTitles: number;
+  matches: boolean;
+};
+
+/**
+ * How the planned route compares with the stops written. Only a measure: a route that doesn't
+ * match changes nothing, since the stops are the tour.
+ */
+export function compareRoute(route: readonly string[], titles: readonly string[]): RouteComparison {
+  const same = titles.filter((t, i) => i < route.length && flat(t) === flat(route[i] ?? ''));
+  return {
+    planned: route.length,
+    written: titles.length,
+    sameTitles: same.length,
+    matches: route.length === titles.length && same.length === titles.length,
+  };
+}
+
 export type TourJob = {
   workspace: Workspace;
   diff: Diff;
@@ -186,7 +251,9 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
   const time = job.timings ?? timings();
   const costs: CostRecord[] = [];
   let ended = time.span('Build the prompt');
-  let prompt = TOUR_PROMPTS[job.promptVersion ?? TOUR_PROMPT_VERSION](workspace.pr, diff);
+  const version = job.promptVersion ?? TOUR_PROMPT_VERSION;
+  const routeFirst = ROUTE_FIRST.has(version);
+  let prompt = TOUR_PROMPTS[version](workspace.pr, diff);
   ended(`${prompt.length} chars`);
   let resume: string | undefined;
   // The best tour so far: the latest one that matched the schema. A later attempt that fails
@@ -216,7 +283,10 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
     const stream =
       attempts > 1
         ? null
-        : streamStops(diff, files, onProgress, () => time.span('First stop shown')());
+        : streamStops(diff, files, onProgress, {
+            firstStop: () => time.span('First stop shown')(),
+            firstRoute: () => time.span('Route shown')(),
+          });
     let reply: Awaited<ReturnType<AgentRunner>>;
     ended = time.span(`Attempt ${attempts}: ${repairing ? 'repair' : 'whole tour'}`);
     try {
@@ -227,7 +297,7 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
         model,
         // One schema for whole tours and repairs: a different one would change the session's
         // tools, and the resumed session would lose its prompt cache.
-        schema: tourSchema,
+        schema: routeFirst ? routeTourSchema : tourSchema,
         ...(resume ? { resume } : {}),
         onActivity: (detail) => onProgress({ step: 'planning', detail }),
         ...(stream ? { onOutput: stream.push } : {}),
@@ -278,10 +348,22 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
       outcome: best.problems.length ? 'rejected' : 'passed',
       costMicroUsd: reply.cost.costMicroUsd,
       problems: best.problems,
+      // How the plan shown while writing compares with the stops written. A repair's route is
+      // empty by design, so only a whole tour's is measured.
+      ...(routeFirst && !repairing
+        ? {
+            route: compareRoute(
+              wire.route ?? [],
+              wire.stops.map((s) => s.title),
+            ),
+          }
+        : {}),
     });
     if (best.problems.length === 0 || attempts > MAX_RETRIES) break;
     onProgress({ step: 'retrying', attempt: attempts, problems: best.problems.length });
-    prompt = best.reorder ? retryPrompt(best.problems) : repairPrompt(best.problems, best.wire);
+    prompt = best.reorder
+      ? retryPrompt(best.problems)
+      : repairPrompt(best.problems, best.wire, routeFirst);
   }
 
   if (!best) throw new TourError('The guide never returned a tour in the expected shape.', costs);
@@ -316,13 +398,15 @@ function modelNote(reply: Awaited<ReturnType<AgentRunner>>): string {
  * same check the finished tour gets, plus the order rule so far, and only then is reported. The
  * first stop that fails freezes what's shown: later stops wait for the finished, fully checked
  * tour, so the route never shows a gap. The count of stops begun keeps updating, so progress
- * stays true. `close()` ends all reporting, once the call is over.
+ * stays true. The planned route, when the prompt asks for one, is reported title by title as it
+ * streams; it's only a plan, never checked against anything until the end. `close()` ends all
+ * reporting, once the call is over.
  */
 function streamStops(
   diff: Diff,
   files: FileReader,
   onProgress: (progress: TourProgress) => void,
-  onFirstStop: () => void,
+  marks: { firstStop: () => void; firstRoute: () => void },
 ) {
   const scanner = new StopScanner();
   const shown: StopView[] = [];
@@ -333,9 +417,12 @@ function streamStops(
   /** Whether anything may still be reported. */
   let live = true;
   let writing = 0;
+  let route: string[] = [];
+  /** How many raw titles the scanner had at the last look. */
+  let routeSeen = 0;
   let queue = Promise.resolve();
   const report = () => {
-    if (live) onProgress({ step: 'writing', stops: [...shown], writing });
+    if (live) onProgress({ step: 'writing', stops: [...shown], writing, route });
   };
 
   const take = async (raw: unknown) => {
@@ -360,7 +447,7 @@ function streamStops(
     }
     rank = stopRank;
     shown.push(checked.view);
-    if (shown.length === 1) onFirstStop();
+    if (shown.length === 1) marks.firstStop();
     report();
   };
   /**
@@ -383,6 +470,15 @@ function streamStops(
         // The guide started its output over. What's shown stays; nothing more streams.
         accepting = false;
         return;
+      }
+      if (scanner.route.length !== routeSeen) {
+        routeSeen = scanner.route.length;
+        const planned = cleanRoute(scanner.route);
+        then(() => {
+          if (route.length === 0 && planned.length > 0) marks.firstRoute();
+          route = planned;
+          report();
+        });
       }
       if (scanner.started !== writing) {
         const started = scanner.started;
@@ -551,9 +647,14 @@ function parseJson(value: unknown): unknown {
 function parseWire(value: unknown): WireTour | null {
   const tour = parseJson(value) as WireTour | null;
   if (!tour || !Array.isArray(tour.stops) || !tour.stops.every(isWireStop)) return null;
-  if (tour.notes === undefined) return { stops: tour.stops };
+  // The route is a plan the stops overrule, so a malformed one is dropped, never refused.
+  const route =
+    Array.isArray(tour.route) && tour.route.every((t) => typeof t === 'string')
+      ? { route: tour.route }
+      : {};
+  if (tour.notes === undefined) return { ...route, stops: tour.stops };
   return Array.isArray(tour.notes) && tour.notes.every(isWireNote)
-    ? { stops: tour.stops, notes: tour.notes }
+    ? { ...route, stops: tour.stops, notes: tour.notes }
     : null;
 }
 
@@ -626,12 +727,16 @@ ${prSection(pr, diff)}`,
   // v4: the skip ledger is computed (backlog item 6). Cite what carries the point; leave mechanical
   // noise to the script. docs/research/2026-11-12-skip-ledger.md has the A/B against v3.
   4: (pr: PrInfo, diff: Diff) => explainPrompt(ROUTE_RULES, pr, diff),
+
+  // v5: v4 plus the route first: the stop titles, ahead of the stops, so the reviewer sees the
+  // plan about a second after writing starts (issue #67). It has its own schema with `route`.
+  5: (pr: PrInfo, diff: Diff) => explainPrompt(`${ROUTE_RULES}\n\n${ROUTE_FIRST_RULES}`, pr, diff),
 } as const satisfies Record<number, (pr: PrInfo, diff: Diff) => string>;
 
 export type TourPromptVersion = keyof typeof TOUR_PROMPTS;
 
 /** The prompt version new tours use. Part of the tour cache key, so a bump writes fresh tours. */
-export const TOUR_PROMPT_VERSION: TourPromptVersion = 4;
+export const TOUR_PROMPT_VERSION: TourPromptVersion = 5;
 
 /** v3's text, shared by v4: explain, don't narrate, and don't advise. Only the line rules differ. */
 function explainPrompt(rules: string, pr: PrInfo, diff: Diff): string {
@@ -703,6 +808,10 @@ Never leave a behavior change off the route because something calls it generated
 
 "notes" is optional. For a changed file you leave off the route, you may add one line saying what it is, as {path, note}: "test fixture data", "docs for the new flag". The reviewer sees it marked as your word, not as proof. Leave notes out when there's nothing useful to say.`;
 
+const ROUTE_FIRST_RULES = `## Write the route first
+
+Plan the whole tour before you write any stop. Then write "route" first: the title of every stop, in order, exactly as you will title them, the verdict_prompt included. The reviewer sees it as the plan while you write the stops. Then write the stops in that order, under those titles.`;
+
 function prSection(pr: PrInfo, diff: Diff): string {
   return `----
 
@@ -764,13 +873,14 @@ function stopList(tour: WireTour): string {
   return `The tour's stops now, by number:\n${lines.join('\n')}`;
 }
 
-function repairPrompt(problems: readonly string[], tour: WireTour): string {
+function repairPrompt(problems: readonly string[], tour: WireTour, routeFirst: boolean): string {
+  const route = routeFirst ? '- "route": an empty list. The stops carry the change.\n' : '';
   return `The tour checker found these problems:
 
 ${problemList(problems)}
 
 Fix them by sending back only what changes, in the same JSON shape:
-- "stops": only the stops you change or add, each one in full. To change a stop, set "replaces" to its number (Stop 2 is 2); you may change its title. For a new stop, set "replaces" to 0: it is added after the existing stops of its kind. Leave out every stop that stays the same.
+${route}- "stops": only the stops you change or add, each one in full. To change a stop, set "replaces" to its number (Stop 2 is 2); you may change its title. For a new stop, set "replaces" to 0: it is added after the existing stops of its kind. Leave out every stop that stays the same.
 - "notes": leave it out to keep your notes as they are, or send the complete list to replace them.
 Change as little as you can: the reviewer may already be reading the stops.
 

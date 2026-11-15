@@ -2167,7 +2167,13 @@ kbd {
   width: 24px;
   height: 24px;
   border-radius: 50%;
-  border: 1.5px dashed var(--border-strong);
+  border: 1.5px dashed var(--brass-fill);
+  display: grid;
+  place-items: center;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--brass-text);
+  font-variant-numeric: tabular-nums;
   animation: pulse 1.4s var(--ease) infinite;
 }
 
@@ -2177,6 +2183,62 @@ kbd {
   font-size: 13.5px;
   line-height: 1.35;
   margin-top: 1px;
+}
+
+/* The plan in the progress card, for layouts where the route column is in a drawer. */
+.planned-route {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.planned-route .section-label {
+  margin: 0 0 10px;
+}
+
+.planned-route ol {
+  margin: 0;
+  padding-left: 22px;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.planned-route li::marker {
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A stop the guide planned but hasn't written yet. Same size as a stop, so arriving moves
+   nothing; dashed and quiet, so it never passes for a stop you can open. */
+.planned-stop {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 12px;
+  padding: 9px 8px;
+}
+
+.planned-number {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 11.5px;
+  font-weight: 600;
+  border: 1.5px dashed var(--border-strong);
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.planned-title {
+  display: block;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.35;
+  margin-top: 1px;
+  overflow-wrap: anywhere;
 }
 
 .waiting-note {
