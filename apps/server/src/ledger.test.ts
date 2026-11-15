@@ -51,88 +51,100 @@ const caller = (name: string, from: string, op = '===') =>
     `if (found ${op} null) throw new Error();`,
   );
 
-let workspace: Workspace;
-let diff: Diff;
-
-beforeAll(async () => {
+/** A real repo with two commits, base and head, as a review's workspace sees it. */
+async function repoOf(
+  baseFiles: Record<string, string>,
+  headFiles: Record<string, string>,
+): Promise<{ workspace: Workspace; diff: Diff }> {
   const repo = await mkdtemp(join(tmpdir(), 'docent-ledger-'));
   await sh(repo, 'init', '--quiet', '--initial-branch=main');
-  await write(repo, {
-    // Base's attributes: the only ones a generated-file proof may read.
-    '.gitattributes': 'src/schema.gen.ts linguist-generated\n',
-    'src/schema.gen.ts': 'export const version = 1;\n',
-    'src/api.gen.ts': 'export const api = 1;\n',
-    // A real rename: the definition and its only caller.
-    'src/clock.ts': definition('Clock.', 'isExpired', 'key < now()'),
-    'src/session.ts': caller('isExpired', 'clock'),
-    // A "rename" whose caller also flips an operator.
-    'src/users.ts': definition('Users.', 'getUser', 'db.find(key)'),
-    'src/main.ts': caller('getUser', 'users'),
-    // A rename whose new name is already used elsewhere in the repo, outside the diff.
-    'src/cache.ts': definition('Cache.', 'loadItem', 'store.get(key)'),
-    'docs/notes.md': 'Call readItem to read from the store.\n',
-    'src/a.ts': 'export const a = 1;\n',
-    'src/server.ts': lines("import { a } from './a.ts';", '', 'export const port = a;'),
-  });
+  await write(repo, baseFiles);
   await sh(repo, 'add', '-A');
   await sh(repo, 'commit', '--quiet', '-m', 'base');
   const base = commitSha((await sh(repo, 'rev-parse', 'HEAD')).trim());
-
-  await write(repo, {
-    // The PR marks a file generated itself. That must count for nothing.
-    '.gitattributes': lines(
-      'src/schema.gen.ts linguist-generated',
-      'src/api.gen.ts linguist-generated',
-    ),
-    'src/schema.gen.ts': 'export const version = 2;\n',
-    'src/api.gen.ts': 'export const api = 2;\n',
-    'src/clock.ts': definition('Clock.', 'hasExpired', 'key < now()'),
-    'src/session.ts': caller('hasExpired', 'clock'),
-    'src/users.ts': definition('Users.', 'fetchUser', 'db.find(key)'),
-    'src/main.ts': caller('fetchUser', 'users', '!=='),
-    'src/cache.ts': definition('Cache.', 'readItem', 'store.get(key)'),
-    'src/server.ts': lines(
-      "import { a } from './a.ts';",
-      "import { version } from './schema.gen.ts';",
-      '',
-      'export const port = a + version;',
-    ),
-    'src/new.ts': lines(
-      "import { hasExpired } from './clock.ts';",
-      '',
-      'export const stale = hasExpired(0);',
-    ),
-  });
+  await write(repo, headFiles);
   await sh(repo, 'add', '-A');
   await sh(repo, 'commit', '--quiet', '-m', 'head');
   const head = commitSha((await sh(repo, 'rev-parse', 'HEAD')).trim());
 
   const diffText = await sh(repo, 'diff', '--no-color', base, head);
-  diff = parseUnifiedDiff(diffText, base, head);
-  workspace = {
-    pr: {
-      url: 'https://github.com/acme/web/pull/9',
-      repo: 'acme/web',
-      number: 9,
-      title: 'Rename the expiry check',
-      body: 'Renames isExpired to hasExpired.',
-      author: 'someone',
-      base,
-      head,
-      baseRef: 'main',
-      headRef: 'rename',
-    },
-    diffText,
-    commitMessages: [],
-    headInBaseRepo: true,
-    dir: repo,
-    ...commitReader(repo, base, head),
-    headFiles: () => gitHeadFiles(repo, head),
-    currentHead: async () => head,
-    postReview: async () => {
-      throw new Error('not in this test');
+  return {
+    diff: parseUnifiedDiff(diffText, base, head),
+    workspace: {
+      pr: {
+        url: 'https://github.com/acme/web/pull/9',
+        repo: 'acme/web',
+        number: 9,
+        title: 'Rename the expiry check',
+        body: 'Renames isExpired to hasExpired.',
+        author: 'someone',
+        base,
+        head,
+        baseRef: 'main',
+        headRef: 'rename',
+      },
+      diffText,
+      commitMessages: [],
+      headInBaseRepo: true,
+      dir: repo,
+      ...commitReader(repo, base, head),
+      headFiles: () => gitHeadFiles(repo, head),
+      currentHead: async () => head,
+      postReview: async () => {
+        throw new Error('not in this test');
+      },
     },
   };
+}
+
+let workspace: Workspace;
+let diff: Diff;
+
+beforeAll(async () => {
+  ({ workspace, diff } = await repoOf(
+    {
+      // Base's attributes: the only ones a generated-file proof may read.
+      '.gitattributes': 'src/schema.gen.ts linguist-generated\n',
+      'src/schema.gen.ts': 'export const version = 1;\n',
+      'src/api.gen.ts': 'export const api = 1;\n',
+      // A real rename: the definition and its only caller.
+      'src/clock.ts': definition('Clock.', 'isExpired', 'key < now()'),
+      'src/session.ts': caller('isExpired', 'clock'),
+      // A "rename" whose caller also flips an operator.
+      'src/users.ts': definition('Users.', 'getUser', 'db.find(key)'),
+      'src/main.ts': caller('getUser', 'users'),
+      // A rename whose new name is already used elsewhere in the repo, outside the diff.
+      'src/cache.ts': definition('Cache.', 'loadItem', 'store.get(key)'),
+      'docs/notes.md': 'Call readItem to read from the store.\n',
+      'src/a.ts': 'export const a = 1;\n',
+      'src/server.ts': lines("import { a } from './a.ts';", '', 'export const port = a;'),
+    },
+    {
+      // The PR marks a file generated itself. That must count for nothing.
+      '.gitattributes': lines(
+        'src/schema.gen.ts linguist-generated',
+        'src/api.gen.ts linguist-generated',
+      ),
+      'src/schema.gen.ts': 'export const version = 2;\n',
+      'src/api.gen.ts': 'export const api = 2;\n',
+      'src/clock.ts': definition('Clock.', 'hasExpired', 'key < now()'),
+      'src/session.ts': caller('hasExpired', 'clock'),
+      'src/users.ts': definition('Users.', 'fetchUser', 'db.find(key)'),
+      'src/main.ts': caller('fetchUser', 'users', '!=='),
+      'src/cache.ts': definition('Cache.', 'readItem', 'store.get(key)'),
+      'src/server.ts': lines(
+        "import { a } from './a.ts';",
+        "import { version } from './schema.gen.ts';",
+        '',
+        'export const port = a + version;',
+      ),
+      'src/new.ts': lines(
+        "import { hasExpired } from './clock.ts';",
+        '',
+        'export const stale = hasExpired(0);',
+      ),
+    },
+  ));
 });
 
 const cite = (path: string, startLine: number, endLine = startLine) => ({
@@ -158,15 +170,15 @@ const wire = {
   notes: [{ path: 'src/api.gen.ts', note: 'Generated client' }],
 };
 
-/** One scripted guide reply: the tour above, every time. */
-function guide(): { runner: AgentRunner; requests: AgentRequest[] } {
+/** One scripted guide reply: the given tour, every time. */
+function guide(answer: unknown = wire): { runner: AgentRunner; requests: AgentRequest[] } {
   const requests: AgentRequest[] = [];
   const runner: AgentRunner = async (request) => {
     requests.push(request);
     return {
       sessionId: 'session-1',
       text: '',
-      structured: wire,
+      structured: answer,
       denials: [],
       cost: {
         job: request.job,
@@ -187,10 +199,108 @@ async function tour(): Promise<{ view: TourView; attempts: number; problems: str
     diff,
     runner,
     model: 'claude-test',
+    proofs: proveForReview(workspace, diff),
     onProgress: () => {},
   });
   return { view: outcome.tour, attempts: outcome.attempts, problems: outcome.problems };
 }
+
+/** A tour with nothing on the route: why, then the verdict. */
+const verdictOnly = {
+  stops: [
+    { kind: 'intent', title: 'Why', body: 'Renames the expiry check.', flags: [], citations: [] },
+    { kind: 'verdict_prompt', title: 'Your call', body: 'Does it?', flags: [], citations: [] },
+  ],
+};
+
+describe('a tour with no core_change or edge stop', () => {
+  test('is sent back when a changed line is neither cited nor proven', async () => {
+    const { runner, requests } = guide(verdictOnly);
+    const outcome = await generateTour({
+      workspace,
+      diff,
+      runner,
+      model: 'claude-test',
+      proofs: proveForReview(workspace, diff),
+      onProgress: () => {},
+    });
+    // The checker asks for a repair, never a whole new tour.
+    expect(requests[1]?.prompt).toContain('The tour has no core_change or edge stop');
+    expect(requests[1]?.prompt).toContain('sending back only what changes');
+    expect(outcome.problems).toEqual([expect.stringContaining('no core_change or edge stop')]);
+  });
+
+  test('is sent back when its only core_change stop cites unchanged lines', async () => {
+    const token = {
+      stops: [
+        verdictOnly.stops[0],
+        {
+          kind: 'core_change',
+          title: 'Something',
+          body: 'A file.',
+          flags: [],
+          citations: [cite('src/a.ts', 1)],
+        },
+        verdictOnly.stops[1],
+      ],
+    };
+    const { runner, requests } = guide(token);
+    const outcome = await generateTour({
+      workspace,
+      diff,
+      runner,
+      model: 'claude-test',
+      proofs: proveForReview(workspace, diff),
+      onProgress: () => {},
+    });
+    expect(requests[1]?.prompt).toContain('sending back only what changes');
+    expect(outcome.problems).toEqual([expect.stringContaining('no core_change or edge stop')]);
+  });
+
+  test('passes on a pure rename, where a script proved every changed line', async () => {
+    const rename = await repoOf(
+      {
+        'src/clock.ts': definition('Clock.', 'isExpired', 'key < now()'),
+        'src/session.ts': caller('isExpired', 'clock'),
+      },
+      {
+        'src/clock.ts': definition('Clock.', 'hasExpired', 'key < now()'),
+        'src/session.ts': caller('hasExpired', 'clock'),
+      },
+    );
+    const { runner, requests } = guide(verdictOnly);
+    const outcome = await generateTour({
+      ...rename,
+      runner,
+      model: 'claude-test',
+      proofs: proveForReview(rename.workspace, rename.diff),
+      onProgress: () => {},
+    });
+    expect(requests).toHaveLength(1);
+    expect(outcome.problems).toEqual([]);
+    expect(outcome.tour.stops.map((s) => s.kind)).toEqual(['intent', 'verdict_prompt']);
+  });
+
+  test('on a pure rename whose proofs failed, nothing counts as proven, so it is sent back', async () => {
+    const rename = await repoOf(
+      { 'src/clock.ts': definition('Clock.', 'isExpired', 'key < now()') },
+      { 'src/clock.ts': definition('Clock.', 'hasExpired', 'key < now()') },
+    );
+    const failures = [() => [], () => Promise.reject(new Error('proofs failed'))];
+    for (const proofs of failures) {
+      const { runner, requests } = guide(verdictOnly);
+      const outcome = await generateTour({
+        ...rename,
+        runner,
+        model: 'claude-test',
+        proofs: proofs(),
+        onProgress: () => {},
+      });
+      expect(requests[1]?.prompt).toContain('The tour has no core_change or edge stop');
+      expect(outcome.problems).toEqual([expect.stringContaining('no core_change or edge stop')]);
+    }
+  });
+});
 
 const byPath = (files: readonly LedgerFileView[]) => new Map(files.map((f) => [f.path, f]));
 

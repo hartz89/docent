@@ -5,9 +5,13 @@ import {
   type Anchor,
   anchorAt,
   type CostRecord,
+  changedLines,
   checkStopOrder,
+  computeLedger,
   type Diff,
+  lineKey,
   oneLine,
+  type Proof,
   reviewId,
   STOP_KINDS,
   type Stop,
@@ -235,6 +239,12 @@ export type TourJob = {
   model: string;
   /** Which prompt to use. Leave out for the current one; the eval runner sets it for A/B runs. */
   promptVersion?: TourPromptVersion;
+  /**
+   * Every proof core found in the diff. The checker needs them to tell whether the tour's
+   * core_change and edge stops explain any changed line nothing proved. An empty list, or a rejection, is
+   * the strict answer: every changed line then needs explaining.
+   */
+  proofs: readonly Proof[] | Promise<readonly Proof[]>;
   onProgress: (progress: TourProgress) => void;
   /** Stops the job: the call in flight is aborted, and no attempt or repair starts after it. */
   signal?: AbortSignal;
@@ -264,6 +274,9 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
   let best: (Checked & { wire: WireTour }) | undefined;
   let attempts = 0;
   const files = fileReader(workspace);
+  // A proof failure proves nothing, which only makes the checker stricter. Caught here so a
+  // rejection never escapes the job or loses the costs paid so far.
+  const proofs = Promise.resolve(job.proofs).catch((): readonly Proof[] => []);
 
   while (attempts <= MAX_RETRIES) {
     // A stopped job writes nothing more, and keeps no half-checked tour: it's never cached.
@@ -346,7 +359,7 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
         : 'Your answer did not match the tour schema. Return the complete tour as JSON.';
       continue;
     }
-    best = { ...(await check(wire, files, diff)), wire };
+    best = { ...(await check(wire, files, diff, await proofs)), wire };
     ended(best.problems.length ? best.problems.join(' | ') : 'passed');
     attempt({
       outcome: best.problems.length ? 'rejected' : 'passed',
@@ -590,7 +603,12 @@ async function checkStop(
 }
 
 /** Turns the guide's tour into core's Tour, and lists every rule it breaks, in words. */
-async function check(wire: WireTour, fileText: FileReader, diff: Diff): Promise<Checked> {
+async function check(
+  wire: WireTour,
+  fileText: FileReader,
+  diff: Diff,
+  proofs: readonly Proof[],
+): Promise<Checked> {
   const problems: string[] = [];
   const stops: Stop[] = [];
   const views: StopView[] = [];
@@ -614,9 +632,40 @@ async function check(wire: WireTour, fileText: FileReader, diff: Diff): Promise<
           : 'The tour must end with exactly one verdict_prompt stop.',
     );
   }
-  // A missing verdict is one stop to add, which a repair can do. Moving or removing stops can't.
+  const { unproven, explained } = changeExplained(diff, tour, proofs);
+  if (unproven > 0 && !explained) {
+    problems.push(
+      `The tour has no core_change or edge stop that cites a changed line nothing proved, but ${unproven} changed lines are not proven safe to skip. Add at least one core_change stop that explains what the change does, citing its changed lines.`,
+    );
+  }
+  // A missing verdict or a missing core_change is a stop to add, which a repair can do. Moving or
+  // removing stops can't.
   const reorder = order.some((p) => p.kind === 'out_of_order') || verdicts > 1;
   return { view: { stops: views, notes: notesOf(wire, diff) }, problems, reorder };
+}
+
+/**
+ * `unproven`: how many changed lines no proof covers, placed as if no stop cited anything.
+ * `explained`: some core_change or edge stop puts one of those lines on the route. A stop that
+ * cites only unchanged lines, or only proven ones, explains nothing the reviewer would miss.
+ */
+function changeExplained(
+  diff: Diff,
+  tour: Tour,
+  proofs: readonly Proof[],
+): { unproven: number; explained: boolean } {
+  const bare = computeLedger(diff, { ...tour, stops: [] }, proofs);
+  const cited = computeLedger(diff, tour, proofs);
+  // Never stale, since both are at the diff's own head. If they were, nothing counts as proven.
+  if (bare.state === 'stale' || cited.state === 'stale') {
+    return { unproven: changedLines(diff).length, explained: false };
+  }
+  const key = (l: (typeof bare.lines)[number]) => lineKey(l.line);
+  const open = new Set(bare.lines.filter((l) => l.place.kind === 'not_on_route').map(key));
+  return {
+    unproven: open.size,
+    explained: cited.lines.some((l) => l.place.kind === 'on_route' && open.has(key(l))),
+  };
 }
 
 /** The longest note kept. A note is a line, not a paragraph. */
