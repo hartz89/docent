@@ -1423,6 +1423,7 @@ function RefPhrase({
     return (
       <span className="ref stale" title={`The code this named in ${file} has changed since.`}>
         {children}
+        <span className="sr-only"> (the code this named in {file} has changed since)</span>
       </span>
     );
   }

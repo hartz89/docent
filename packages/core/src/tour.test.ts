@@ -126,6 +126,10 @@ describe('stop bodies', () => {
     );
     expect(body).toEqual([text]);
     expect(unplaced.map((r) => r.phrase)).toEqual(bad);
+    // A stray backtick in an earlier paragraph doesn't let a later code span be split.
+    const stray = 'A stray ` here.\n\nThen `run(a, b)` once.';
+    expect(referBody(stray, [refTo('run(a, b)` once')]).unplaced).toHaveLength(1);
+    expect(referBody(stray, [refTo('`run(a, b)`')]).unplaced).toEqual([]);
     // A whole code span, or prose around it, is fine.
     expect(referBody(text, [refTo('`run(a, b)`'), refTo('Then it waits')]).unplaced).toEqual([]);
   });

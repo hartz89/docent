@@ -115,8 +115,14 @@ function freeOccurrence(
   for (let start = text.indexOf(phrase); start !== -1; start = text.indexOf(phrase, start + 1)) {
     const end = start + phrase.length;
     const free = taken.every((t) => end <= t.start || start >= t.end);
-    // An even count of backticks before it: the phrase starts outside a `code` span.
-    if (free && backticks(text.slice(0, start)) % 2 === 0) return start;
+    // An even count of backticks before it in its paragraph: the phrase starts outside a `code`
+    // span. Code spans never cross a paragraph break, so an odd one earlier can't shift this.
+    const paragraph =
+      text
+        .slice(0, start)
+        .split(/\n\s*\n/)
+        .at(-1) ?? '';
+    if (free && backticks(paragraph) % 2 === 0) return start;
   }
   return null;
 }

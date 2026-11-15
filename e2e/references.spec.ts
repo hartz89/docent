@@ -2,11 +2,13 @@ import { fileURLToPath } from 'node:url';
 import type { Page } from '@playwright/test';
 import { expect, launch, test } from './fixtures.ts';
 
-// The recorded hono#4813 review. Its third stop's references were added to the recording by
+// The recorded hono#4813 review. Its references were added to the recording by
 // hand (the tour was recorded before references existed): "the resolver returns `origin ||
 // null`" names lines 80–82, and "`origin` defaults to `'*'`" names line 65.
 const fixture = fileURLToPath(new URL('fixtures/hono-4813', import.meta.url));
 
+const FILE = 'src/middleware/cors/index.ts';
+const TEST_FILE = 'src/middleware/cors/index.test.ts';
 const line = (page: Page, n: number) => page.locator(`.line[data-line="${n}"]`);
 
 async function thirdStop(page: Page, url: string) {
@@ -55,6 +57,28 @@ test('a phrase in the prose shows its lines on hover and keyboard focus', async 
       await page.getByRole('button', { name: 'Back to stop 3' }).click();
       await expect(page.locator('.code-range')).toHaveText(/cited by this stop/);
     });
+  } finally {
+    await docent.stop();
+  }
+});
+
+test('a phrase naming another file shows that file while hovered, then gives the stop back', async ({
+  page,
+}) => {
+  const docent = await launch('cli.js', ['review', '--fixture', fixture]);
+  try {
+    await page.goto(docent.url);
+    await expect(page.locator('.narration-title')).toBeVisible();
+    // The map stop cites index.ts; its "`index.test.ts`" names lines 87–93 of the tests.
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('.code-path')).toHaveAttribute('title', FILE);
+    await page.getByRole('button', { name: /^index\.test\.ts/ }).hover();
+    await expect(page.locator('.code-path')).toHaveAttribute('title', TEST_FILE);
+    await expect(line(page, 87)).toHaveClass(/named/);
+    await expect(line(page, 87)).toBeInViewport();
+    await page.locator('.narration-title').hover();
+    await expect(page.locator('.code-path')).toHaveAttribute('title', FILE);
+    await expect(page.locator('.line.named')).toHaveCount(0);
   } finally {
     await docent.stop();
   }
