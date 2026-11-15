@@ -87,6 +87,18 @@ export type FixtureRun =
       important: { lines: number; offRoute: number; flagged: boolean };
       /** Only for fixtures that exercise the danger job. */
       danger: { expected: boolean; raised: boolean } | null;
+      /**
+       * Phrases of the prose that point at code (v6 on): how many the guide wrote, how many show,
+       * how many were dropped for lines or a phrase that didn't check out, or for the cap, and the
+       * most on any one stop.
+       */
+      references: {
+        written: number;
+        shown: number;
+        unresolved: number;
+        overCap: number;
+        maxPerStop: number;
+      };
       stops: GradedStop[];
       /** The full tour and judgment, for the raw dump. Left out of the committed summary. */
       raw: { tour: TourView; judgment: Judgment };
@@ -289,6 +301,11 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
           raised: tour.stops.some((s) => s.flags.includes('danger')),
         }
       : null,
+    references: {
+      ...outcome.references,
+      shown: tour.stops.reduce((sum, s) => sum + s.refs.length, 0),
+      maxPerStop: Math.max(0, ...tour.stops.map((s) => s.refs.length)),
+    },
     stops,
     raw: { tour, judgment },
   };
@@ -371,6 +388,15 @@ export type PromptTotals = {
   ledger: { onRoute: number; provenSkip: number; notOnRoute: number };
   /** `mustNotSkip` lines not on the route, of all of them. Target zero. */
   important: { lines: number; offRoute: number };
+  /** References summed over the tours that ran, over every stop in them. */
+  references: {
+    written: number;
+    shown: number;
+    unresolved: number;
+    overCap: number;
+    stops: number;
+    maxPerStop: number;
+  };
   tourUsd: number;
   judgeUsd: number;
 };
@@ -452,6 +478,14 @@ export function totals(runs: readonly FixtureRun[], prompt: TourPromptVersion): 
       lines: ok.reduce((sum, r) => sum + r.important.lines, 0),
       offRoute: ok.reduce((sum, r) => sum + r.important.offRoute, 0),
     },
+    references: {
+      written: ok.reduce((sum, r) => sum + r.references.written, 0),
+      shown: ok.reduce((sum, r) => sum + r.references.shown, 0),
+      unresolved: ok.reduce((sum, r) => sum + r.references.unresolved, 0),
+      overCap: ok.reduce((sum, r) => sum + r.references.overCap, 0),
+      stops: ok.reduce((sum, r) => sum + r.stopCount, 0),
+      maxPerStop: Math.max(0, ...ok.map((r) => r.references.maxPerStop)),
+    },
     tourUsd: mine.reduce((sum, r) => sum + r.tourUsd, 0),
     judgeUsd: mine.reduce((sum, r) => sum + r.judgeUsd, 0),
   };
@@ -513,7 +547,10 @@ export function renderMarkdown(input: {
         : '';
       const timing = `${plan}route ${secs(firstRouteMs)}, stop 1 ${secs(firstStopMs)}, tour ${secs(tourMs)}`;
       const route = `${timing}; ${run.attempts} attempt${run.attempts === 1 ? '' : 's'}${run.problemsLeft ? `, **${run.problemsLeft} checker problem${run.problemsLeft === 1 ? '' : 's'} left**` : ''}; lines ${onRoute} on the route, ${provenSkip} proven, ${notOnRoute} not; important off route ${run.important.offRoute}/${run.important.lines}${run.important.flagged ? ', flagged' : ''}`;
-      return `${found}; opinions ${n((g) => g.judged.unfoundedOpinion)}, behavior-first ${n((g) => g.judged.behaviorFirst)}, neutral clear ${neutral}, plain first ${n((g) => !g.mechanical.codeInFirstSentence)}; ${run.stopCount} stops; ${route}; ${money(run.tourUsd + run.judgeUsd)}`;
+      const refs = run.references.written
+        ? `; refs ${run.references.shown} shown of ${run.references.written}`
+        : '';
+      return `${found}${refs}; opinions ${n((g) => g.judged.unfoundedOpinion)}, behavior-first ${n((g) => g.judged.behaviorFirst)}, neutral clear ${neutral}, plain first ${n((g) => !g.mechanical.codeInFirstSentence)}; ${run.stopCount} stops; ${route}; ${money(run.tourUsd + run.judgeUsd)}`;
     });
     return `| ${id} | ${cells.join(' | ')} |`;
   });
@@ -547,6 +584,8 @@ ${row('Changed lines not on the route (attention saved)', (t) => {
   return `${pct(share(off, off + t.ledger.onRoute))} (${off}/${off + t.ledger.onRoute}; ${t.ledger.provenSkip} proven)`;
 })}
 ${row('Important lines not on the route (target 0)', (t) => `${t.important.offRoute}/${t.important.lines}`)}
+${row('References shown per stop (most on one stop)', (t) => `${(t.references.shown / Math.max(t.references.stops, 1)).toFixed(2)} (${t.references.maxPerStop})`)}
+${row('References that resolved (lines and phrase checked out)', (t) => (t.references.written ? `${pct(share(t.references.written - t.references.unresolved, t.references.written))} (${t.references.written - t.references.unresolved}/${t.references.written}; ${t.references.overCap} over the cap)` : 'none written'))}
 ${row('Failed runs', (t) => `${t.failed}/${t.fixtures}`)}
 ${row('Tour cost', (t) => money(t.tourUsd))}
 ${row('Judge cost', (t) => money(t.judgeUsd))}

@@ -11,6 +11,7 @@ import {
   type FileTexts,
   type LedgerLine,
   type Proof,
+  plainBody,
   proveSkips,
   renameLookups,
   reviewId,
@@ -240,7 +241,13 @@ async function tourOf(diff: Diff, view: TourView, readFile: Workspace['readFile'
           : anchorAt({ commit, path: a.path, text }, a.startLine, a.endLine - a.startLine + 1);
       if (anchor) anchors.push(anchor);
     }
-    const base = { id: stopId(stop.id), title: stop.title, body: stop.body, flags: stop.flags };
+    // References put nothing on the route (C5), so the body is its plain text here.
+    const base = {
+      id: stopId(stop.id),
+      title: stop.title,
+      body: plainBody(stop.body),
+      flags: stop.flags,
+    };
     const [first, ...rest] = anchors;
     if (stop.kind === 'core_change' || stop.kind === 'edge') {
       // A citation that no longer reads is simply not on the route (C3).

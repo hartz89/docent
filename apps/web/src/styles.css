@@ -991,6 +991,19 @@ code,
   color: var(--brass-text);
 }
 
+/* The lines a phrase in the text names, while it's hovered or focused: brighter than a citation. */
+.line.named,
+.line.named.added,
+.line.named.removed {
+  background: var(--brass-soft);
+  border-left-color: var(--brass);
+}
+
+.line.named .line-number {
+  color: var(--brass-text);
+  font-weight: 600;
+}
+
 .line-mark {
   user-select: none;
   color: var(--faint);
@@ -1061,6 +1074,11 @@ code,
 
 .swatch.cited {
   background: var(--brass-soft);
+  border-left: 2px solid var(--brass);
+}
+
+.swatch.named {
+  background: color-mix(in srgb, var(--brass) 40%, transparent);
   border-left: 2px solid var(--brass);
 }
 
@@ -1180,6 +1198,46 @@ code,
   border-radius: 4px;
   background: var(--panel-raised);
   border: 1px solid var(--border);
+}
+
+/* A phrase that points at code: a quiet dotted underline until it's wanted. It wraps like the
+   words around it, so a long phrase never jumps to a line of its own. */
+.ref {
+  cursor: pointer;
+  border-radius: 3px;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: color-mix(in srgb, var(--brass) 75%, transparent);
+  text-underline-offset: 0.24em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color 140ms var(--ease),
+    text-decoration-color 140ms var(--ease);
+}
+
+.ref:hover,
+.ref:focus-visible {
+  background: var(--brass-soft);
+  text-decoration-style: solid;
+  text-decoration-color: var(--brass);
+}
+
+.ref:focus-visible {
+  outline-offset: 1px;
+}
+
+/* Its code has changed since the tour was written: still words, pointing nowhere. */
+.ref.stale {
+  cursor: help;
+  text-decoration-style: dashed;
+  text-decoration-color: var(--faint);
+}
+
+.ref.stale:hover {
+  background: none;
 }
 
 .chips {
@@ -1574,6 +1632,7 @@ kbd {
   .progress-fill,
   .stop-button,
   .chip,
+  .ref,
   .icon-button,
   .primary-button {
     transition: none;

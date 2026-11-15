@@ -48,6 +48,7 @@ import { describeError, RunLog } from './run-log.ts';
 import { type BuiltIndex, buildIndex, type IndexLimits, type IndexStatus } from './symbols.ts';
 import { type Timings, timings } from './timings.ts';
 import {
+  fromCache,
   generateTour,
   type StopView,
   TOUR_PROMPT_VERSION,
@@ -850,11 +851,7 @@ Question: ${question}`,
         const outcome = JSON.parse(await readFile(cacheFile, 'utf8')) as TourOutcome;
         await lookup;
         ended('hit');
-        await this.#tourReady(
-          { ...outcome, timing: outcome.timing ?? [], cached: true },
-          await proofs,
-          tourStarted,
-        );
+        await this.#tourReady(fromCache(outcome), await proofs, tourStarted);
         return;
       }
       ended('missed');
@@ -903,9 +900,7 @@ Question: ${question}`,
       this.#touring = touring;
       const written = await touring;
       stopWaiting();
-      const outcome: TourOutcome = written.cached
-        ? { ...written.value, timing: written.value.timing ?? [], cached: true }
-        : written.value;
+      const outcome: TourOutcome = written.cached ? fromCache(written.value) : written.value;
       await lookup;
       await this.#tourReady(outcome, await proofs, tourStarted);
     } catch (error) {

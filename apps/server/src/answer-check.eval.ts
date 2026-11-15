@@ -173,6 +173,7 @@ const context = await stopContext(
     flags: [],
     flagNotes: [],
     anchors: stop.citations,
+    refs: [],
   },
   workspace.readFile,
 );
