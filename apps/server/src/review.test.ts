@@ -1,6 +1,7 @@
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type CostRecord, commitSha, type Job, type MicroUsd, sessionId } from '@docent/core';
 import { hc } from 'hono/client';
@@ -450,6 +451,68 @@ describe('GET /api/review', () => {
     await open(second.runner, cacheDir, 'model-b');
 
     expect(second.requests).toHaveLength(1);
+  });
+
+  test('two Docents opening the same PR pay for one tour, and both get it', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    // One model, shared, held until the second Docent is seen waiting.
+    const model = scripted(goodTour, goodTour);
+    const { promise: release, resolve } = Promise.withResolvers<void>();
+    const runner: AgentRunner = async (request) => {
+      await release;
+      return model.runner(request);
+    };
+    const reviews = [0, 1].map(
+      () =>
+        new Review({
+          source: sourceFor(fakeGitHub()),
+          runner,
+          locator: noAuthor,
+          model: 'm',
+          cacheDir,
+        }),
+    );
+    const waits: string[] = [];
+    for (const review of reviews) {
+      review.subscribe((tour) => {
+        if (tour.state === 'working' && tour.detail?.includes('another Docent')) {
+          waits.push(tour.detail);
+        }
+      });
+    }
+
+    await vi.waitFor(() => expect(waits.length).toBeGreaterThan(0));
+    resolve();
+    await Promise.all(reviews.map((r) => r.done));
+
+    expect(model.requests.filter((r) => r.job === 'tour')).toHaveLength(1);
+    const tours = reviews.map((r) => ready(r.snapshot().tour));
+    expect(tours.map((t) => t.tour)).toEqual([tours[0]?.tour, tours[0]?.tour]);
+    expect(tours.map((t) => t.cached).sort()).toEqual([false, true]);
+    expect(waits[0]).toBe(
+      'A tour for this PR is being written by another Docent, about 1 min left',
+    );
+  });
+
+  test('a lock left by a Docent that died is broken, and the tour is written', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    await open(scripted(goodTour).runner, cacheDir);
+    const [tourFile] = await readdir(join(cacheDir, 'tours', 'acme__web'));
+    const cached = join(cacheDir, 'tours', 'acme__web', tourFile ?? '');
+    await rm(cached);
+    // A process that has exited, so its pid is gone.
+    const dead = spawnSync(process.execPath, ['-e', '']).pid;
+    await writeFile(
+      `${cached}.lock`,
+      JSON.stringify({ pid: dead, host: hostname(), startedAt: Date.now(), token: 'old' }),
+    );
+    const second = scripted(goodTour);
+
+    const { review } = await open(second.runner, cacheDir);
+
+    expect(second.requests).toHaveLength(1);
+    expect(ready(review.snapshot().tour).cached).toBe(false);
+    expect(existsSync(`${cached}.lock`)).toBe(false);
   });
 
   test('keeps the last good tour when a retry fails, and records what the failure cost', async () => {
