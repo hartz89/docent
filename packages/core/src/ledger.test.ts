@@ -34,7 +34,7 @@ function citing(id: string, cited: readonly ChangedLine[], commit?: CommitSha): 
     id: stopId(id),
     kind: 'edge',
     title: '',
-    body: '',
+    body: [],
     flags: [],
     anchors: [first, ...rest],
   };

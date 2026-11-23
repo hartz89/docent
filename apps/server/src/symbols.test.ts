@@ -119,6 +119,7 @@ async function serve(
       dir: repo,
       readFile: async () => null,
       open: async () => ({ kind: 'missing' }),
+      openAll: async () => new Map(),
       tree: async () => ({ entries: [], truncated: false }),
       baseGitattributes: async () => new Map(),
       findWords: async () => new Map(),

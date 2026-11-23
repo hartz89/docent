@@ -99,7 +99,7 @@ const ALLOWED: Record<Role, string[]> = {
     'gh pr create|view|checks|diff|comment|edit ...',
     '                                (create needs --body-file or --body; a description stays under',
     `                                ${DESCRIPTION_WORDS} visible words, so put detail in <details>)`,
-    'gh pr merge <number> --squash [--auto]',
+    'gh pr merge <number> --squash [--auto]   (only once the reviewer has reviewed the head commit)',
     'gh issue create|view|list|comment|edit|close ...   (edit keeps the description budget above)',
     'gh api <endpoint> ...           (GET only: no -X/--method other than GET, no -f/-F/--input)',
     'gh api --method POST /repos/hartz89/docent/pulls/<n>/comments/<id>/replies --input <file.json>',
@@ -146,6 +146,8 @@ type Allowed = {
   extra?: Record<string, 'read' | 'write'>;
   /** When set, exactly what the command reads on standard input. */
   stdin?: string;
+  /** A merge of this PR, allowed only once the reviewer has reviewed its head commit. */
+  merge?: number;
 };
 
 /** Returns the exact command to run, or throws why it's refused. */
@@ -198,8 +200,10 @@ function allowed(role: Role, command: string[], cwd: string): Allowed {
     if (interactive && ['create', 'edit', 'comment', 'review'].includes(action ?? '')) {
       refuse(`${interactive} opens a browser or editor`);
     }
-    if (action === 'merge' && role === 'builder') checkMerge(args, refuse);
-    else if (!action || !PR_SUBCOMMANDS[role].includes(action)) {
+    if (action === 'merge' && role === 'builder') {
+      return { tool: 'gh', args: ['pr', ...rest], merge: checkMerge(args, refuse) };
+    }
+    if (!action || !PR_SUBCOMMANDS[role].includes(action)) {
       refuse(`"gh pr ${action ?? ''}" isn't allowed for the ${role}`);
     }
     if (action === 'create' || action === 'edit') checkDescription(action, args, cwd, refuse);
@@ -229,7 +233,8 @@ function gitPushArgs(args: string[], refuse: (reason: string) => never): string[
   return ['push', ...upstream, 'origin', `refs/heads/${name}:refs/heads/${name}`];
 }
 
-function checkMerge(args: string[], refuse: (reason: string) => never): void {
+/** Checks the merge form and returns the PR number. */
+function checkMerge(args: string[], refuse: (reason: string) => never): number {
   const [number, ...extra] = args.filter((arg) => !arg.startsWith('-'));
   const options = args.filter((arg) => arg.startsWith('-'));
   if (!number || !/^\d+$/.test(number) || extra.length > 0) refuse('merge takes one PR number');
@@ -239,6 +244,74 @@ function checkMerge(args: string[], refuse: (reason: string) => never): void {
   if (form !== '--squash' && form !== '--squash --auto') {
     refuse('merge only with --squash, optionally followed by --auto');
   }
+  return Number(number);
+}
+
+type Review = { id: number; user: { login: string } | null; state: string; commit_id: string };
+/** GitHub's page size cap, and how many pages we read before giving up (fail closed). */
+const PER_PAGE = 100;
+const MAX_PAGES = 10;
+
+/**
+ * The merge gate: pull-requests.md says the reviewer's review is posted before the merge is
+ * queued. Returns the head SHA it checked, so the merge can be pinned to it. Throws (refusing the
+ * merge) if the reviewer hasn't reviewed the head, if changes it requested haven't been answered by
+ * a later comment review on the head, or if GitHub can't be asked.
+ */
+async function checkReviewed(
+  deps: Deps,
+  token: string,
+  { pr, reviewer }: { pr: number; reviewer: string },
+): Promise<string> {
+  const auth = `Bearer ${token}`;
+  const hint = 'The merge is refused until the review can be checked.';
+  const pull = await github<{ head?: { sha?: unknown } }>(deps, {
+    method: 'GET',
+    path: `/repos/${REPO}/pulls/${pr}`,
+    auth,
+    hint,
+  });
+  const head = pull?.head?.sha;
+  if (typeof head !== 'string' || !/^[0-9a-f]{40}$/.test(head)) {
+    throw new AgentError(`refused the merge: GitHub gave no head commit for PR #${pr}`);
+  }
+  const all: Review[] = [];
+  for (let page = 1; ; page++) {
+    if (page > MAX_PAGES) {
+      throw new AgentError(`refused the merge: PR #${pr} has too many reviews to check`);
+    }
+    const batch = await github<Review[]>(deps, {
+      method: 'GET',
+      path: `/repos/${REPO}/pulls/${pr}/reviews?per_page=${PER_PAGE}&page=${page}`,
+      auth,
+      hint,
+    });
+    if (!Array.isArray(batch))
+      throw new AgentError('refused the merge: GitHub sent no review list');
+    all.push(...batch);
+    if (batch.length < PER_PAGE) break;
+  }
+  // Only the reviewer's posted verdicts count: not pending drafts, dismissed reviews, or the
+  // builder's own replies (GitHub records those as reviews too).
+  const reviews = all
+    .filter((r) => r.user?.login === reviewer)
+    .filter((r) => r.state === 'COMMENTED' || r.state === 'CHANGES_REQUESTED')
+    .sort((a, b) => a.id - b.id);
+  if (!reviews.some((r) => r.commit_id === head)) {
+    throw new AgentError(
+      `refused the merge: the head commit ${head} has no reviewer review; post one before ` +
+        'queueing the merge',
+    );
+  }
+  const blocking = reviews.findLastIndex((r) => r.state === 'CHANGES_REQUESTED');
+  const answered = reviews.slice(blocking + 1).some((r) => r.commit_id === head);
+  if (blocking >= 0 && !answered) {
+    throw new AgentError(
+      `refused the merge: the reviewer's latest verdict requests changes, and no later reviewer ` +
+        `review on the head commit ${head} says they're resolved; get a follow-up review first`,
+    );
+  }
+  return head;
 }
 
 /** Short flags of gh pr create and edit that take no value, so more flags may follow in a bundle. */
@@ -740,6 +813,11 @@ function run(
   });
 }
 
+/** The reviewer app's bot login, which is who a merge-gating review must come from. */
+function reviewerBot(deps: Deps): string {
+  return `${loadConfig(deps.configPath ?? DEFAULT_CONFIG, 'reviewer').slug}[bot]`;
+}
+
 /** Runs the command as the role's app and returns its exit code. Never throws. */
 export async function asAgent(argv: string[], deps: Deps): Promise<number> {
   const secrets: string[] = [];
@@ -768,12 +846,14 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
   };
   try {
     const { role, command } = parseArgs(argv);
-    const { tool, args, extra, stdin } = allowed(role, command, deps.cwd ?? process.cwd());
+    const { tool, args, extra, stdin, merge } = allowed(role, command, deps.cwd ?? process.cwd());
     const file = findTool(tool, deps);
     const base = baseEnv(deps.env);
     checkLocalGitConfig(findTool('git', deps), deps.cwd);
     const config = loadConfig(deps.configPath ?? DEFAULT_CONFIG, role);
     const key = loadKey(role, deps, secrets);
+    // Read before any token exists, so a reviewer app that isn't set up refuses the merge early.
+    const gate = merge === undefined ? undefined : { pr: merge, reviewer: reviewerBot(deps) };
 
     const appId =
       config.appId ??
@@ -822,12 +902,16 @@ export async function asAgent(argv: string[], deps: Deps): Promise<number> {
       auth: `Bearer ${token}`,
       hint: `Check the slug in the config matches the ${role} app's URL name.`,
     });
+    // Pinned to the head that was checked, so a push between this check and the queue fails it.
+    const runArgs = gate
+      ? [...args, '--match-head-commit', await checkReviewed(deps, token, gate)]
+      : args;
     ghConfigDir = mkdtempSync(join(tmpdir(), 'as-agent-gh-'));
     const env = agentEnv(base, token, basicAuth, ghConfigDir, bot);
     const onSpawn = (spawned: ChildProcess) => {
       child = spawned;
     };
-    const code = await run(file, args, { env, cwd: deps.cwd, deps, secrets, onSpawn, stdin });
+    const code = await run(file, runArgs, { env, cwd: deps.cwd, deps, secrets, onSpawn, stdin });
     if (code !== 0) say(`${tool} exited with ${code}`);
     return code;
   } catch (error) {

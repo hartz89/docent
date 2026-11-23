@@ -48,6 +48,7 @@ import { describeError, RunLog } from './run-log.ts';
 import { type BuiltIndex, buildIndex, type IndexLimits, type IndexStatus } from './symbols.ts';
 import { type Timings, timings } from './timings.ts';
 import {
+  fromCache,
   generateTour,
   type StopView,
   TOUR_PROMPT_VERSION,
@@ -235,6 +236,10 @@ export class Review {
   /** A primer still running, so closing can stop it and wait for its cleanup. */
   #priming: { stop: AbortController; done: Promise<unknown> } | null = null;
   #closed = false;
+  /** Stops the tour: the guide writing it, or the wait on another Docent writing it. */
+  #tourStop = new AbortController();
+  /** The tour being written or waited for, so closing can wait until its lock is let go. */
+  #touring: Promise<unknown> | null = null;
   /** Checks of author answers, by check id. Each settles, never rejects. */
   #checks = new Map<string, Promise<CheckOutcome>>();
   /** The symbol index, built on first use. A review is bound to one head, so this is per head. */
@@ -666,13 +671,15 @@ Question: ${question}`,
 
   /**
    * Deletes the primed copy of the author's session. Call it when the review ends. A primer still
-   * running is stopped first, and its own cleanup awaited.
+   * running is stopped first, and its own cleanup awaited. So is the tour: the guide stops writing
+   * it, and its lock is let go, so another Docent waiting on this tour writes it instead.
    */
   async close(): Promise<void> {
     this.#closed = true;
+    this.#tourStop.abort();
     const priming = this.#priming;
     priming?.stop.abort();
-    await priming?.done;
+    await Promise.allSettled([priming?.done, this.#touring]);
     const dir = await this.#primedDir?.catch(() => null);
     this.#primed = null;
     this.#primedDir = null;
@@ -844,11 +851,7 @@ Question: ${question}`,
         const outcome = JSON.parse(await readFile(cacheFile, 'utf8')) as TourOutcome;
         await lookup;
         ended('hit');
-        await this.#tourReady(
-          { ...outcome, timing: outcome.timing ?? [], cached: true },
-          await proofs,
-          tourStarted,
-        );
+        await this.#tourReady(fromCache(outcome), await proofs, tourStarted);
         return;
       }
       ended('missed');
@@ -869,28 +872,35 @@ Question: ${question}`,
           diff,
           runner: this.#options.runner,
           model: this.#options.model,
+          proofs,
           // Progress only moves a tour that's still being written, never a ready or failed one.
           onProgress: (progress) => {
             if (this.#tour.state === 'working') this.#set(fromProgress(progress, this.#tour));
           },
           timings: time,
           log: this.#log,
+          signal: this.#tourStop.signal,
         });
       };
-      const written = cacheFile
-        ? await cachedOnce(cacheFile, write, (holder) => {
-            if (!waited) {
-              waited = true;
-              endWait = time.span('Wait for another Docent writing this tour');
-              this.#log.event('tour.wait', holder ? { pid: holder.pid, host: holder.host } : {});
-            }
-            this.#set(working('writing', writtenElsewhere(holder), 1, []));
-          })
-        : { value: await write(), cached: false };
+      const touring = cacheFile
+        ? cachedOnce(
+            cacheFile,
+            write,
+            (holder) => {
+              if (!waited) {
+                waited = true;
+                endWait = time.span('Wait for another Docent writing this tour');
+                this.#log.event('tour.wait', holder ? { pid: holder.pid, host: holder.host } : {});
+              }
+              this.#set(working('writing', writtenElsewhere(holder), 1, []));
+            },
+            this.#tourStop.signal,
+          )
+        : write().then((value) => ({ value, cached: false }));
+      this.#touring = touring;
+      const written = await touring;
       stopWaiting();
-      const outcome: TourOutcome = written.cached
-        ? { ...written.value, timing: written.value.timing ?? [], cached: true }
-        : written.value;
+      const outcome: TourOutcome = written.cached ? fromCache(written.value) : written.value;
       await lookup;
       await this.#tourReady(outcome, await proofs, tourStarted);
     } catch (error) {

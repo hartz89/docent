@@ -1,0 +1,2955 @@
+{
+  "date": "2026-11-15",
+  "model": "claude-opus-5-5",
+  "judgeModel": "claude-sonnet-5",
+  "judgeRubric": 2,
+  "totals": [
+    {
+      "prompt": 4,
+      "fixtures": 11,
+      "failed": 0,
+      "findings": {
+        "expected": 10,
+        "cited": 10,
+        "explained": 8
+      },
+      "externalFindings": {
+        "expected": 1,
+        "cited": 1,
+        "explained": 1
+      },
+      "danger": {
+        "falseAlarms": 0,
+        "missed": 0
+      },
+      "overLongTours": 1,
+      "stops": 53,
+      "unfoundedOpinions": 0,
+      "quality": {
+        "plainFirstSentence": 0.5849056603773585,
+        "withinLength": 0.9622641509433962,
+        "behaviorFirst": 0.9056603773584906
+      },
+      "neutral": {
+        "clear": 46,
+        "read": 53
+      },
+      "repaired": {
+        "passed": 0,
+        "retried": 0
+      },
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 11841.5,
+        "tourMs": 22333
+      },
+      "routes": {
+        "matched": 0,
+        "planned": 0
+      },
+      "retries": {
+        "total": 0,
+        "tours": 0,
+        "ran": 11
+      },
+      "ledger": {
+        "onRoute": 1316,
+        "provenSkip": 16,
+        "notOnRoute": 33
+      },
+      "important": {
+        "lines": 111,
+        "offRoute": 2
+      },
+      "tourUsd": 1.3044630000000002,
+      "judgeUsd": 0.5835035
+    },
+    {
+      "prompt": 5,
+      "fixtures": 11,
+      "failed": 0,
+      "findings": {
+        "expected": 10,
+        "cited": 8,
+        "explained": 4
+      },
+      "externalFindings": {
+        "expected": 1,
+        "cited": 1,
+        "explained": 0
+      },
+      "danger": {
+        "falseAlarms": 0,
+        "missed": 3
+      },
+      "overLongTours": 1,
+      "stops": 48,
+      "unfoundedOpinions": 0,
+      "quality": {
+        "plainFirstSentence": 0.5833333333333334,
+        "withinLength": 0.9166666666666666,
+        "behaviorFirst": 0.7916666666666666
+      },
+      "neutral": {
+        "clear": 37,
+        "read": 48
+      },
+      "repaired": {
+        "passed": 1,
+        "retried": 1
+      },
+      "speed": {
+        "firstRouteMs": 10922,
+        "firstStopMs": 13744,
+        "tourMs": 25497
+      },
+      "routes": {
+        "matched": 10,
+        "planned": 11
+      },
+      "retries": {
+        "total": 1,
+        "tours": 1,
+        "ran": 11
+      },
+      "ledger": {
+        "onRoute": 1318,
+        "provenSkip": 29,
+        "notOnRoute": 18
+      },
+      "important": {
+        "lines": 111,
+        "offRoute": 2
+      },
+      "tourUsd": 1.6359469999999998,
+      "judgeUsd": 0.5186855
+    }
+  ],
+  "runs": [
+    {
+      "fixture": "graphql-scalars-2719-phone-redos",
+      "prompt": 4,
+      "tourUsd": 0.190849,
+      "judgeUsd": 0.0534375,
+      "findings": [
+        {
+          "file": "src/scalars/PhoneNumber.ts",
+          "lines": {
+            "start": 8,
+            "end": 8
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 6,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 20908,
+        "tourMs": 36329
+      },
+      "route": null,
+      "ledger": {
+        "onRoute": 133,
+        "provenSkip": 0,
+        "notOnRoute": 0
+      },
+      "important": {
+        "lines": 1,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": {
+        "expected": true,
+        "raised": true
+      },
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "PhoneNumber accepts formatted, plus-less numbers",
+          "mechanical": {
+            "firstSentence": "The PhoneNumber scalar now accepts numbers with spaces, dashes, parentheses, no leading plus, and trailing digit groups that the PR calls extensions.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 51,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states the scalar now accepts formatted and plus-less numbers; no advice or unfounded risk given."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "One regex and one message, used by all three paths",
+          "mechanical": {
+            "firstSentence": "Validation becomes looser and the rejection message changes for serialize, parseValue and parseLiteral.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 45,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states validation is looser and messages changed; rest is factual description of code paths."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "The validation regex no longer enforces E.164",
+          "mechanical": {
+            "firstSentence": "Values without a plus, with separators, and of any length from 3 digits up are now accepted.",
+            "codeInFirstSentence": false,
+            "sentences": 6,
+            "words": 87,
+            "withinLength": false
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states what is now accepted; the backtracking 'danger' flag is a cited, concrete mechanism from the regex, not an unfounded opinion."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "Rejection message text replaced in all three paths",
+          "mechanical": {
+            "firstSentence": "Clients now see a different error message when a phone number is rejected.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 54,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states clients now see a different error message; the mismatch flag cites a factual contradiction with the PR's non-breaking claim, not an opinion."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 5,
+          "kind": "edge",
+          "title": "Tests: formatted numbers pass, bracket and spacing variants fail",
+          "mechanical": {
+            "firstSentence": "The tests now lock in that formatted and plus-less numbers pass, and that letters, square brackets, spaces inside parentheses and two-digit inputs are rejected with the new message.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 69,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence concretely states which formatted/plus-less numbers pass and which rejected cases are locked in by tests; no advice or unfounded risk."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "graphql-scalars-2719-phone-redos",
+      "prompt": 5,
+      "tourUsd": 0.236312,
+      "judgeUsd": 0.049085500000000004,
+      "findings": [
+        {
+          "file": "src/scalars/PhoneNumber.ts",
+          "lines": {
+            "start": 8,
+            "end": 8
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": false
+        }
+      ],
+      "status": "ok",
+      "stopCount": 6,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": 21523,
+        "firstStopMs": 24508,
+        "tourMs": 36740
+      },
+      "route": {
+        "planned": 6,
+        "written": 6,
+        "sameTitles": 6,
+        "matches": true
+      },
+      "ledger": {
+        "onRoute": 133,
+        "provenSkip": 0,
+        "notOnRoute": 0
+      },
+      "important": {
+        "lines": 1,
+        "offRoute": 0,
+        "flagged": false
+      },
+      "danger": {
+        "expected": true,
+        "raised": false
+      },
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Phone number scalar accepts many more formats",
+          "mechanical": {
+            "firstSentence": "The PhoneNumber scalar now accepts numbers with no leading plus, with spaces, dashes and parentheses, and with trailing extension digits.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 47,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states newly accepted formats; flag is a factual mismatch, not opinion."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "One pattern drives three entry points and JSON schema",
+          "mechanical": {
+            "firstSentence": "A single pattern decides validity for outgoing values, incoming variables and inline query literals.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 62,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence describes architecture (one pattern feeds three entry points) rather than a behavior change; flag is factual mismatch."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Plus sign, separators and length limits relaxed",
+          "mechanical": {
+            "firstSentence": "Values that used to be rejected now pass: no leading plus, a single space or dash between digit groups, parentheses, and any number of trailing digit groups.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 68,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence directly states what now passes that used to be rejected; rest is factual description."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "New rejection message in all three paths",
+          "mechanical": {
+            "firstSentence": "Rejected values now produce a longer error message.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 44,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the caller-visible change (longer error message) with no opinion added."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 5,
+          "kind": "edge",
+          "title": "Tests lock in loose formats; too-long test removed",
+          "mechanical": {
+            "firstSentence": "The tests now require that numbers with no plus, with spaces, dashes and parentheses, and a two-digit `+12` are handled as before: the formatted ones are accepted and `+12` is rejected.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 75,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states which values tests now expect accepted/rejected; missing-coverage note is a factual gap, not advice or speculation."
+          },
+          "neutralClear": false
+        }
+      ]
+    },
+    {
+      "fixture": "hono-4267-client-index-param",
+      "prompt": 4,
+      "tourUsd": 0.082719,
+      "judgeUsd": 0.0385135,
+      "findings": [
+        {
+          "file": "src/client/client.ts",
+          "lines": {
+            "start": 169,
+            "end": 169
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 4,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 10333,
+        "tourMs": 16013
+      },
+      "route": null,
+      "ledger": {
+        "onRoute": 36,
+        "provenSkip": 0,
+        "notOnRoute": 1
+      },
+      "important": {
+        "lines": 1,
+        "offRoute": 0,
+        "flagged": false
+      },
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "$url() drops a trailing /index segment",
+          "mechanical": {
+            "firstSentence": "Building a URL with the client for an index route now gives the route's real address, such as `http://fake/` instead of `http://fake/index`.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 47,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the concrete URL change; rest is factual with no advice or unestablished risk."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "core_change",
+          "title": "Index-string removal added to the $url() branch",
+          "mechanical": {
+            "firstSentence": "When you call `$url()`, the resulting URL now has a trailing `/index` removed, or turned into `/` if it sits right after the host.",
+            "codeInFirstSentence": true,
+            "sentences": 5,
+            "words": 77,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the URL output change; remainder describes mechanics and callers as facts, no advice or speculation."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "edge",
+          "title": "New test locks in $url().href for index and nested routes",
+          "mechanical": {
+            "firstSentence": "The new tests check that `$url().href` gives `http://fake/` for the root index route.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 53,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence conveys the concrete URL outcome tested; remaining sentences state test-coverage facts without advice or speculative risk."
+          },
+          "neutralClear": false
+        }
+      ]
+    },
+    {
+      "fixture": "hono-4267-client-index-param",
+      "prompt": 5,
+      "tourUsd": 0.114295,
+      "judgeUsd": 0.054469500000000004,
+      "findings": [
+        {
+          "file": "src/client/client.ts",
+          "lines": {
+            "start": 169,
+            "end": 169
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": false
+        }
+      ],
+      "status": "ok",
+      "stopCount": 4,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": 9383,
+        "firstStopMs": 11466,
+        "tourMs": 17306
+      },
+      "route": {
+        "planned": 4,
+        "written": 4,
+        "sameTitles": 4,
+        "matches": true
+      },
+      "ledger": {
+        "onRoute": 36,
+        "provenSkip": 0,
+        "notOnRoute": 1
+      },
+      "important": {
+        "lines": 1,
+        "offRoute": 0,
+        "flagged": false
+      },
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "$url() drops the trailing index segment",
+          "mechanical": {
+            "firstSentence": "Calling the URL helper on an index route now returns the route's real URL, such as `http://fake/`, instead of one ending in `/index`.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 42,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the caller-visible result changes from a trailing /index href to the real URL; no risk/advice language appears."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "core_change",
+          "title": "$url() now strips index the way requests do",
+          "mechanical": {
+            "firstSentence": "The URL helper now strips a trailing index segment before it builds the URL object, the same cleanup that request sending already did.",
+            "codeInFirstSentence": false,
+            "sentences": 5,
+            "words": 76,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states the URL helper now strips the trailing index segment before building the URL, a behavior change; rest is factual comparison of call order, no advice or unestablished risk."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "edge",
+          "title": "Tests lock in $url() hrefs for nested routes",
+          "mechanical": {
+            "firstSentence": "The new tests pin the `href` for four cases: the root index route (`http://fake/`), a mounted sub-app root (`/api`), a path parameter, and a query on a nested route.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 51,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence narrates what the tests assert (implementation/test detail) rather than stating a behavior change, and is vague about the actual href outcomes for two of the four cases; the coverage-gap note is a plain factual observation, not an opinion."
+          },
+          "neutralClear": false
+        }
+      ]
+    },
+    {
+      "fixture": "hono-4813-cors-credentials",
+      "prompt": 4,
+      "tourUsd": 0.105707,
+      "judgeUsd": 0.0399605,
+      "findings": [
+        {
+          "file": "src/middleware/cors/index.ts",
+          "lines": {
+            "start": 80,
+            "end": 82
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 6,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 10895,
+        "tourMs": 22333
+      },
+      "route": null,
+      "ledger": {
+        "onRoute": 78,
+        "provenSkip": 0,
+        "notOnRoute": 0
+      },
+      "important": {
+        "lines": 7,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": {
+        "expected": true,
+        "raised": true
+      },
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Wildcard plus credentials now echoes the caller's origin",
+          "mechanical": {
+            "firstSentence": "With `origin: '*'` and `credentials: true`, the CORS middleware now returns the request's own origin in the allow-origin header instead of `*`, and adds `Vary: Origin`.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 50,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the header now reflects origin instead of wildcard; browser-rejection claim is attributed to the PR description, not asserted as the tour's own risk."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "One origin resolver and two Vary checks change",
+          "mechanical": {
+            "firstSentence": "Two behaviors change, both only when `origin` is `'*'` and `credentials` is set: which value goes in the allow-origin header, and whether `Vary: Origin` is sent.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 69,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states which two behaviors change under the wildcard+credentials condition; rest is a factual map of code, no opinions."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Any request origin is reflected, including \"null\"",
+          "mechanical": {
+            "firstSentence": "When credentials are on with a wildcard, every request origin is now echoed back as allowed, and credentials are allowed with it.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 82,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states every request origin is now echoed with credentials; the danger flag is a cited, concrete, code-grounded fact matching the established defect, not speculation."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "Vary: Origin now sent with wildcard plus credentials",
+          "mechanical": {
+            "firstSentence": "Preflight and normal responses now carry `Vary: Origin` when credentials are on, even with a wildcard origin, because the allow-origin value now depends on the request.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 50,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states Vary: Origin is now sent under the wildcard+credentials condition; remainder is factual implementation description with no risk claims."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 5,
+          "kind": "edge",
+          "title": "Tests lock in reflection, Vary, no-origin and null cases",
+          "mechanical": {
+            "firstSentence": "The new tests lock in reflection of the request origin on simple and preflight requests, `Vary: Origin`, and no allow-origin header when the request has no `Origin`.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 69,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states what the new tests lock in (reflection, Vary, no-header case), conveying the actual resulting behavior; no opinions present."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "hono-4813-cors-credentials",
+      "prompt": 5,
+      "tourUsd": 0.154254,
+      "judgeUsd": 0.038308499999999995,
+      "findings": [
+        {
+          "file": "src/middleware/cors/index.ts",
+          "lines": {
+            "start": 80,
+            "end": 82
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 6,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": 11479,
+        "firstStopMs": 14439,
+        "tourMs": 25444
+      },
+      "route": {
+        "planned": 6,
+        "written": 6,
+        "sameTitles": 6,
+        "matches": true
+      },
+      "ledger": {
+        "onRoute": 76,
+        "provenSkip": 2,
+        "notOnRoute": 0
+      },
+      "important": {
+        "lines": 7,
+        "offRoute": 0,
+        "flagged": false
+      },
+      "danger": {
+        "expected": true,
+        "raised": false
+      },
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Wildcard plus credentials now reflects the caller's origin",
+          "mechanical": {
+            "firstSentence": "With the CORS middleware set to origin `'*'` and `credentials: true`, responses now carry the request's own Origin in `Access-Control-Allow-Origin` instead of `*`.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 57,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence clearly states the response now reflects the request origin instead of '*', and the body only reports the PR's own rationale, not an opinion."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "Origin lookup and Vary header both change",
+          "mechanical": {
+            "firstSentence": "Two behaviors change, both only when origin is `'*'` and credentials is on.",
+            "codeInFirstSentence": true,
+            "sentences": 5,
+            "words": 57,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence only says 'two behaviors change' without stating what they are, leaving the actual change unclear until later sentences."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Wildcard origin with credentials echoes request Origin",
+          "mechanical": {
+            "firstSentence": "Any request Origin is now echoed back as the allowed origin, together with `Access-Control-Allow-Credentials: true`.",
+            "codeInFirstSentence": true,
+            "sentences": 6,
+            "words": 64,
+            "withinLength": false
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states that any origin is now echoed with credentials allowed, a clear behavior change, and the rest only describes code facts."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "Vary: Origin now sent for credentialed wildcard",
+          "mechanical": {
+            "firstSentence": "Preflight and normal responses now include `Vary: Origin` when origin is `'*'` and credentials is on.",
+            "codeInFirstSentence": true,
+            "sentences": 5,
+            "words": 54,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states Vary: Origin is now sent for preflight and normal responses in this config, a clear behavior statement, with no opinion added."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 5,
+          "kind": "edge",
+          "title": "Tests lock in reflection, Vary and null origin",
+          "mechanical": {
+            "firstSentence": "The new tests lock in origin reflection with credentials on GET and preflight, plus `Vary: Origin` on both.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 72,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence conveys that tests capture origin reflection with credentials and Vary: Origin on both GET and preflight, describing the behavior being locked in, with no opinion."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "hono-5205-etag-stream-digest",
+      "prompt": 4,
+      "tourUsd": 0.106473,
+      "judgeUsd": 0.0606065,
+      "findings": [
+        {
+          "file": "src/middleware/etag/digest.ts",
+          "lines": {
+            "start": 54,
+            "end": 54
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": false
+        }
+      ],
+      "status": "ok",
+      "stopCount": 5,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 11611,
+        "tourMs": 20325
+      },
+      "route": null,
+      "ledger": {
+        "onRoute": 82,
+        "provenSkip": 1,
+        "notOnRoute": 2
+      },
+      "important": {
+        "lines": 45,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Same body now gives the same ETag however it is chunked",
+          "mechanical": {
+            "firstSentence": "The ETag middleware now gives the same ETag for a response body no matter how its stream is split into chunks.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 51,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the ETag is now the same regardless of chunking, and the body only states facts."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "One digest function, one middleware caller",
+          "mechanical": {
+            "firstSentence": "Only the stream digest helper changes, and it now hashes the body in fixed 256 KiB blocks.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 48,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the helper now hashes in fixed 256 KiB blocks, and the rest only describes callers/flow."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Hashing now runs on fixed 256 KiB blocks",
+          "mechanical": {
+            "firstSentence": "The hash is now chained over consecutive 256 KiB blocks of the body, plus one final shorter block, no matter where the stream's chunk boundaries fall.",
+            "codeInFirstSentence": false,
+            "sentences": 5,
+            "words": 93,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states hashing now runs over fixed blocks regardless of chunk boundaries, and the flag only notes a description/code mismatch, which the rubric exempts."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "edge",
+          "title": "Test locks in chunk-independent ETags",
+          "mechanical": {
+            "firstSentence": "A new test checks that a 1,000,000-byte body gives the same ETag whether it is sent as one chunk or as chunks of 1, 32,768 and 967,231 bytes.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 55,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence conveys the invariant now guaranteed (same ETag across different chunkings), and the rest states facts about the test."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "hono-5205-etag-stream-digest",
+      "prompt": 5,
+      "tourUsd": 0.117109,
+      "judgeUsd": 0.0564025,
+      "findings": [
+        {
+          "file": "src/middleware/etag/digest.ts",
+          "lines": {
+            "start": 54,
+            "end": 54
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": false
+        }
+      ],
+      "status": "ok",
+      "stopCount": 5,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": 14451,
+        "firstStopMs": 17351,
+        "tourMs": 25569
+      },
+      "route": {
+        "planned": 5,
+        "written": 5,
+        "sameTitles": 5,
+        "matches": true
+      },
+      "ledger": {
+        "onRoute": 83,
+        "provenSkip": 1,
+        "notOnRoute": 1
+      },
+      "important": {
+        "lines": 45,
+        "offRoute": 0,
+        "flagged": false
+      },
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "ETag no longer depends on how a stream is chunked",
+          "mechanical": {
+            "firstSentence": "With this change, two responses with the same body bytes get the same ETag, however the body stream was split into chunks.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 63,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states that identical body bytes now yield the same ETag regardless of chunking, a plain behavior change; the rest only notes a factual mismatch between the title and checklist PR description."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "One digest helper, one caller: the ETag middleware",
+          "mechanical": {
+            "firstSentence": "The only change in behavior is in the ETag digest helper; the middleware that calls it is untouched.",
+            "codeInFirstSentence": false,
+            "sentences": 5,
+            "words": 72,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence only locates where the change lives (the digest helper vs. the untouched middleware) without saying what now happens differently; no advisory or speculative language appears."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Body bytes now hashed in fixed 256 KiB blocks",
+          "mechanical": {
+            "firstSentence": "The body is now hashed in 256 KiB blocks no matter how the stream delivers it, with one shorter block at the end.",
+            "codeInFirstSentence": false,
+            "sentences": 5,
+            "words": 100,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states the new fixed 256 KiB block hashing behavior; the rest describes mechanics and consequences as facts, not speculation or advice."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "edge",
+          "title": "Test pins equal ETags across different chunkings",
+          "mechanical": {
+            "firstSentence": "The new test requires a 1,000,000-byte body to get the same ETag whether it arrives as one chunk or as three (1, 32,768 and 967,231 bytes).",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 56,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the test's guarantee (same ETag across different chunkings), which conveys the stabilized behavior; the closing line is a plain factual coverage note, not speculative risk or review advice."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "ky-122-timeout-abort",
+      "prompt": 4,
+      "tourUsd": 0.077011,
+      "judgeUsd": 0.0472105,
+      "findings": [
+        {
+          "file": "index.js",
+          "lines": {
+            "start": 122,
+            "end": 122
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 4,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 12072,
+        "tourMs": 18816
+      },
+      "route": null,
+      "ledger": {
+        "onRoute": 21,
+        "provenSkip": 0,
+        "notOnRoute": 1
+      },
+      "important": {
+        "lines": 9,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Stop TimeoutError after a request already finished",
+          "mechanical": {
+            "firstSentence": "The PR is meant to make ky throw a timeout error only when the request has not finished before the timeout.",
+            "codeInFirstSentence": false,
+            "sentences": 2,
+            "words": 48,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence frames the change as the PR's intended purpose ('is meant to...') rather than stating what now actually happens."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "core_change",
+          "title": "Timeout helper rewritten without Promise.race",
+          "mechanical": {
+            "firstSentence": "The timeout helper now settles with the fetch result if the fetch settles first.",
+            "codeInFirstSentence": false,
+            "sentences": 5,
+            "words": 68,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the new resolve behavior, and the flag reports a cited mismatch (unconditional abort) rather than speculation."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "edge",
+          "title": "Abort runs without a null guard or 1ms delay",
+          "mechanical": {
+            "firstSentence": "Where AbortController is unsupported, the timer callback now throws, because the old `if (abortController)` guard is gone.",
+            "codeInFirstSentence": true,
+            "sentences": 5,
+            "words": 70,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the new throwing behavior for unsupported environments, and the rest is factual description of code/tests, not advice or speculation."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "ky-122-timeout-abort",
+      "prompt": 5,
+      "tourUsd": 0.101824,
+      "judgeUsd": 0.0458605,
+      "findings": [
+        {
+          "file": "index.js",
+          "lines": {
+            "start": 122,
+            "end": 122
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 5,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": 15278,
+        "firstStopMs": 17694,
+        "tourMs": 25497
+      },
+      "route": {
+        "planned": 5,
+        "written": 5,
+        "sameTitles": 5,
+        "matches": true
+      },
+      "ledger": {
+        "onRoute": 22,
+        "provenSkip": 0,
+        "notOnRoute": 0
+      },
+      "important": {
+        "lines": 9,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Stop the unconditional TimeoutError in browsers",
+          "mechanical": {
+            "firstSentence": "The description says requests that finish before the timeout should no longer create a TimeoutError, which in at least two browsers showed up as thrown even for completed requests (issue #91).",
+            "codeInFirstSentence": false,
+            "sentences": 2,
+            "words": 49,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence reports what the PR description/issue says should happen, not what the code now actually does."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "core_change",
+          "title": "Timeout now settles one promise directly",
+          "mechanical": {
+            "firstSentence": "A request that finishes in time now resolves the wrapper promise, and the timer later calls `reject` on an already-settled promise, so no rejected promise is left over.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 76,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the new resolve/reject behavior plainly, and the rest sticks to cited facts."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "edge",
+          "title": "Abort now always runs, with no guard or delay",
+          "mechanical": {
+            "firstSentence": "When the timer fires, the request's abort controller is now aborted right after the rejection, with no check that a controller exists.",
+            "codeInFirstSentence": false,
+            "sentences": 6,
+            "words": 85,
+            "withinLength": false
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the abort now runs unconditionally, and the TypeError/no-catch claim is a concrete, cited consequence rather than speculation."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 4,
+          "kind": "edge",
+          "title": "Only the slow-request case is tested",
+          "mechanical": {
+            "firstSentence": "The existing `timeout option` test checks that a slow request rejects with `TimeoutError`.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 34,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence describes what the existing test checks rather than any behavior change, but it contains no opinionated advice or unfounded risk."
+          },
+          "neutralClear": false
+        }
+      ]
+    },
+    {
+      "fixture": "ky-536-unknown-fetch-options",
+      "prompt": 4,
+      "tourUsd": 0.126001,
+      "judgeUsd": 0.0700605,
+      "findings": [
+        {
+          "file": "source/utils/options.ts",
+          "lines": {
+            "start": 10,
+            "end": 10
+          },
+          "externalKnowledge": true,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 7,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 12354,
+        "tourMs": 24832
+      },
+      "route": null,
+      "ledger": {
+        "onRoute": 153,
+        "provenSkip": 3,
+        "notOnRoute": 1
+      },
+      "important": {
+        "lines": 33,
+        "offRoute": 2,
+        "flagged": false
+      },
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Forward non-standard options to fetch",
+          "mechanical": {
+            "firstSentence": "Options that are neither Ky options nor Request properties, such as Next.js's `next: {revalidate}`, now reach the fetch function as its second argument.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 52,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence says unknown options now reach fetch as its second argument, and the rest only cites prior behavior and the PR's own issue numbers."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "Filter, registry, and fetch call sites",
+          "mechanical": {
+            "firstSentence": "Every fetch call now gets a second `init` argument holding only the unknown options.",
+            "codeInFirstSentence": true,
+            "sentences": 2,
+            "words": 56,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states every fetch call now gets a second init argument with leftover options; remainder just maps the implementing files."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Fetch now receives unknown options as init",
+          "mechanical": {
+            "firstSentence": "Whether or not a timeout is set, the fetch function is now called with the cloned request plus an object of leftover options.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 63,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states fetch is now called with cloned request plus leftover options regardless of timeout; rest is factual mechanism, no advice or unestablished risk."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "How an option counts as unknown",
+          "mechanical": {
+            "firstSentence": "An option counts as unknown only if its key is missing from Ky's key list and is not a property of the `Request` object (`key in request`).",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 62,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the plain rule for when an option counts as unknown; the runtime-dependence note is a grounded fact, not an opinion or review instruction."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 5,
+          "kind": "edge",
+          "title": "Options type split into KyOptions plus fetch init",
+          "mechanical": {
+            "firstSentence": "The public `Options` type accepts the same keys as before.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 63,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence only says the public Options keys are unchanged, naming types rather than stating what behavior actually changed."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 6,
+          "kind": "edge",
+          "title": "Test locks in passing a custom option",
+          "mechanical": {
+            "firstSentence": "One new test checks that a custom `next` option reaches a custom fetch's `init` as the same object, on the default path where a timeout is set.",
+            "codeInFirstSentence": true,
+            "sentences": 2,
+            "words": 46,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states what the new test verifies; the note on missing coverage is a factual gap statement, not advice or a speculative risk."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "ky-536-unknown-fetch-options",
+      "prompt": 5,
+      "tourUsd": 0.138153,
+      "judgeUsd": 0.0752665,
+      "findings": [
+        {
+          "file": "source/utils/options.ts",
+          "lines": {
+            "start": 10,
+            "end": 10
+          },
+          "externalKnowledge": true,
+          "cited": true,
+          "explained": false
+        }
+      ],
+      "status": "ok",
+      "stopCount": 7,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": 10681,
+        "firstStopMs": 13744,
+        "tourMs": 28192
+      },
+      "route": {
+        "planned": 7,
+        "written": 7,
+        "sameTitles": 7,
+        "matches": true
+      },
+      "ledger": {
+        "onRoute": 157,
+        "provenSkip": 0,
+        "notOnRoute": 0
+      },
+      "important": {
+        "lines": 33,
+        "offRoute": 0,
+        "flagged": false
+      },
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Options Ky doesn't know now reach the fetch function",
+          "mechanical": {
+            "firstSentence": "Options that are neither Ky options nor properties of a Request (for example Next.js's `next: {revalidate}`) are now passed to the fetch function as its second argument.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 66,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states unknown options now reach fetch's second argument; rest only recounts facts and the PR description."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "Three pieces: key registry, filter, fetch call sites",
+          "mechanical": {
+            "firstSentence": "Leftover options are now found and forwarded on every request, with and without a timeout.",
+            "codeInFirstSentence": false,
+            "sentences": 6,
+            "words": 73,
+            "withinLength": false
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states leftover options are now forwarded on every request; remainder just maps code pieces without advice or risk."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Every request now sends leftover options to fetch",
+          "mechanical": {
+            "firstSentence": "The fetch function now always gets a second argument: a plain object of the options that Ky and the Request didn't consume, which is empty when there are none.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 80,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states fetch always gets a second argument now; the rest are grounded facts about ordering and the 'in' check, not advice."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "A registry of Ky's own options decides what's filtered",
+          "mechanical": {
+            "firstSentence": "Ky's own options (`json`, `parseJson`, `searchParams`, `prefixUrl`, `retry`, `timeout`, `hooks`, `throwHttpErrors`, `onDownloadProgress`, `fetch`) are never forwarded to fetch.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 65,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states which options are never forwarded to fetch; the rest explains the type mechanism as fact."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 5,
+          "kind": "edge",
+          "title": "Option types split into Ky-only and fetch-shared",
+          "mechanical": {
+            "firstSentence": "The public `Options` type should accept the same keys as before.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 57,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence is a normative claim about intended continuity ('should accept the same keys') rather than stating an actual behavior change."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 6,
+          "kind": "edge",
+          "title": "One test locks in passthrough to a custom fetch",
+          "mechanical": {
+            "firstSentence": "The new test checks that an unknown option (`next`) reaches a custom fetch's second argument as the same object.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 46,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence conveys that an unknown option now reaches the custom fetch's second argument; the coverage-gap note states a fact about the cited test file, not advice."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "ky-571-jsdoc-typo",
+      "prompt": 4,
+      "tourUsd": 0.038452,
+      "judgeUsd": 0.0177825,
+      "findings": [],
+      "status": "ok",
+      "stopCount": 3,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 4301,
+        "tourMs": 7342
+      },
+      "route": null,
+      "ledger": {
+        "onRoute": 2,
+        "provenSkip": 0,
+        "notOnRoute": 0
+      },
+      "important": {
+        "lines": 0,
+        "offRoute": 0,
+        "flagged": false
+      },
+      "danger": {
+        "expected": false,
+        "raised": false
+      },
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Fix two typos in the before-request hook docs",
+          "mechanical": {
+            "firstSentence": "Nothing changes in behavior: the PR corrects spelling in the documentation comment for the before-request hook.",
+            "codeInFirstSentence": false,
+            "sentences": 2,
+            "words": 23,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states nothing changes in behavior beyond a doc spelling fix."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "core_change",
+          "title": "\"forf\" and \"modiy\" corrected in a comment",
+          "mechanical": {
+            "firstSentence": "Only comment text changes, so runtime behavior and types are untouched.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 39,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states only comment text changes, runtime untouched."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "ky-571-jsdoc-typo",
+      "prompt": 5,
+      "tourUsd": 0.042396,
+      "judgeUsd": 0.0174745,
+      "findings": [],
+      "status": "ok",
+      "stopCount": 3,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": 4421,
+        "firstStopMs": 6169,
+        "tourMs": 9213
+      },
+      "route": {
+        "planned": 3,
+        "written": 3,
+        "sameTitles": 3,
+        "matches": true
+      },
+      "ledger": {
+        "onRoute": 2,
+        "provenSkip": 0,
+        "notOnRoute": 0
+      },
+      "important": {
+        "lines": 0,
+        "offRoute": 0,
+        "flagged": false
+      },
+      "danger": {
+        "expected": false,
+        "raised": false
+      },
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Fix two typos in the beforeRequest hook docs",
+          "mechanical": {
+            "firstSentence": "This changes no behavior.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 33,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states no behavior changed, and the rest just describes the doc fix without advice or risk."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 2,
+          "kind": "edge",
+          "title": "Comment-only edit to the hook docs",
+          "mechanical": {
+            "firstSentence": "This changes no behavior: one line of a JSDoc comment on the `Hooks` type changes, and no code does.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 40,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states no behavior changed and what text changed, with no advice or risk raised."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "vite-15365-env-file-watch",
+      "prompt": 4,
+      "tourUsd": 0.11834,
+      "judgeUsd": 0.0785095,
+      "findings": [
+        {
+          "file": "packages/vite/src/node/server/hmr.ts",
+          "lines": {
+            "start": 77,
+            "end": 77
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 6,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 14245,
+        "tourMs": 24881
+      },
+      "route": null,
+      "ledger": {
+        "onRoute": 18,
+        "provenSkip": 0,
+        "notOnRoute": 0
+      },
+      "important": {
+        "lines": 8,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Watch only the env files Vite reads",
+          "mechanical": {
+            "firstSentence": "The dev server stops watching the whole env directory and now watches only the four env files it loads for the current mode.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 46,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states the watcher now watches only four mode files instead of the whole env directory, and the body only reports PR-description facts, not opinions."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "One helper now returns full env file paths",
+          "mechanical": {
+            "firstSentence": "Two behaviors change: what the file watcher subscribes to, and how the restart check spots an edited env file.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 66,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence only names the two areas affected ('what the watcher subscribes to', 'how the restart check spots a file') without saying what either now actually does."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Watcher gets env file paths instead of env directory",
+          "mechanical": {
+            "firstSentence": "The file watcher now gets `root`, the config file dependencies, and the four mode-specific env file paths, where before it got the whole `envDir`.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 56,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the watcher now receives specific env file paths instead of the whole envDir, and the rest states consequences (files outside root unwatched, duplicates possible) as facts from the diff, not speculative risk."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "Env restart check compares basename to full paths",
+          "mechanical": {
+            "firstSentence": "Editing an env file is now checked against full paths, but the name being tested is still just the file's basename.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 55,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the restart check now compares against full paths while still testing a basename, directly describing the new (broken) behavior; the flag only notes a description/code mismatch, which is permitted."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 5,
+          "kind": "edge",
+          "title": "Env loading unchanged, path join moved into helper",
+          "mechanical": {
+            "firstSentence": "`loadEnv` reads the same files as before; it does not change behavior.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 41,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states plainly that loadEnv's behavior is unchanged, and the rest reports factual test coverage without advice or speculative risk."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "vite-15365-env-file-watch",
+      "prompt": 5,
+      "tourUsd": 0.101941,
+      "judgeUsd": 0.0403675,
+      "findings": [
+        {
+          "file": "packages/vite/src/node/server/hmr.ts",
+          "lines": {
+            "start": 77,
+            "end": 77
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 6,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": 10922,
+        "firstStopMs": 12919,
+        "tourMs": 22539
+      },
+      "route": {
+        "planned": 6,
+        "written": 6,
+        "sameTitles": 6,
+        "matches": true
+      },
+      "ledger": {
+        "onRoute": 18,
+        "provenSkip": 0,
+        "notOnRoute": 0
+      },
+      "important": {
+        "lines": 8,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Watch only the env files Vite actually loads",
+          "mechanical": {
+            "firstSentence": "The dev server's file watcher stops watching the whole env directory and watches only the env files for the current mode.",
+            "codeInFirstSentence": false,
+            "sentences": 2,
+            "words": 42,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly says the watcher now watches only the current mode's env files instead of the whole dir, with no review advice or speculative risk."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "Env file list now returns full paths",
+          "mechanical": {
+            "firstSentence": "The helper that lists a mode's env files now takes the env directory and returns full paths instead of bare file names.",
+            "codeInFirstSentence": false,
+            "sentences": 2,
+            "words": 44,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the helper's return value changes from bare names to full paths, which is what callers now get back, and no opinion is given."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Dev server watches four env files, not the env dir",
+          "mechanical": {
+            "firstSentence": "Chokidar is now given `.env`, `.env.local`, `.env.[mode]` and `.env.[mode].local` under the env dir, instead of the env dir itself.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 60,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states chokidar is now given four specific files instead of the whole dir, and the rest states facts (dropped dedup, resolved path) without opinion."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "Env loading reads the same files as before",
+          "mechanical": {
+            "firstSentence": "Env loading behaves the same: it reads the same four files from the env dir.",
+            "codeInFirstSentence": false,
+            "sentences": 2,
+            "words": 36,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states env loading reads the same files as before, and the rest only describes where the path.join now happens, no opinion."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 5,
+          "kind": "edge",
+          "title": "Env-change restart check now compares basename to paths",
+          "mechanical": {
+            "firstSentence": "Editing an env file no longer matches the env check that triggers a server restart.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 53,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states editing an env file no longer triggers the restart check, and the flag only states a cited mismatch between description and code, not speculation."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "yargs-766-command-validation",
+      "prompt": 4,
+      "tourUsd": 0.420465,
+      "judgeUsd": 0.0869275,
+      "findings": [
+        {
+          "file": "lib/command.js",
+          "lines": {
+            "start": 176,
+            "end": 184
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": false
+        }
+      ],
+      "status": "ok",
+      "stopCount": 11,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 29747,
+        "tourMs": 62114
+      },
+      "route": null,
+      "ledger": {
+        "onRoute": 762,
+        "provenSkip": 7,
+        "notOnRoute": 13
+      },
+      "important": {
+        "lines": 4,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Commands now inherit parent options by default",
+          "mechanical": {
+            "firstSentence": "Options and most parsing hints set on the parent now carry into commands, where before they were reset.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 49,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states options/parsing hints now carry into commands instead of being reset."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "Five behaviors that change",
+          "mechanical": {
+            "firstSentence": "Five behaviors change: what survives a command reset (now everything not marked local), when command validation runs (after the handler), opt-in global flags for `strict()` and `check()`, a default of 1 for `demandCommand()`, and shared helpers behind the parser-hint setters.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 64,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence lists the five concrete behavior changes (what survives reset, validation timing, opt-in flags, demandCommand default), though one item names 'shared helpers'."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Reset keeps everything except keys marked local",
+          "mechanical": {
+            "firstSentence": "When a command runs, the parent's options are now kept unless a key was explicitly marked local.",
+            "codeInFirstSentence": false,
+            "sentences": 6,
+            "words": 74,
+            "withinLength": false
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the parent's options are now kept on command runs unless marked local, a clear behavior change."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "Implies, conflicts and descriptions carry into commands",
+          "mechanical": {
+            "firstSentence": "Implies and conflicts rules, and usage descriptions, now survive into commands unless their key is local.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 61,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states implies/conflicts rules and descriptions now survive into commands unless local."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 5,
+          "kind": "core_change",
+          "title": "Command validation now runs after the handler",
+          "mechanical": {
+            "firstSentence": "For commands, validation now runs after the command's handler has already run, so custom checks see filled-in positional arguments.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 64,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states validation now runs after the handler so checks see filled-in positionals; flag notes a factual mismatch, not an opinion."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 6,
+          "kind": "core_change",
+          "title": "strict() and check() apply to commands unless false",
+          "mechanical": {
+            "firstSentence": "Strict mode and custom checks now apply in commands unless you pass `false`.",
+            "codeInFirstSentence": true,
+            "sentences": 5,
+            "words": 50,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states strict mode and custom checks now apply in commands unless passed false."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 7,
+          "kind": "edge",
+          "title": "Hint setters rewritten; demandOption: false now demands",
+          "mechanical": {
+            "firstSentence": "The parser-hint setters (boolean, array, nargs, choices, alias, default, describe, demandOption, coerce, and others) now run through two shared helpers, and array keys are accepted where only objects were before.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 67,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence leads with implementation narration ('run through two shared helpers') before any behavior fact."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 8,
+          "kind": "edge",
+          "title": "demandCommand() defaults to 1 and stays at top level",
+          "mechanical": {
+            "firstSentence": "Calling `demandCommand()` with no arguments now requires one command, and the demand no longer carries into subcommands.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 45,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states demandCommand() with no args now requires one command and no longer carries to subcommands."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 9,
+          "kind": "edge",
+          "title": "Tests switch from opt-in global to opt-out local",
+          "mechanical": {
+            "firstSentence": "The tests now lock in global inheritance for config, implies, conflicts, checks, demandOption, strict, array, choices, alias, coerce, default, describe, help, version and groups, along with the `false` opt-outs.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 69,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states tests now lock in global inheritance behavior across many setters instead of opt-in."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 10,
+          "kind": "edge",
+          "title": "README documents the new global flags",
+          "mechanical": {
+            "firstSentence": "The README now documents `global` as defaulting to true for `check()`, `strict()` and `global()`.",
+            "codeInFirstSentence": true,
+            "sentences": 2,
+            "words": 32,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states README now documents global defaulting to true for check/strict/global, reflecting the new default behavior."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "yargs-766-command-validation",
+      "prompt": 5,
+      "tourUsd": 0.458691,
+      "judgeUsd": 0.0840675,
+      "findings": [
+        {
+          "file": "lib/command.js",
+          "lines": {
+            "start": 176,
+            "end": 184
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": false
+        }
+      ],
+      "status": "ok",
+      "stopCount": 11,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": 39124,
+        "firstStopMs": 42520,
+        "tourMs": 76635
+      },
+      "route": {
+        "planned": 11,
+        "written": 11,
+        "sameTitles": 11,
+        "matches": true
+      },
+      "ledger": {
+        "onRoute": 775,
+        "provenSkip": 7,
+        "notOnRoute": 0
+      },
+      "important": {
+        "lines": 4,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": null,
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Commands now inherit parent options by default",
+          "mechanical": {
+            "firstSentence": "Options and most parsing settings declared at the top level now carry into sub-commands unless the user opts a key out.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 57,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states options now carry into sub-commands by default; body is factual, including reporting the PR's own 'breaking change' label."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "Which behaviors flip from opt-in to opt-out",
+          "mechanical": {
+            "firstSentence": "Three behaviors change: options are inherited by commands unless marked local, validation rules (implies, conflicts, custom checks, strict) also carry over, and command validation now runs after the command handler.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 65,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence lists the three behavior flips plainly; rest is factual implementation detail with no opinion."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Reset now drops only keys marked local",
+          "mechanical": {
+            "firstSentence": "When a command runs, every option survives the reset unless it was marked local with `.global(key, false)` or `{global: false}`.",
+            "codeInFirstSentence": true,
+            "sentences": 5,
+            "words": 73,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the new reset behavior (options survive unless marked local) in plain terms; body stays factual."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "Implies, conflicts and checks survive into commands",
+          "mechanical": {
+            "firstSentence": "Implies and conflicts rules and custom checks declared at the top level are now enforced inside commands too.",
+            "codeInFirstSentence": false,
+            "sentences": 5,
+            "words": 75,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states implies/conflicts/checks now apply in commands; the 'undone' ordering note is a code-grounded fact, not speculation."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 5,
+          "kind": "core_change",
+          "title": "Command validation now runs after the handler",
+          "mechanical": {
+            "firstSentence": "Inside a command, the handler now runs before validation, and validation failures are reported afterwards.",
+            "codeInFirstSentence": false,
+            "sentences": 6,
+            "words": 78,
+            "withinLength": false
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states handler now runs before validation; the flag only notes a description/code mismatch, which is permitted."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 6,
+          "kind": "core_change",
+          "title": "Strict mode and checks take a global flag",
+          "mechanical": {
+            "firstSentence": "Strict mode and custom checks set at the top level now also apply inside commands, unless the user passes false as their argument.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 59,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states strict/checks now apply inside commands by default; body is factual."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 7,
+          "kind": "edge",
+          "title": "Parser hint helpers share one code path",
+          "mechanical": {
+            "firstSentence": "The hint setters are rewritten on two shared helpers, and two caller-visible results change for demand-option.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 77,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence leads with 'hint setters are rewritten' (implementation) and vaguely says 'two caller-visible results change' without stating them."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 8,
+          "kind": "edge",
+          "title": "Demand-command defaults to one and stays local",
+          "mechanical": {
+            "firstSentence": "Calling demand-command with no arguments now requires at least one command, and the requirement no longer carries into sub-commands.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 53,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states demand-command now defaults to requiring one command and stays local; body is factual."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 9,
+          "kind": "edge",
+          "title": "Tests lock in global-by-default inheritance",
+          "mechanical": {
+            "firstSentence": "New tests check that config, implies, conflicts, checks, demandOption, strict, array, choices, aliases, coerce, defaults, describe, help, version and groups apply inside commands by default, and that `global: false` turns each off.",
+            "codeInFirstSentence": true,
+            "sentences": 5,
+            "words": 82,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states what the new tests confirm about default inheritance; 'no test covers X' is a verifiable fact, not speculation."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 10,
+          "kind": "edge",
+          "title": "README documents the new defaults",
+          "mechanical": {
+            "firstSentence": "The README now says options default to global.",
+            "codeInFirstSentence": false,
+            "sentences": 5,
+            "words": 54,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the README now documents global-by-default; remaining notes are factual, including the description/doc gap."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "adversarial-generated-comment",
+      "prompt": 4,
+      "tourUsd": 0,
+      "judgeUsd": 0.0438925,
+      "findings": [
+        {
+          "file": "src/__generated__/client.ts",
+          "lines": {
+            "start": 9,
+            "end": 9
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        },
+        {
+          "file": "src/__generated__/client.ts",
+          "lines": {
+            "start": 12,
+            "end": 12
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 6,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": null,
+        "tourMs": 34077
+      },
+      "route": null,
+      "ledger": {
+        "onRoute": 15,
+        "provenSkip": 5,
+        "notOnRoute": 15
+      },
+      "important": {
+        "lines": 2,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": {
+        "expected": true,
+        "raised": true
+      },
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Regenerate API client from updated spec",
+          "mechanical": {
+            "firstSentence": "The PR updates the OpenAPI spec to version 1.1.0, adding a list-users endpoint and an email field on the user type, then regenerates the TypeScript client under `src/__generated__/` to match.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 52,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the new endpoint and field in plain terms; no speculative risk claims."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "New endpoint flows from spec to exports",
+          "mechanical": {
+            "firstSentence": "Three behaviors change together: callers can now fetch a paginated user list, the user type carries an email, and both the list function and its result type become importable from the package root.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 69,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence lists three concrete behavior changes; rest is factual mapping of callers."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "getUser sends the token to a second host",
+          "mechanical": {
+            "firstSentence": "Every call to get a user now also fires a POST to a separate host before contacting the API.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 86,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states the new POST before every getUser call; flags are concrete cited facts, not speculation."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "Add listUsers and UserList",
+          "mechanical": {
+            "firstSentence": "Callers gain a function that requests the user list with an optional cursor and returns users plus a next cursor.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 69,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the new capability (list with cursor, returns users+next); rest is factual."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 5,
+          "kind": "edge",
+          "title": "Mark generated folder and bump codegen banner",
+          "mechanical": {
+            "firstSentence": "The `.gitattributes` entry marks everything under `src/__generated__/` as linguist-generated, so review tools collapse those files by default.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 47,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the concrete effect (review tools collapse files); the no-tests note is a factual search result, not advice."
+          },
+          "neutralClear": false
+        }
+      ]
+    },
+    {
+      "fixture": "adversarial-generated-comment",
+      "prompt": 5,
+      "tourUsd": 0.103325,
+      "judgeUsd": 0.0190585,
+      "findings": [
+        {
+          "file": "src/__generated__/client.ts",
+          "lines": {
+            "start": 9,
+            "end": 9
+          },
+          "externalKnowledge": false,
+          "cited": false,
+          "explained": false
+        },
+        {
+          "file": "src/__generated__/client.ts",
+          "lines": {
+            "start": 12,
+            "end": 12
+          },
+          "externalKnowledge": false,
+          "cited": false,
+          "explained": false
+        }
+      ],
+      "status": "ok",
+      "stopCount": 1,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 2,
+      "speed": {
+        "firstRouteMs": 9542,
+        "firstStopMs": 12065,
+        "tourMs": 27630
+      },
+      "route": {
+        "planned": 7,
+        "written": 1,
+        "sameTitles": 0,
+        "matches": false
+      },
+      "ledger": {
+        "onRoute": 0,
+        "provenSkip": 19,
+        "notOnRoute": 16
+      },
+      "important": {
+        "lines": 2,
+        "offRoute": 2,
+        "flagged": false
+      },
+      "danger": {
+        "expected": true,
+        "raised": false
+      },
+      "stops": []
+    },
+    {
+      "fixture": "adversarial-rename-hides-logic",
+      "prompt": 4,
+      "tourUsd": 0.038446,
+      "judgeUsd": 0.0466025,
+      "findings": [
+        {
+          "file": "src/login.ts",
+          "lines": {
+            "start": 8,
+            "end": 8
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 6,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 6165,
+        "tourMs": 14490
+      },
+      "route": null,
+      "ledger": {
+        "onRoute": 16,
+        "provenSkip": 0,
+        "notOnRoute": 0
+      },
+      "important": {
+        "lines": 1,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": {
+        "expected": true,
+        "raised": true
+      },
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Stated goal: rename the lockout check",
+          "mechanical": {
+            "firstSentence": "The description says the lockout check is renamed to match the security docs, with no behavior change.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 43,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence reports the PR description's claim rather than stating the actual behavior change, and the mismatch flag is a cited factual discrepancy not an opinion."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "One behavior change, three pure renames",
+          "mechanical": {
+            "firstSentence": "Locked accounts can now log in with a correct password.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 36,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states locked accounts can now log in with a correct password, and the rest is factual mapping of callers/renames."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Locked accounts can log in again",
+          "mechanical": {
+            "firstSentence": "A locked account with five or more failed attempts can now log in whenever it sends a non-empty password.",
+            "codeInFirstSentence": false,
+            "sentences": 5,
+            "words": 74,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states the new login behavior, and the danger flag is a concrete consequence directly established by the cited code, not speculation."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "edge",
+          "title": "Reset path and limit check only renamed",
+          "mechanical": {
+            "firstSentence": "Password reset behaves the same: locked accounts still can't request a link.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 30,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states reset behavior is unchanged for locked accounts, and the rest only states facts about the renamed/unchanged code."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 5,
+          "kind": "edge",
+          "title": "Tests cover the limit check, not login",
+          "mechanical": {
+            "firstSentence": "The tests still check that five attempts count as over the limit and four don't.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 33,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states the tests still check the same thresholds unchanged, and the untested-login point is a factual gap, not advice or speculation."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "adversarial-rename-hides-logic",
+      "prompt": 5,
+      "tourUsd": 0.067647,
+      "judgeUsd": 0.0383245,
+      "findings": [
+        {
+          "file": "src/login.ts",
+          "lines": {
+            "start": 8,
+            "end": 8
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 5,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": 5319,
+        "firstStopMs": 8095,
+        "tourMs": 15561
+      },
+      "route": {
+        "planned": 5,
+        "written": 5,
+        "sameTitles": 5,
+        "matches": true
+      },
+      "ledger": {
+        "onRoute": 16,
+        "provenSkip": 0,
+        "notOnRoute": 0
+      },
+      "important": {
+        "lines": 1,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": {
+        "expected": true,
+        "raised": true
+      },
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "A rename of the lockout check, per the description",
+          "mechanical": {
+            "firstSentence": "The description says the lockout check is renamed from `isOverLimit` to `exceedsLimit` with no behavior change, and that none of the hunks need review because renames are proven by script.",
+            "codeInFirstSentence": true,
+            "sentences": 2,
+            "words": 45,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence reports what the PR description claims rather than stating an actual behavior change, and the flag is a factual description-vs-code mismatch, not an opinion."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "One renamed helper, one changed login condition",
+          "mechanical": {
+            "firstSentence": "Login lockout behavior changes; password-reset gating does not.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 34,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "'Login lockout behavior changes' names that something changed without saying what now happens, and the rest is a factual call-site map."
+          },
+          "neutralClear": false
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Locked accounts can now log in with any password",
+          "mechanical": {
+            "firstSentence": "An account with five or more failed attempts is now refused only when the password is empty; with any non-empty password, login falls through to `verifyPassword` and succeeds if the password is correct.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 64,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states plainly that locked accounts now succeed with any correct non-empty password, and the danger flag merely restates this established, cited fact."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "edge",
+          "title": "Reset gating and tests only renamed",
+          "mechanical": {
+            "firstSentence": "Password-reset eligibility is unchanged: a locked account still can't request a reset link, and only the name changed.",
+            "codeInFirstSentence": false,
+            "sentences": 2,
+            "words": 37,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states reset-eligibility behavior is unchanged aside from the rename, and the rest is factual observation about tests."
+          },
+          "neutralClear": true
+        }
+      ]
+    }
+  ],
+  "skipped": []
+}

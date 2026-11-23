@@ -12,8 +12,12 @@ import {
   readOnlyOptions,
   sdkRunner,
 } from './agent.ts';
+import { CLAUDE_PATH_ENV } from './claude-code.ts';
+import { fakeClaudeDir } from './testdata/fake-claude.ts';
 
 describe('the guide session is read-only', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
   test('pins the exact options that keep the session read-only', () => {
     // If this fails, the change loosens the sandbox. Re-run `DOCENT_LIVE=1 pnpm exec vitest run
     // --project server agent.live` before updating it. Loosening these options weakens a gate, so
@@ -50,6 +54,7 @@ describe('the guide session is read-only', () => {
   });
 
   test('a call whose signal is already aborted never starts', async () => {
+    vi.stubEnv(CLAUDE_PATH_ENV, join(await fakeClaudeDir(), 'claude'));
     // An abort listener added now would never fire, leaving the session with no time limit.
     await expect(
       sdkRunner({

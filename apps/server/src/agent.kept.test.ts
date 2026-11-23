@@ -6,12 +6,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-type Script = (options: { sessionId?: string }) => AsyncGenerator<unknown>;
+type Options = { sessionId?: string; pathToClaudeCodeExecutable?: string };
+type Script = (options: Options) => AsyncGenerator<unknown>;
 let script: Script;
+let ranOn: string | undefined;
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  query: ({ options }: { options: { sessionId?: string } }) => script(options),
+  query: ({ options }: { options: Options }) => {
+    ranOn = options.pathToClaudeCodeExecutable;
+    return script(options);
+  },
 }));
 const { AgentError, sdkRunner } = await import('./agent.ts');
+const { CLAUDE_PATH_ENV } = await import('./claude-code.ts');
+const { fakeClaudeDir } = await import('./testdata/fake-claude.ts');
+// One stand-in for the whole file: the runner looks Claude Code up once per process.
+const claude = join(await fakeClaudeDir(), 'claude');
 
 const AUTHOR = '11111111-2222-4333-8444-555555555555';
 let project = '';
@@ -24,6 +33,7 @@ beforeEach(async () => {
   await writeFile(join(project, `${AUTHOR}.jsonl`), '{"type":"user"}\n');
   kept = await mkdtemp(join(tmpdir(), 'docent-kept-'));
   vi.stubEnv('CLAUDE_CONFIG_DIR', config);
+  vi.stubEnv(CLAUDE_PATH_ENV, claude);
 });
 afterEach(() => vi.unstubAllEnvs());
 
@@ -73,6 +83,8 @@ test('a primer that succeeds is moved out, under the id Docent chose', async () 
 
   expect(reply.sessionId).toBe(chosen);
   expect(await readdir(kept)).toEqual([`${chosen}.jsonl`]);
+  // On the reviewer's own Claude Code, never the SDK's bundled copy.
+  expect(ranOn).toBe(claude);
   expect(await readdir(project)).toEqual([`${AUTHOR}.jsonl`]);
 });
 

@@ -16,7 +16,7 @@ import {
   type SessionLocator,
 } from './author-session.ts';
 import { fixtureRunner, recording } from './fixture.ts';
-import { fileFromText, GitHubRefusal, type PrSource, type ReviewPost } from './github.ts';
+import { fileFromText, GitHubRefusal, openEach, type PrSource, type ReviewPost } from './github.ts';
 import { KEEP_DAYS, KEEP_FILES, MAX_FILE_BYTES, MAX_QUESTIONS } from './questions.ts';
 import { Review, type ReviewOptions, type TourState, tourCacheName } from './review.ts';
 import { RunLog } from './run-log.ts';
@@ -95,6 +95,9 @@ const sourceFor =
         return (side === 'new' ? head : base)[path] ?? null;
       },
       open: async (side, path) => fileFromText((side === 'new' ? head : base)[path] ?? null),
+      openAll: openEach(async (side, path) =>
+        fileFromText((side === 'new' ? head : base)[path] ?? null),
+      ),
       tree: async () => ({
         entries: Object.keys(head).map((path) => ({ path, kind: 'file' as const })),
         truncated: false,
@@ -558,6 +561,130 @@ describe('GET /api/review', () => {
     expect(ready(waiter.snapshot().tour).cached).toBe(false);
   });
 
+  test('closing mid-repair stops the guide, lets go of the lock, and caches nothing', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    const tours = join(cacheDir, 'tours', 'acme__web');
+    const requests: AgentRequest[] = [];
+    const aborted = vi.fn();
+    // The first attempt needs a repair. The repair runs until it's stopped, as the SDK does.
+    const runner: AgentRunner = async (request) => {
+      requests.push(request);
+      if (requests.length === 1) return scripted(gappyTour).runner(request);
+      const signal = request.signal;
+      if (!signal) throw new Error('The repair got no abort signal.');
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+      aborted();
+      throw new AgentError('The agent stopped without an answer (aborted)', cost('tour', 200));
+    };
+    const review = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+
+    await review.close();
+
+    expect(aborted).toHaveBeenCalledOnce();
+    expect(requests.every((r) => r.signal === requests[0]?.signal)).toBe(true);
+    // No lock left behind, and no half-repaired tour for the next Docent to load.
+    expect(await readdir(tours)).toEqual([]);
+    await review.done;
+    expect(review.snapshot().tour).toMatchObject({ state: 'failed' });
+    expect(requests).toHaveLength(2);
+  });
+
+  test('when the Docent writing the tour is closed, the one waiting writes it', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    const started = Promise.withResolvers<void>();
+    const stopped = vi.fn();
+    const writing: AgentRunner = async (request) => {
+      started.resolve();
+      await new Promise((resolve) =>
+        request.signal?.addEventListener('abort', resolve, { once: true }),
+      );
+      stopped();
+      throw new Error('aborted');
+    };
+    const first = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: writing,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await started.promise;
+    const second = scripted(goodTour);
+    const waiter = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: second.runner,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await vi.waitFor(() =>
+      expect(waiter.snapshot().tour).toMatchObject({ detail: expect.stringContaining('another') }),
+    );
+
+    await first.close();
+    await waiter.done;
+
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(second.requests).toHaveLength(1);
+    expect(ready(waiter.snapshot().tour).cached).toBe(false);
+  });
+
+  test('a Docent closed while the PR still loads never starts the guide', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    const model = scripted(goodTour);
+    const review = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: model.runner,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+
+    await review.close();
+    await review.done;
+
+    expect(model.requests).toHaveLength(0);
+    expect(review.snapshot().tour).toMatchObject({ state: 'failed' });
+    expect(await readdir(join(cacheDir, 'tours', 'acme__web'))).toEqual([]);
+  });
+
+  test('a Docent closed while it waits on another stops waiting, and writes nothing', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    await open(scripted(goodTour).runner, cacheDir);
+    const [tourFile] = await readdir(join(cacheDir, 'tours', 'acme__web'));
+    const cached = join(cacheDir, 'tours', 'acme__web', tourFile ?? '');
+    await rm(cached);
+    // A live holder: this very process, with a fresh heartbeat.
+    const lock = `${cached}.lock`;
+    const holder = { pid: process.pid, host: hostname(), startedAt: Date.now(), token: 'live' };
+    await writeFile(lock, JSON.stringify(holder));
+    const second = scripted(goodTour);
+    const review = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: second.runner,
+      locator: noAuthor,
+      model: 'claude-test',
+      cacheDir,
+    });
+    await vi.waitFor(() =>
+      expect(review.snapshot().tour).toMatchObject({ detail: expect.stringContaining('another') }),
+    );
+
+    await review.close();
+    await review.done;
+
+    expect(second.requests).toHaveLength(0);
+    expect(review.snapshot().tour).toMatchObject({ state: 'failed' });
+    expect(JSON.parse(await readFile(lock, 'utf8'))).toEqual(holder);
+  });
+
   test('keeps the last good tour when a retry fails, and records what the failure cost', async () => {
     const { runner, requests } = scripted(gappyTour, 'not a tour', BUDGET);
     const { api } = await open(runner);
@@ -837,6 +964,31 @@ describe('the tour, while it is written', () => {
       'The origin is reflected',
       'Over to you',
     ]);
+  });
+
+  test('a tour that is only a verdict is sent back, and the repair adds the change it skipped', async () => {
+    // The first answer has nothing on the route, though src/cors.ts changes behavior.
+    const verdictOnly = { stops: [goodTour.stops[0], goodTour.stops[2]] };
+    const { runner, requests } = scripted(verdictOnly, repairOf({ ...goodTour.stops[1] }));
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(requests[1]?.prompt).toContain('The tour has no core_change or edge stop');
+    expect(requests[1]?.prompt).toContain('sending back only what changes');
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.stops.map((s) => s.kind)).toEqual(['intent', 'core_change', 'verdict_prompt']);
+  });
+
+  test('a verdict-only tour the guide never fixes reaches the reviewer with the problem on it', async () => {
+    const verdictOnly = { stops: [goodTour.stops[2]] };
+    const { runner } = scripted(verdictOnly, repairOf(), repairOf());
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(tour.attempts).toBe(3);
+    expect(tour.problems).toEqual([expect.stringContaining('no core_change or edge stop')]);
   });
 
   test('order problems get a whole new tour, since a repair can only replace or add stops', async () => {

@@ -9,6 +9,7 @@ import { parseArgs } from 'node:util';
 import { sessionId } from '@docent/core';
 import { type AgentRunner, sdkRunner } from './agent.ts';
 import { fixedSession, localSessions, type SessionLocator } from './author-session.ts';
+import { CLAUDE_PATH_ENV, claudeCode } from './claude-code.ts';
 import { fixtureRunner, fixtureSource, recording } from './fixture.ts';
 import {
   defaultCacheDir,
@@ -20,7 +21,7 @@ import {
 import { Review, WRITTEN_ELSEWHERE } from './review.ts';
 import { RunLog, runLogDisabledByEnv } from './run-log.ts';
 import { runsCommand } from './runs.ts';
-import { startServer, version } from './server.ts';
+import { packageName, startServer, version } from './server.ts';
 
 const DEFAULT_MODEL = 'claude-opus-5-5';
 
@@ -54,7 +55,10 @@ Options:
   --record <dir>    Save the PR, files and guide replies as a fixture
   --fixture <dir>   Replay a recorded fixture: no GitHub or model calls
   --replay-pace <ms>  With --fixture, write the tour out slowly, as a live guide would
-  --no-run-log      Don't write this run to the run log (or set DOCENT_RUN_LOG=off)`;
+  --no-run-log      Don't write this run to the run log (or set DOCENT_RUN_LOG=off)
+
+Docent runs on your own Claude Code: the first \`claude\` on your PATH, or the one
+${CLAUDE_PATH_ENV} names.`;
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -135,6 +139,14 @@ if (values.fixture) {
       : { found: false, reason: 'This recorded review names no author session' },
   );
 } else {
+  // Checked before anything is fetched, so a missing or outdated Claude Code fails at once.
+  const claude = await claudeCode().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    endReason = 'no usable Claude Code';
+    process.exit(1);
+  });
+  // Which Claude Code enforced the read-only options, since it's the reviewer's, not pinned.
+  log.event('claude.found', { path: claude.path, version: claude.version });
   source = githubSource(url ?? '', cacheDir);
   runner = sdkRunner;
   locator = localSessions(values.session !== undefined ? { explicit: values.session } : {});
@@ -168,10 +180,25 @@ async function prepare(review: Review) {
   report(review);
   await review.done;
   const ready = review.snapshot().tour.state === 'ready';
-  if (ready && url) console.log(`Open it with: pnpm docent review ${url}`);
+  if (ready && url) console.log(`Open it with: ${openCommand(url)}`);
   endReason = ready ? 'prepared' : 'prepare failed';
   // Exit outright, so a lingering agent subprocess can't hang an unattended run. Flush first.
   process.stdout.write('', () => process.exit(ready ? 0 : 1));
+}
+
+/**
+ * The command that opens a PR, in the form this Docent was started with: the repo's own
+ * `pnpm docent`, npx (with the exact version, so the next run finds this one's cache, and
+ * `--omit=optional` if this run had it), or an installed `docent`.
+ */
+function openCommand(prUrl: string): string {
+  const env = process.env;
+  if (env.npm_lifecycle_event === 'docent') return `pnpm docent review ${prUrl}`;
+  if (env.npm_command === 'exec') {
+    const omit = (env.npm_config_omit ?? '').split(/[\s,]+/).includes('optional');
+    return `npx ${omit ? '--omit=optional ' : ''}${packageName}@${version} review ${prUrl}`;
+  }
+  return `docent review ${prUrl}`;
 }
 
 async function serve(review: Review) {

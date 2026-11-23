@@ -23,6 +23,11 @@ type Props = {
   cited: readonly Range[];
   /** The range to bring into view, or null to show the top of the file. */
   focus: Range | null;
+  /**
+   * Lines a phrase of the stop points at, while it's hovered or focused: marked, and scrolled
+   * into view only if they're not in view already.
+   */
+  named: Range | null;
   /** Line numbers changed by the PR on this side: added at head, removed at base. */
   changed: ReadonlySet<number>;
   /** Changed lines on this side that no stop cites and no script proved (the ledger's rest). */
@@ -43,7 +48,17 @@ const MOD_LABEL = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
 const REVEAL_PADDING = 48;
 
 /** A read-only view of one file, with the PR's changes and the stop's citations marked. */
-export function CodeView({ path, side, cited, focus, changed, offRoute, onStep, onJump }: Props) {
+export function CodeView({
+  path,
+  side,
+  cited,
+  focus,
+  named,
+  changed,
+  offRoute,
+  onStep,
+  onJump,
+}: Props) {
   const text = useQuery(fileTextQuery(path, side));
   const highlighted = useQuery({
     queryKey: ['highlight', side, path],
@@ -74,6 +89,24 @@ export function CodeView({ path, side, cited, focus, changed, offRoute, onStep, 
         : first.offsetTop - 48;
     box.scrollTop = Math.max(0, target);
   }, [lines, focusStart, focusEnd]);
+
+  const namedStart = named?.startLine ?? null;
+  const namedEnd = named?.endLine ?? null;
+  useEffect(() => {
+    const box = scroller.current;
+    if (!box || !lines || namedStart === null || namedEnd === null) return;
+    const first = lineAt(box, namedStart);
+    const last = lineAt(box, namedEnd) ?? first;
+    if (!first || !last) return;
+    const top = first.offsetTop;
+    const bottom = last.offsetTop + last.offsetHeight;
+    if (top >= box.scrollTop && bottom <= box.scrollTop + box.clientHeight) return;
+    const span = bottom - top;
+    const target =
+      span < box.clientHeight * 0.8 ? top - (box.clientHeight - span) / 2 : top - REVEAL_PADDING;
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    box.scrollTo({ top: Math.max(0, target), behavior: reduced ? 'auto' : 'smooth' });
+  }, [lines, namedStart, namedEnd]);
 
   // ↓ reads on through the citation in focus while any of it is below the view; once its end is
   // in view (with some room), the next ↓ moves to the stop's next citation. ↑ mirrors that. Past
@@ -198,6 +231,8 @@ export function CodeView({ path, side, cited, focus, changed, offRoute, onStep, 
   };
 
   const isCited = (line: number) => cited.some((r) => line >= r.startLine && line <= r.endLine);
+  const isNamed = (line: number) =>
+    named !== null && line >= named.startLine && line <= named.endLine;
   const changeClass = side === 'new' ? 'added' : 'removed';
   const changeMark = side === 'new' ? '+' : '−';
 
@@ -233,6 +268,7 @@ export function CodeView({ path, side, cited, focus, changed, offRoute, onStep, 
                 'line',
                 isChanged ? changeClass : '',
                 isCited(line) ? 'cited' : '',
+                isNamed(line) ? 'named' : '',
                 isChanged && offRoute.has(line) ? 'off-route' : '',
               ]
                 .filter(Boolean)
@@ -267,6 +303,12 @@ export function CodeView({ path, side, cited, focus, changed, offRoute, onStep, 
           <span>
             <i className="swatch cited" />
             Cited by this stop
+          </span>
+        )}
+        {named && (
+          <span>
+            <i className="swatch named" />
+            Named in the text
           </span>
         )}
         {offRoute.size > 0 && (

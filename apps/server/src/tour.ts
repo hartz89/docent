@@ -5,12 +5,19 @@ import {
   type Anchor,
   anchorAt,
   type CostRecord,
+  changedLines,
   checkStopOrder,
+  computeLedger,
   type Diff,
+  lineKey,
   oneLine,
+  type Proof,
+  type Reference,
+  referBody,
   reviewId,
   STOP_KINDS,
   type Stop,
+  type StopBody,
   type StopFlag,
   type StopKind,
   stopId,
@@ -25,6 +32,15 @@ import { StopScanner } from './tour-stream.ts';
 // ---- What the browser sees. Plain JSON, so the typed client keeps exact types. ----
 
 export type AnchorView = { path: string; side: 'old' | 'new'; startLine: number; endLine: number };
+/**
+ * A phrase of a stop's body that points at code: the text from `start` up to `end`, in UTF-16
+ * units, as JavaScript slices strings. Core's T6 parts, flattened onto the plain body. One whose
+ * code is gone (T8) is out of date, and has no lines to show.
+ */
+export type RefView = { start: number; end: number } & (
+  | ({ state: 'current' } & AnchorView)
+  | { state: 'out_of_date'; path: string; side: 'old' | 'new' }
+);
 export type StopView = {
   id: string;
   kind: StopKind;
@@ -35,6 +51,8 @@ export type StopView = {
   /** The guide's one-sentence note per flag. Core's Stop has no note text, so it rides here. */
   flagNotes: { flag: StopFlag; note: string }[];
   anchors: AnchorView[];
+  /** Phrases of `body` that point at code, in order. Empty for tours written without them. */
+  refs: RefView[];
 };
 /**
  * The guide's optional one-line note on a changed file it left off the route ("test fixture
@@ -56,15 +74,41 @@ export type TourOutcome = {
   cached: boolean;
   /** Where the time went, from opening the review. Empty for tours cached before it existed. */
   timing: Span[];
+  /** How the guide's references fared. */
+  references: ReferenceCounts;
 };
+
+/**
+ * The references the guide wrote, over the whole tour: how many, how many were dropped because
+ * their lines or phrase didn't check out, and how many were over a stop's cap. The rest show.
+ */
+export type ReferenceCounts = { written: number; unresolved: number; overCap: number };
+
+/**
+ * A tour read back from the cache, with the fields older tours lack filled in: no timing, and no
+ * references. A tour cached before references existed shows as plain prose.
+ */
+export function fromCache(outcome: TourOutcome): TourOutcome {
+  return {
+    ...outcome,
+    tour: {
+      ...outcome.tour,
+      stops: outcome.tour.stops.map((stop) => ({ ...stop, refs: stop.refs ?? [] })),
+    },
+    timing: outcome.timing ?? [],
+    references: outcome.references ?? { written: 0, unresolved: 0, overCap: 0 },
+    cached: true,
+  };
+}
 
 export type TourProgress =
   | { step: 'planning'; detail: string | null }
   /**
    * The guide is writing the tour. `stops` are the ones finished so far that passed every check a
-   * single stop can pass on its own, in order. `writing` is how many it has begun.
+   * single stop can pass on its own, in order. `writing` is how many it has begun. `route` is the
+   * titles it planned ahead of the stops (v5 on), only a plan: the stops it writes win.
    */
-  | { step: 'writing'; stops: StopView[]; writing: number }
+  | { step: 'writing'; stops: StopView[]; writing: number; route: string[] }
   | { step: 'checking'; attempt: number }
   | { step: 'retrying'; attempt: number; problems: number };
 
@@ -81,6 +125,8 @@ export class TourError extends Error {
 
 type WireCitation = { path: string; side: 'old' | 'new'; startLine: number; endLine: number };
 type WireFlag = { kind: StopFlag; note: string };
+/** A phrase of the stop's body, copied exactly, and the lines it names. */
+type WireReference = WireCitation & { phrase: string };
 type WireStop = {
   /**
    * In a repair, the number of the existing stop this one replaces (1 for the first), or 0 for a
@@ -93,10 +139,15 @@ type WireStop = {
   body: string;
   flags?: WireFlag[];
   citations: WireCitation[];
+  /** v6 on. Missing counts as none. */
+  references?: WireReference[];
 };
 type WireNote = { path: string; note: string };
-/** `notes` is optional: a repair that leaves it out keeps the notes it had. */
-type WireTour = { stops: WireStop[]; notes?: WireNote[] };
+/**
+ * `notes` is optional: a repair that leaves it out keeps the notes it had. `route` is the plan
+ * written ahead of the stops; only the stream reads it, and the stops always win over it.
+ */
+type WireTour = { route?: string[]; stops: WireStop[]; notes?: WireNote[] };
 
 export const tourSchema = {
   type: 'object',
@@ -163,6 +214,116 @@ export const tourSchema = {
   },
 } as const;
 
+/**
+ * v5's schema: the route comes first, so it streams about a second after writing starts. A
+ * different schema from v4's, so v4 runs stay as they were; repairs reuse their session's schema.
+ */
+export const routeTourSchema = {
+  ...tourSchema,
+  required: ['route', 'stops'],
+  properties: {
+    route: {
+      type: 'array',
+      description:
+        'Write this first: the title of every stop, in order, as you will write them. In a repair, an empty list.',
+      items: { type: 'string' },
+    },
+    ...tourSchema.properties,
+  },
+} as const;
+
+const citationSchema = tourSchema.properties.stops.items.properties.citations.items;
+
+/**
+ * v6's schema: each stop may point phrases of its body at code (issue #70). Written last, after
+ * the citations, so the rest of the stop is written as before.
+ */
+export const referenceTourSchema = {
+  ...tourSchema,
+  properties: {
+    ...tourSchema.properties,
+    stops: {
+      type: 'array',
+      items: {
+        ...tourSchema.properties.stops.items,
+        required: [...tourSchema.properties.stops.items.required, 'references'],
+        properties: {
+          ...tourSchema.properties.stops.items.properties,
+          references: {
+            type: 'array',
+            description:
+              "At most three per stop, often none: phrases of this stop's body that point at the lines they name.",
+            items: {
+              ...citationSchema,
+              required: ['phrase', ...citationSchema.required],
+              properties: {
+                phrase: {
+                  type: 'string',
+                  description: "A few words copied exactly from this stop's body, on one line.",
+                },
+                ...citationSchema.properties,
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+/** The prompt versions that ask for the route ahead of the stops. */
+const ROUTE_FIRST: ReadonlySet<TourPromptVersion> = new Set([5]);
+/** The prompt versions that ask for references in the prose. */
+const REFERENCES: ReadonlySet<TourPromptVersion> = new Set([6]);
+
+/** Each version's schema. Old versions keep theirs, so their runs stay as they were. */
+const schemaFor = (version: TourPromptVersion) =>
+  ROUTE_FIRST.has(version)
+    ? routeTourSchema
+    : REFERENCES.has(version)
+      ? referenceTourSchema
+      : tourSchema;
+
+/** The longest route the screen shows, and the longest title in it. */
+const MAX_ROUTE_STOPS = 30;
+const MAX_ROUTE_TITLE_CHARS = 120;
+
+/** A title on one line, with runs of whitespace as one space. */
+const flat = (title: string) => title.replace(/\s+/g, ' ').trim();
+
+/** The guide's planned titles as the screen shows them: one line each, none empty, capped. */
+function cleanRoute(titles: readonly string[]): string[] {
+  return titles
+    .map(flat)
+    .filter((t) => t.length > 0)
+    .slice(0, MAX_ROUTE_STOPS)
+    .map((t) =>
+      t.length > MAX_ROUTE_TITLE_CHARS ? `${t.slice(0, MAX_ROUTE_TITLE_CHARS - 1)}…` : t,
+    );
+}
+
+export type RouteComparison = {
+  planned: number;
+  written: number;
+  /** Stops titled as the route planned at the same place. */
+  sameTitles: number;
+  matches: boolean;
+};
+
+/**
+ * How the planned route compares with the stops written. Only a measure: a route that doesn't
+ * match changes nothing, since the stops are the tour.
+ */
+export function compareRoute(route: readonly string[], titles: readonly string[]): RouteComparison {
+  const same = titles.filter((t, i) => i < route.length && flat(t) === flat(route[i] ?? ''));
+  return {
+    planned: route.length,
+    written: titles.length,
+    sameTitles: same.length,
+    matches: route.length === titles.length && same.length === titles.length,
+  };
+}
+
 export type TourJob = {
   workspace: Workspace;
   diff: Diff;
@@ -170,7 +331,14 @@ export type TourJob = {
   model: string;
   /** Which prompt to use. Leave out for the current one; the eval runner sets it for A/B runs. */
   promptVersion?: TourPromptVersion;
+  /**
+   * Every proof core found in the diff. The checker needs them to tell whether the tour's
+   * core_change and edge stops explain any changed line nothing proved. An empty list, or a rejection, is
+   * the strict answer: every changed line then needs explaining.
+   */
+  proofs: readonly Proof[] | Promise<readonly Proof[]>;
   onProgress: (progress: TourProgress) => void;
+  /** Stops the job: the call in flight is aborted, and no attempt or repair starts after it. */
   signal?: AbortSignal;
   /** Where the job records its timing spans. The review passes its own, from when it opened. */
   timings?: Timings;
@@ -186,7 +354,9 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
   const time = job.timings ?? timings();
   const costs: CostRecord[] = [];
   let ended = time.span('Build the prompt');
-  let prompt = TOUR_PROMPTS[job.promptVersion ?? TOUR_PROMPT_VERSION](workspace.pr, diff);
+  const version = job.promptVersion ?? TOUR_PROMPT_VERSION;
+  const routeFirst = ROUTE_FIRST.has(version);
+  let prompt = TOUR_PROMPTS[version](workspace.pr, diff);
   ended(`${prompt.length} chars`);
   let resume: string | undefined;
   // The best tour so far: the latest one that matched the schema. A later attempt that fails
@@ -196,8 +366,13 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
   let best: (Checked & { wire: WireTour }) | undefined;
   let attempts = 0;
   const files = fileReader(workspace);
+  // A proof failure proves nothing, which only makes the checker stricter. Caught here so a
+  // rejection never escapes the job or loses the costs paid so far.
+  const proofs = Promise.resolve(job.proofs).catch((): readonly Proof[] => []);
 
   while (attempts <= MAX_RETRIES) {
+    // A stopped job writes nothing more, and keeps no half-checked tour: it's never cached.
+    if (job.signal?.aborted) throw new TourError('The tour was stopped.', costs);
     attempts++;
     const repairing = best !== undefined && !best.reorder;
     const started = Date.now();
@@ -216,7 +391,10 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
     const stream =
       attempts > 1
         ? null
-        : streamStops(diff, files, onProgress, () => time.span('First stop shown')());
+        : streamStops(diff, files, onProgress, {
+            firstStop: () => time.span('First stop shown')(),
+            firstRoute: () => time.span('Route shown')(),
+          });
     let reply: Awaited<ReturnType<AgentRunner>>;
     ended = time.span(`Attempt ${attempts}: ${repairing ? 'repair' : 'whole tour'}`);
     try {
@@ -227,7 +405,7 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
         model,
         // One schema for whole tours and repairs: a different one would change the session's
         // tools, and the resumed session would lose its prompt cache.
-        schema: tourSchema,
+        schema: schemaFor(version),
         ...(resume ? { resume } : {}),
         onActivity: (detail) => onProgress({ step: 'planning', detail }),
         ...(stream ? { onOutput: stream.push } : {}),
@@ -244,6 +422,7 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
         error: error instanceof Error ? error.message : String(error),
         ...(error instanceof AgentError ? { costMicroUsd: error.cost.costMicroUsd } : {}),
       });
+      if (job.signal?.aborted) throw new TourError('The tour was stopped.', costs);
       if (best) break;
       throw new TourError(error instanceof Error ? error.message : String(error), costs);
     }
@@ -272,16 +451,29 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
         : 'Your answer did not match the tour schema. Return the complete tour as JSON.';
       continue;
     }
-    best = { ...(await check(wire, files, diff)), wire };
+    best = { ...(await check(wire, files, diff, await proofs)), wire };
     ended(best.problems.length ? best.problems.join(' | ') : 'passed');
     attempt({
       outcome: best.problems.length ? 'rejected' : 'passed',
       costMicroUsd: reply.cost.costMicroUsd,
       problems: best.problems,
+      // How the plan shown while writing compares with the stops written. A repair's route is
+      // empty by design, so only a whole tour's is measured.
+      ...(routeFirst && !repairing
+        ? {
+            // The route as the screen got it, so this agrees with what the eval measures.
+            route: compareRoute(
+              cleanRoute(wire.route ?? []),
+              wire.stops.map((s) => s.title),
+            ),
+          }
+        : {}),
     });
     if (best.problems.length === 0 || attempts > MAX_RETRIES) break;
     onProgress({ step: 'retrying', attempt: attempts, problems: best.problems.length });
-    prompt = best.reorder ? retryPrompt(best.problems) : repairPrompt(best.problems, best.wire);
+    prompt = best.reorder
+      ? retryPrompt(best.problems)
+      : repairPrompt(best.problems, best.wire, routeFirst);
   }
 
   if (!best) throw new TourError('The guide never returned a tour in the expected shape.', costs);
@@ -294,6 +486,7 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
     createdAt: new Date().toISOString(),
     cached: false,
     timing: time.spans(),
+    references: best.references,
   };
 }
 
@@ -316,13 +509,15 @@ function modelNote(reply: Awaited<ReturnType<AgentRunner>>): string {
  * same check the finished tour gets, plus the order rule so far, and only then is reported. The
  * first stop that fails freezes what's shown: later stops wait for the finished, fully checked
  * tour, so the route never shows a gap. The count of stops begun keeps updating, so progress
- * stays true. `close()` ends all reporting, once the call is over.
+ * stays true. The planned route, when the prompt asks for one, is reported title by title as it
+ * streams; it's only a plan, never checked against anything until the end. `close()` ends all
+ * reporting, once the call is over.
  */
 function streamStops(
   diff: Diff,
   files: FileReader,
   onProgress: (progress: TourProgress) => void,
-  onFirstStop: () => void,
+  marks: { firstStop: () => void; firstRoute: () => void },
 ) {
   const scanner = new StopScanner();
   const shown: StopView[] = [];
@@ -333,9 +528,12 @@ function streamStops(
   /** Whether anything may still be reported. */
   let live = true;
   let writing = 0;
+  let route: string[] = [];
+  /** How many raw titles the scanner had at the last look. */
+  let routeSeen = 0;
   let queue = Promise.resolve();
   const report = () => {
-    if (live) onProgress({ step: 'writing', stops: [...shown], writing });
+    if (live) onProgress({ step: 'writing', stops: [...shown], writing, route });
   };
 
   const take = async (raw: unknown) => {
@@ -360,7 +558,7 @@ function streamStops(
     }
     rank = stopRank;
     shown.push(checked.view);
-    if (shown.length === 1) onFirstStop();
+    if (shown.length === 1) marks.firstStop();
     report();
   };
   /**
@@ -384,6 +582,15 @@ function streamStops(
         accepting = false;
         return;
       }
+      if (scanner.route.length !== routeSeen) {
+        routeSeen = scanner.route.length;
+        const planned = cleanRoute(scanner.route);
+        then(() => {
+          if (route.length === 0 && planned.length > 0) marks.firstRoute();
+          route = planned;
+          report();
+        });
+      }
       if (scanner.started !== writing) {
         const started = scanner.started;
         then(() => {
@@ -403,7 +610,12 @@ function streamStops(
 }
 
 /** `reorder`: some problems are about order, which only a whole new tour can fix. */
-type Checked = { view: TourView; problems: string[]; reorder: boolean };
+type Checked = {
+  view: TourView;
+  problems: string[];
+  reorder: boolean;
+  references: ReferenceCounts;
+};
 
 type FileReader = (side: 'old' | 'new', path: string) => Promise<string | null>;
 
@@ -421,46 +633,123 @@ function fileReader(workspace: Workspace): FileReader {
   };
 }
 
+/** The most references a stop shows. More would turn the prose into a list of links. */
+export const MAX_REFERENCES_PER_STOP = 3;
+
+/**
+ * Reads the lines a citation or reference names, or says in words why they can't be read: the
+ * one check both go through.
+ */
+async function readCited(
+  cite: WireCitation,
+  fileText: FileReader,
+  diff: Diff,
+): Promise<{ anchor: Anchor } | { where: string; why: string }> {
+  const side = cite.side === 'new' ? 'head' : 'base';
+  const where = `${cite.path} ${side} lines ${cite.startLine}-${cite.endLine}`;
+  const text = await fileText(cite.side, cite.path);
+  if (text === null) return { where, why: `but that file doesn't exist at ${side}` };
+  const commit = cite.side === 'new' ? diff.head : diff.base;
+  const anchor = anchorAt(
+    { commit, path: cite.path, text },
+    cite.startLine,
+    cite.endLine - cite.startLine + 1,
+  );
+  if (anchor) return { anchor };
+  return { where, why: `outside the file (it has ${text.split(/\r?\n/).length} lines)` };
+}
+
+/** An anchor as the browser sees it. Null for one that's out of date. */
+function anchorView(anchor: Anchor, diff: Diff): AnchorView | null {
+  if (anchor.state !== 'current') return null;
+  return {
+    path: anchor.at.path,
+    side: anchor.at.commit === diff.head ? 'new' : 'old',
+    startLine: anchor.at.startLine,
+    endLine: anchor.at.startLine + anchor.lines.length - 1,
+  };
+}
+
+/** Core's body parts, flattened onto the plain text as offsets. */
+export function refViews(body: StopBody, diff: Diff): RefView[] {
+  const refs: RefView[] = [];
+  let at = 0;
+  for (const part of body) {
+    if (typeof part === 'string') {
+      at += part.length;
+      continue;
+    }
+    const span = { start: at, end: at + part.phrase.length };
+    const { anchor } = part;
+    const view = anchorView(anchor, diff);
+    const last = anchor.state === 'current' ? anchor.at : anchor.lastSeen;
+    refs.push(
+      view
+        ? { ...span, state: 'current', ...view }
+        : {
+            ...span,
+            state: 'out_of_date',
+            path: last.path,
+            side: last.commit === diff.head ? 'new' : 'old',
+          },
+    );
+    at = span.end;
+  }
+  return refs;
+}
+
 /**
  * The checks one stop passes on its own: every citation lands inside a real file, and a
  * core_change or edge stop cites something. `stop` is null when it can't be part of core's Tour.
  * The streamed stops and the finished tour both go through this one function.
+ *
+ * References go through the same check as citations, and then must be found in the body (T7).
+ * One that fails is dropped, never sent back: it's a reading aid, and a retry would cost the
+ * reviewer time. So is any past the cap.
  */
 async function checkStop(
   stop: WireStop,
   index: number,
   fileText: FileReader,
   diff: Diff,
-): Promise<{ stop: Stop | null; view: StopView; problems: string[] }> {
+): Promise<{
+  stop: Stop | null;
+  view: StopView;
+  problems: string[];
+  references: ReferenceCounts;
+}> {
   const problems: string[] = [];
   const id = stopId(`stop-${index + 1}`);
   const label = `Stop ${index + 1} ("${stop.title}")`;
   const anchors: Anchor[] = [];
   for (const cite of stop.citations) {
-    const side = cite.side === 'new' ? 'head' : 'base';
-    const where = `${cite.path} ${side} lines ${cite.startLine}-${cite.endLine}`;
-    const text = await fileText(cite.side, cite.path);
-    if (text === null) {
-      problems.push(`${label} cites ${where}, but that file doesn't exist at ${side}.`);
-      continue;
-    }
-    const commit = cite.side === 'new' ? diff.head : diff.base;
-    const anchor = anchorAt(
-      { commit, path: cite.path, text },
-      cite.startLine,
-      cite.endLine - cite.startLine + 1,
-    );
-    if (!anchor) {
-      const length = text.split(/\r?\n/).length;
-      problems.push(`${label} cites ${where}, outside the file (it has ${length} lines).`);
-      continue;
-    }
-    anchors.push(anchor);
+    const read = await readCited(cite, fileText, diff);
+    if ('anchor' in read) anchors.push(read.anchor);
+    else problems.push(`${label} cites ${read.where}, ${read.why}.`);
   }
+  const written = stop.references ?? [];
+  const readable: Reference[] = [];
+  for (const ref of written) {
+    if (!isWireReference(ref)) continue;
+    const read = await readCited(ref, fileText, diff);
+    if ('anchor' in read) readable.push({ phrase: ref.phrase, anchor: read.anchor });
+  }
+  const { body: placed, unplaced } = referBody(stop.body, readable);
+  // Over the cap, the earliest in the text stay; the rest go back to plain text.
+  let kept = 0;
+  const body: StopBody = placed.map((part) =>
+    typeof part === 'string' || ++kept <= MAX_REFERENCES_PER_STOP ? part : part.phrase,
+  );
+  const references = {
+    written: written.length,
+    unresolved: written.length - readable.length + unplaced.length,
+    overCap: Math.max(0, kept - MAX_REFERENCES_PER_STOP),
+  };
+
   const flagged = (stop.flags ?? []).filter((f) => f.note.trim());
   const flags = [...new Set(flagged.map((f) => f.kind))];
   const [first, ...rest] = anchors;
-  const base = { id, title: stop.title, body: stop.body, flags };
+  const base = { id, title: stop.title, body, flags };
   let core: Stop | null = null;
   if (stop.kind === 'core_change' || stop.kind === 'edge') {
     if (first) core = { ...base, kind: stop.kind, anchors: [first, ...rest] };
@@ -469,32 +758,34 @@ async function checkStop(
     core = { ...base, kind: stop.kind, anchors };
   }
   const view: StopView = {
-    ...base,
+    id,
     kind: stop.kind,
+    title: stop.title,
+    body: stop.body,
+    flags,
     flagNotes: flagged.map((f) => ({ flag: f.kind, note: f.note })),
-    anchors: anchors.flatMap((a) =>
-      a.state === 'current'
-        ? [
-            {
-              path: a.at.path,
-              side: a.at.commit === diff.head ? ('new' as const) : ('old' as const),
-              startLine: a.at.startLine,
-              endLine: a.at.startLine + a.lines.length - 1,
-            },
-          ]
-        : [],
-    ),
+    anchors: anchors.flatMap((a) => anchorView(a, diff) ?? []),
+    refs: refViews(body, diff),
   };
-  return { stop: core, view, problems };
+  return { stop: core, view, problems, references };
 }
 
 /** Turns the guide's tour into core's Tour, and lists every rule it breaks, in words. */
-async function check(wire: WireTour, fileText: FileReader, diff: Diff): Promise<Checked> {
+async function check(
+  wire: WireTour,
+  fileText: FileReader,
+  diff: Diff,
+  proofs: readonly Proof[],
+): Promise<Checked> {
   const problems: string[] = [];
   const stops: Stop[] = [];
   const views: StopView[] = [];
+  const references: ReferenceCounts = { written: 0, unresolved: 0, overCap: 0 };
   for (const [index, wireStop] of wire.stops.entries()) {
     const checked = await checkStop(wireStop, index, fileText, diff);
+    references.written += checked.references.written;
+    references.unresolved += checked.references.unresolved;
+    references.overCap += checked.references.overCap;
     problems.push(...checked.problems);
     if (checked.stop) stops.push(checked.stop);
     views.push(checked.view);
@@ -513,9 +804,40 @@ async function check(wire: WireTour, fileText: FileReader, diff: Diff): Promise<
           : 'The tour must end with exactly one verdict_prompt stop.',
     );
   }
-  // A missing verdict is one stop to add, which a repair can do. Moving or removing stops can't.
+  const { unproven, explained } = changeExplained(diff, tour, proofs);
+  if (unproven > 0 && !explained) {
+    problems.push(
+      `The tour has no core_change or edge stop that cites a changed line nothing proved, but ${unproven} changed lines are not proven safe to skip. Add at least one core_change stop that explains what the change does, citing its changed lines.`,
+    );
+  }
+  // A missing verdict or a missing core_change is a stop to add, which a repair can do. Moving or
+  // removing stops can't.
   const reorder = order.some((p) => p.kind === 'out_of_order') || verdicts > 1;
-  return { view: { stops: views, notes: notesOf(wire, diff) }, problems, reorder };
+  return { view: { stops: views, notes: notesOf(wire, diff) }, problems, reorder, references };
+}
+
+/**
+ * `unproven`: how many changed lines no proof covers, placed as if no stop cited anything.
+ * `explained`: some core_change or edge stop puts one of those lines on the route. A stop that
+ * cites only unchanged lines, or only proven ones, explains nothing the reviewer would miss.
+ */
+function changeExplained(
+  diff: Diff,
+  tour: Tour,
+  proofs: readonly Proof[],
+): { unproven: number; explained: boolean } {
+  const bare = computeLedger(diff, { ...tour, stops: [] }, proofs);
+  const cited = computeLedger(diff, tour, proofs);
+  // Never stale, since both are at the diff's own head. If they were, nothing counts as proven.
+  if (bare.state === 'stale' || cited.state === 'stale') {
+    return { unproven: changedLines(diff).length, explained: false };
+  }
+  const key = (l: (typeof bare.lines)[number]) => lineKey(l.line);
+  const open = new Set(bare.lines.filter((l) => l.place.kind === 'not_on_route').map(key));
+  return {
+    unproven: open.size,
+    explained: cited.lines.some((l) => l.place.kind === 'on_route' && open.has(key(l))),
+  };
 }
 
 /** The longest note kept. A note is a line, not a paragraph. */
@@ -551,9 +873,14 @@ function parseJson(value: unknown): unknown {
 function parseWire(value: unknown): WireTour | null {
   const tour = parseJson(value) as WireTour | null;
   if (!tour || !Array.isArray(tour.stops) || !tour.stops.every(isWireStop)) return null;
-  if (tour.notes === undefined) return { stops: tour.stops };
+  // The route is a plan the stops overrule, so a malformed one is dropped, never refused.
+  const route =
+    Array.isArray(tour.route) && tour.route.every((t) => typeof t === 'string')
+      ? { route: tour.route }
+      : {};
+  if (tour.notes === undefined) return { ...route, stops: tour.stops };
   return Array.isArray(tour.notes) && tour.notes.every(isWireNote)
-    ? { stops: tour.stops, notes: tour.notes }
+    ? { ...route, stops: tour.stops, notes: tour.notes }
     : null;
 }
 
@@ -592,7 +919,23 @@ function isWireStop(value: unknown): value is WireStop {
         (c.side === 'new' || c.side === 'old') &&
         Number.isInteger(c.startLine) &&
         Number.isInteger(c.endLine),
-    )
+    ) &&
+    // A reference of the wrong shape is dropped with the rest that don't check out, so only the
+    // list itself is checked here.
+    (s.references === undefined || Array.isArray(s.references))
+  );
+}
+
+function isWireReference(value: unknown): value is WireReference {
+  const r = value as WireReference | null;
+  return (
+    typeof r === 'object' &&
+    r !== null &&
+    typeof r.phrase === 'string' &&
+    typeof r.path === 'string' &&
+    (r.side === 'new' || r.side === 'old') &&
+    Number.isInteger(r.startLine) &&
+    Number.isInteger(r.endLine)
   );
 }
 
@@ -626,6 +969,17 @@ ${prSection(pr, diff)}`,
   // v4: the skip ledger is computed (backlog item 6). Cite what carries the point; leave mechanical
   // noise to the script. docs/research/2026-11-12-skip-ledger.md has the A/B against v3.
   4: (pr: PrInfo, diff: Diff) => explainPrompt(ROUTE_RULES, pr, diff),
+
+  // v5, never shipped: v4 plus the route first, the stop titles ahead of the stops, with its own
+  // schema (issue #67). It lost to v4 on defects and danger flags, and stop 1 came no sooner:
+  // docs/research/evals/2026-11-15-tours-v4-v5-route-first.md. Kept so that A/B can be rerun.
+  5: (pr: PrInfo, diff: Diff) => explainPrompt(`${ROUTE_RULES}\n\n${ROUTE_FIRST_RULES}`, pr, diff),
+
+  // v6: v4 plus references, phrases of a stop's body that point at the lines they name, with its
+  // own schema (issue #70). Not shipped: it tied v4 on defects explained (9/11) but missed 2
+  // danger flags v4 raised, so it failed the gate. 27/27 references resolved, 0.39 per stop:
+  // docs/research/evals/2026-11-15-tours-v4-v6-references.md. Kept so that A/B can be rerun.
+  6: (pr: PrInfo, diff: Diff) => explainPrompt(`${ROUTE_RULES}\n\n${REFERENCE_RULES}`, pr, diff),
 } as const satisfies Record<number, (pr: PrInfo, diff: Diff) => string>;
 
 export type TourPromptVersion = keyof typeof TOUR_PROMPTS;
@@ -703,6 +1057,15 @@ Never leave a behavior change off the route because something calls it generated
 
 "notes" is optional. For a changed file you leave off the route, you may add one line saying what it is, as {path, note}: "test fixture data", "docs for the new flag". The reviewer sees it marked as your word, not as proof. Leave notes out when there's nothing useful to say.`;
 
+const ROUTE_FIRST_RULES = `## Write the route first
+
+Plan the whole tour before you write any stop. Then write "route" first: the title of every stop, in order, exactly as you will title them, the verdict_prompt included. The reviewer sees it as the plan while you write the stops. Then write the stops in that order, under those titles.`;
+
+const REFERENCE_RULES = `## Point at code from the prose, sparingly
+
+A stop may point a phrase of its body at the exact lines it names, so the reviewer can hover the phrase and see them. List these in the stop's "references", as {phrase, path, side, startLine, endLine}, with the same line rules as citations. The phrase is a few words copied exactly from the body, on one line, naming one function, value or piece of logic: "the retry helper", or \`withRetry()\` whole, never part of a \`backtick\` span.
+Use them sparingly: at most three per stop, only where seeing the exact lines helps, never for every identifier. Many stops need none. A reference puts nothing on the route: the citations still carry every line a stop explains.`;
+
 function prSection(pr: PrInfo, diff: Diff): string {
   return `----
 
@@ -764,13 +1127,14 @@ function stopList(tour: WireTour): string {
   return `The tour's stops now, by number:\n${lines.join('\n')}`;
 }
 
-function repairPrompt(problems: readonly string[], tour: WireTour): string {
+function repairPrompt(problems: readonly string[], tour: WireTour, routeFirst: boolean): string {
+  const route = routeFirst ? '- "route": an empty list. The stops carry the change.\n' : '';
   return `The tour checker found these problems:
 
 ${problemList(problems)}
 
 Fix them by sending back only what changes, in the same JSON shape:
-- "stops": only the stops you change or add, each one in full. To change a stop, set "replaces" to its number (Stop 2 is 2); you may change its title. For a new stop, set "replaces" to 0: it is added after the existing stops of its kind. Leave out every stop that stays the same.
+${route}- "stops": only the stops you change or add, each one in full. To change a stop, set "replaces" to its number (Stop 2 is 2); you may change its title. For a new stop, set "replaces" to 0: it is added after the existing stops of its kind. Leave out every stop that stays the same.
 - "notes": leave it out to keep your notes as they are, or send the complete list to replace them.
 Change as little as you can: the reviewer may already be reading the stops.
 
