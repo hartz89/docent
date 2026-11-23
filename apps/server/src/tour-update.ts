@@ -91,8 +91,13 @@ function changedTexts(diff: Diff): { ref: LineRef; id: string }[] {
       // Each side's view of the hunk: the new side has no removed lines, the old no added ones.
       const newSide = hunk.lines.filter((l) => l.kind !== 'removed');
       const oldSide = hunk.lines.filter((l) => l.kind !== 'added');
+      // Each line's place on its side, found once, so a huge hunk costs linear time.
+      const places = new Map<HunkLine, number>();
+      for (const side of [newSide, oldSide]) {
+        for (const [i, l] of side.entries()) places.set(l, i);
+      }
       const around = (side: readonly HunkLine[], line: HunkLine) => {
-        const at = side.indexOf(line);
+        const at = places.get(line) ?? -1;
         return [side[at - 1]?.text ?? null, side[at + 1]?.text ?? null];
       };
       for (const line of hunk.lines) {
