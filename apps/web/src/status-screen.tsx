@@ -49,7 +49,12 @@ function hintFor(reason: string): ReactNode {
       check that <code>gh auth status</code> and <code>claude</code> both work in a terminal
     </>
   );
-  if (/\bauth|not logged in|log ?in\b|credential|\b401\b/i.test(reason)) {
+  // Not "author": a failure that mentions the author's session isn't a login problem.
+  if (
+    /\bauth(?:entication|enticated|orization|orized)?\b|not logged in|log ?in\b|credential|\b401\b/i.test(
+      reason,
+    )
+  ) {
     return <>First {checks}, then try again.</>;
   }
   return (
@@ -72,10 +77,13 @@ function RetryButton({ onRetry }: { onRetry: () => Promise<void> }) {
         onClick={() => {
           setBusy(true);
           setError(null);
-          onRetry().catch((failed: unknown) => {
-            setError(failed instanceof Error ? failed.message : String(failed));
-            setBusy(false);
-          });
+          // Back to Try again once the page has caught up: if the tour failed again, or the
+          // server can't be reached, this card stays, and the button must work again.
+          onRetry()
+            .catch((failed: unknown) => {
+              setError(failed instanceof Error ? failed.message : String(failed));
+            })
+            .finally(() => setBusy(false));
         }}
       >
         {busy ? 'Starting again…' : 'Try again'}

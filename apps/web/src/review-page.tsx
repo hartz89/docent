@@ -89,7 +89,8 @@ export function ReviewPage() {
         <StatusScreen
           tour={{ state: 'failed', reason: snapshot.error.message, costs: [] }}
           onRetry={async () => {
-            await refetch();
+            const again = await refetch();
+            if (again.isError) throw again.error;
           }}
         />
       </div>
