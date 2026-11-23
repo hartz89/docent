@@ -17,6 +17,13 @@ const hostile = [
   '```html',
   '<!-- kept in code -->',
   '```',
+  '',
+  '<!--',
+  'A template hint, e.g.',
+  '```',
+  'fix: thing',
+  '```',
+  '-->',
   '</details>',
 ].join('\n');
 
@@ -56,6 +63,9 @@ test('a hostile description renders as text: safe links only, no images, no mark
     await test.step('comments and details tags go, except inside code', async () => {
       await expect(description.getByRole('heading', { name: 'Known gaps' })).toBeVisible();
       await expect(description).not.toContainText('a template comment');
+      // A comment runs to its end even across a code fence, as on GitHub.
+      await expect(description).not.toContainText('template hint');
+      await expect(description.locator('.md-code')).toHaveCount(1);
       await expect(description).not.toContainText('<details>');
       await expect(description.locator('.md-code')).toHaveText('<!-- kept in code -->');
     });

@@ -302,13 +302,24 @@ export function TourScreen({ snapshot, tour }: Props) {
     columns.current.scrollTop = columnsTop;
   }, [stopId]);
 
+  // The skip link and / go straight to the question box, past the route and the code. A stop
+  // with no question box, like the verdict, starts at its first control instead.
+  const toGuide = useCallback(() => {
+    const column = guide.current;
+    const target = column?.querySelector<HTMLElement>('textarea, .verdict-choices input');
+    (target ?? column)?.focus();
+  }, []);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       // In the route drawer, keys belong to the drawer.
       if (target?.closest('input, textarea, select, [contenteditable="true"], dialog')) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (event.key === 'ArrowRight') {
+      if (event.key === '/') {
+        event.preventDefault();
+        toGuide();
+      } else if (event.key === 'ArrowRight') {
         event.preventDefault();
         go(index + 1);
       } else if (event.key === 'ArrowLeft') {
@@ -318,7 +329,7 @@ export function TourScreen({ snapshot, tour }: Props) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [go, index]);
+  }, [go, index, toGuide]);
 
   // Esc leaves explored files for the tour; Alt+← and Alt+→ go back and forward among them.
   useEffect(() => {
@@ -473,6 +484,10 @@ export function TourScreen({ snapshot, tour }: Props) {
 
   return (
     <div className="app">
+      {/* A button, not a link: it focuses the question box itself rather than moving the URL. */}
+      <button type="button" className="skip-link" onClick={toGuide}>
+        Skip to the guide
+      </button>
       <TopBar
         snapshot={snapshot}
         diff={diff}
@@ -608,7 +623,7 @@ export function TourScreen({ snapshot, tour }: Props) {
             <Overview snapshot={snapshot} diff={diff} onOpen={explore} />
           )}
         </section>
-        <aside className="column" aria-label="The guide" ref={guide}>
+        <aside className="column" aria-label="The guide" ref={guide} tabIndex={-1}>
           {!stop ? (
             <div className="narration">
               <div className="narration-body fade-in">
@@ -1469,7 +1484,7 @@ function Narration({
             />
             <div className="question-actions">
               <span className="shortcut-hint">
-                <kbd>{IS_MAC ? '⌘' : 'Ctrl'}</kbd> <kbd>Enter</kbd> to ask
+                <kbd>{IS_MAC ? '⌘' : 'Ctrl'}</kbd> <kbd>Enter</kbd> to ask · <kbd>/</kbd> jumps here
               </span>
               <button
                 type="button"
