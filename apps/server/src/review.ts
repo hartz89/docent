@@ -1024,9 +1024,17 @@ Question: ${question}`,
       stops: outcome.tour.stops.length,
       ledger: ledger.lines,
       attempts: outcome.attempts,
-      retries: outcome.attempts - 1,
+      // An update that needed no model call made no attempt at all.
+      retries: Math.max(0, outcome.attempts - 1),
       problems: outcome.problems,
       model: outcome.model,
+      ...(outcome.update
+        ? {
+            updatedFrom: outcome.update.from,
+            updatedStops: outcome.tour.stops.filter((s) => s.updated).length,
+            dropped: outcome.update.dropped,
+          }
+        : {}),
       // A cached tour cost nothing this run.
       costMicroUsd: outcome.cached ? 0 : totalMicroUsd(outcome.costs),
       ms: Date.now() - started,
