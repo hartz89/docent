@@ -202,6 +202,28 @@ export function createApp({
         }
       },
     )
+    // Find references: every line at the PR's head that uses a name, by file, changed files first.
+    .get(
+      '/api/references',
+      validator('query', (query, c) => {
+        const { symbol } = query;
+        if (typeof symbol !== 'string' || !SYMBOL.test(symbol)) {
+          return c.json({ error: 'Send a symbol: one identifier, up to 200 characters' }, 400);
+        }
+        return { symbol };
+      }),
+      async (c) => {
+        if (!review) return c.json(noReview, 404);
+        const { symbol } = c.req.valid('query');
+        try {
+          const found = await review.references(symbol);
+          if (!found) return c.json(stillLoading, 503);
+          return c.json({ symbol, ...found }, 200);
+        } catch {
+          return c.json(indexFailed, 500);
+        }
+      },
+    )
     // Jump to an import: the repo file an import specifier names, if it names one.
     .get(
       '/api/import',

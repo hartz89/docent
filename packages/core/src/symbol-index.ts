@@ -1,4 +1,5 @@
-// Jump to definition and imports over a whole repo, from each file's symbols (N2–N5).
+// Jump to definition, imports and find references over a whole repo, from each file's symbols
+// (N2–N6).
 // Search-based: a name is looked up, never type-checked, so a jump can be ambiguous. Then every
 // candidate comes back, ranked, and the reviewer picks. Nothing is guessed.
 import type { DefinitionKind, Export, FileSymbols } from './symbols.ts';
@@ -16,6 +17,9 @@ export type Candidate = {
   kind: DefinitionKind | 'export';
   rank: CandidateRank;
 };
+
+/** The lines in one file where a name is used. */
+export type FileReferences = { path: string; lines: number[] };
 
 /** `paths` from the repo's root `tsconfig.json`, with `baseUrl` already applied. */
 export type TsconfigPaths = ReadonlyArray<{ pattern: string; targets: readonly string[] }>;
@@ -59,6 +63,8 @@ export class SymbolIndex {
   readonly #tsconfig: TsconfigPaths;
   /** Name → every file that defines it. */
   readonly #byName = new Map<string, string[]>();
+  /** Name → every file that uses it, by path. */
+  readonly #usedIn = new Map<string, string[]>();
   /** The longest path in the repo. Anything longer can't name a file, so it isn't tried. */
   #longest = 0;
 
@@ -81,8 +87,14 @@ export class SymbolIndex {
         if (list) list.push(path);
         else this.#byName.set(name, [path]);
       }
+      for (const { name } of symbols.uses) {
+        const list = this.#usedIn.get(name);
+        if (list) list.push(path);
+        else this.#usedIn.set(name, [path]);
+      }
     }
     for (const list of this.#byName.values()) list.sort();
+    for (const list of this.#usedIn.values()) list.sort();
   }
 
   /** Resolved specifiers, by the importing folder (for relative ones) and specifier. */
@@ -229,6 +241,34 @@ export class SymbolIndex {
     }
     // Either way, some candidates may be missing.
     return { candidates: found, truncated: lookup.truncated || lookup.exhausted };
+  }
+
+  /**
+   * N6: every line where `symbol` is used as a name, grouped by file. Search-based, like
+   * `definitions`: any name spelled the same counts, whatever it refers to. Files for which
+   * `first` is true come first, then the rest, each group by path, so a limit never cuts them
+   * before the others. At most `limit` lines come back, so the last file may be cut short;
+   * `total` is how many lines there are in all.
+   */
+  references(
+    symbol: string,
+    first: (path: string) => boolean = () => false,
+    limit = Number.POSITIVE_INFINITY,
+  ): { files: FileReferences[]; total: number; truncated: boolean } {
+    const paths = this.#usedIn.get(symbol) ?? [];
+    const ordered = [...paths.filter(first), ...paths.filter((p) => !first(p))];
+    const files: FileReferences[] = [];
+    let total = 0;
+    let kept = 0;
+    for (const path of ordered) {
+      const lines = this.#files.get(path)?.uses.find((u) => u.name === symbol)?.lines ?? [];
+      total += lines.length;
+      if (kept >= limit) continue;
+      const taken = lines.slice(0, limit - kept);
+      kept += taken.length;
+      files.push({ path, lines: taken });
+    }
+    return { files, total, truncated: kept < total };
   }
 
   /**

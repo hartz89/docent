@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { type CommitSha, commitSha } from '@docent/core';
-import { gitHeadFiles, type HeadFiles } from './head-files.ts';
+import { type CommitListing, type HeadFiles, headFilesFrom, listCommit } from './head-files.ts';
 
 const run = promisify(execFile);
 
@@ -226,7 +226,6 @@ export function githubSource(url: string, cacheDir: string): PrSource {
         // The link is shown to the reviewer, so it must be GitHub's.
         return { url: typeof url === 'string' && url.startsWith(`${pr.url}#`) ? url : pr.url };
       },
-      headFiles: () => gitHeadFiles(dir, pr.head),
     };
   };
 }
@@ -242,17 +241,22 @@ async function ensureCheckout(dir: string, repo: string, pr: PrInfo): Promise<vo
   await mkdir(dir, { recursive: true });
   await git(dir, ['init', '--quiet']);
   await git(dir, ['remote', 'add', 'origin', `https://github.com/${repo}.git`]);
-  await git(dir, [
-    'fetch',
-    '--quiet',
-    '--depth=1',
-    '--filter=blob:none',
-    '--no-recurse-submodules',
-    'origin',
-    pr.base,
-    pr.head,
-  ]);
-  await git(dir, ['checkout', '--quiet', '--detach', pr.head]);
+  // A big repo's first fetch and checkout can take minutes, so they get longer than a read.
+  await git(
+    dir,
+    [
+      'fetch',
+      '--quiet',
+      '--depth=1',
+      '--filter=blob:none',
+      '--no-recurse-submodules',
+      'origin',
+      pr.base,
+      pr.head,
+    ],
+    { timeout: CHECKOUT_TIMEOUT_MS },
+  );
+  await git(dir, ['checkout', '--quiet', '--detach', pr.head], { timeout: CHECKOUT_TIMEOUT_MS });
   await writeFile(ready, `${new Date().toISOString()}\n`);
 }
 
@@ -310,6 +314,14 @@ export async function prefetchBlobs(dir: string, commits: readonly CommitSha[]):
 
 /** How long the batched blob fetch may take before reads fall back to fetching on demand. */
 const PREFETCH_TIMEOUT_MS = 120_000;
+/** How long the checkout's fetch, and the checkout itself, may each take. */
+const CHECKOUT_TIMEOUT_MS = 10 * 60_000;
+/**
+ * How long any other git call may take, unless its caller says otherwise. A read can fetch a
+ * missing blob from GitHub, so a stalled network would otherwise hang it, and the request
+ * waiting on it, for good.
+ */
+const GIT_TIMEOUT_MS = 60_000;
 
 /**
  * Reads files and the tree from git's objects at two pinned commits, never from the working tree.
@@ -321,7 +333,10 @@ export function commitReader(
   base: CommitSha,
   head: CommitSha,
   maxTreeEntries = MAX_TREE_ENTRIES,
-): Pick<Workspace, 'readFile' | 'open' | 'openAll' | 'tree' | 'baseGitattributes' | 'findWords'> {
+): Pick<
+  Workspace,
+  'readFile' | 'open' | 'openAll' | 'tree' | 'headFiles' | 'baseGitattributes' | 'findWords'
+> {
   const blob = async (sha: CommitSha, path: string, maxBytes: number): Promise<RepoFile> => {
     if (!isSafeRepoPath(path)) return { kind: 'missing' };
     let listing: string;
@@ -408,7 +423,16 @@ export function commitReader(
     return files;
   };
   const at = (side: 'old' | 'new') => (side === 'new' ? head : base);
-  let listing: Promise<RepoTree> | null = null;
+  // One listing of head, for both the file browser and the symbol index. A failed one isn't
+  // kept, so the next request tries again.
+  let headListing: Promise<CommitListing> | null = null;
+  const listHead = () => {
+    headListing ??= listCommit(dir, head).catch((error: unknown) => {
+      headListing = null;
+      throw error;
+    });
+    return headListing;
+  };
   return {
     // The guide's own reads may be bigger than what the browser is sent.
     readFile: async (side, path) => {
@@ -418,18 +442,12 @@ export function commitReader(
     },
     open: (side, path) => blob(at(side), path, MAX_FILE_BYTES),
     openAll: (side, paths) => blobs(at(side), paths, MAX_FILE_BYTES),
-    tree: () => {
-      // A failed listing isn't kept, so the next request tries again.
-      listing ??= listTree(dir, head, maxTreeEntries).catch((error: unknown) => {
-        listing = null;
-        throw error;
-      });
-      return listing;
-    },
+    tree: async () => treeOf(await listHead(), maxTreeEntries),
+    headFiles: async () => headFilesFrom(dir, await listHead()),
     baseGitattributes: async () => {
       // A listing cut short, or one that can't be read as text, might hide the file that opts a
       // folder back into review, so the whole answer is unknown.
-      const listed = await listTree(dir, base, maxTreeEntries);
+      const listed = treeOf(await listCommit(dir, base), maxTreeEntries);
       if (listed.truncated) return null;
       const found = new Map<string, string>();
       for (const { path } of listed.entries) {
@@ -619,32 +637,13 @@ async function grepWord(
   }
 }
 
-/** Every file, symlink and submodule at a commit, up to `max` of them. */
-async function listTree(dir: string, sha: CommitSha, max: number): Promise<RepoTree> {
-  let stdout: string;
-  let cut = false;
-  try {
-    ({ stdout } = await git(dir, ['ls-tree', '-r', '-z', '--full-tree', sha], {
-      maxBuffer: 16 * 1024 * 1024,
-    }));
-  } catch (error) {
-    // A listing too big to buffer is cut short: git is stopped, and what arrived is kept.
-    const failure = error as { code?: unknown; stdout?: unknown };
-    if (failure.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || typeof failure.stdout !== 'string')
-      throw error;
-    stdout = failure.stdout.slice(0, failure.stdout.lastIndexOf('\0') + 1);
-    cut = true;
-  }
-  const entries: TreeEntry[] = [];
-  for (const record of stdout.split('\0')) {
-    const tab = record.indexOf('\t');
-    if (tab === -1) continue;
-    if (entries.length === max) return { entries, truncated: true };
-    const mode = record.slice(0, 6);
-    const kind = mode === '160000' ? 'submodule' : mode === '120000' ? 'symlink' : 'file';
-    entries.push({ path: record.slice(tab + 1), kind });
-  }
-  return { entries, truncated: cut };
+/** A listing as the file browser shows it: every file, symlink and submodule, up to `max`. */
+function treeOf(listing: CommitListing, max: number): RepoTree {
+  const entries: TreeEntry[] = listing.entries.slice(0, max).map(({ path, mode }) => ({
+    path,
+    kind: mode === '160000' ? 'submodule' : mode === '120000' ? 'symlink' : 'file',
+  }));
+  return { entries, truncated: listing.truncated || listing.entries.length > max };
 }
 
 /**
@@ -663,7 +662,7 @@ export function git(
   const pending = run('git', hardenedGitArgs(dir, args), {
     maxBuffer: options.maxBuffer ?? 1 << 26,
     env: hardenedGitEnv(),
-    ...(options.timeout ? { timeout: options.timeout } : {}),
+    timeout: options.timeout ?? GIT_TIMEOUT_MS,
     ...(options.signal ? { signal: options.signal } : {}),
   });
   if (options.input !== undefined) feed(pending.child, options.input);
@@ -680,6 +679,7 @@ function gitBytes(
     encoding: 'buffer',
     maxBuffer: options.maxBuffer ?? 1 << 26,
     env: hardenedGitEnv(),
+    timeout: GIT_TIMEOUT_MS,
   });
   if (options.input !== undefined) feed(pending.child, options.input);
   return pending;

@@ -13,6 +13,7 @@ import { fileTextQuery } from './api.ts';
 import { DefinitionPopover, type Found, type JumpTo, lookUp } from './definition-popover.tsx';
 import { highlight, type Token } from './highlight.ts';
 import { type JumpTarget, targetAt } from './jump.ts';
+import { ReferencesPanel } from './references-panel.tsx';
 
 export type Range = { startLine: number; endLine: number };
 
@@ -37,7 +38,7 @@ type Props = {
    * and the arrow keys then scroll the file instead. Absent when no citation is in focus.
    */
   onStep: ((delta: 1 | -1) => boolean) | undefined;
-  /** Opens the place a jump to definition or an import found. */
+  /** Opens the place a jump to definition, an import or a reference found. */
   onJump: (to: JumpTo) => void;
 };
 
@@ -158,6 +159,13 @@ export function CodeView({
   // so do Enter and F12 with the caret or selection on one. Plain clicks are left alone, so text
   // still selects as usual.
   const [popover, setPopover] = useState<{ found: Found; hit: Hit } | null>(null);
+  // The name whose references are listed under the code. The list stays as files change, so
+  // the reviewer can open one result after another.
+  const [references, setReferences] = useState<string | null>(null);
+  const closeReferences = useCallback(() => {
+    setReferences(null);
+    scroller.current?.focus({ preventScroll: true });
+  }, []);
   const [hovering, setHovering] = useState(false);
   const lookups = useRef(0);
   // Closing also drops a lookup still under way, so its answer can't land after the reviewer
@@ -170,7 +178,16 @@ export function CodeView({
   // biome-ignore lint/correctness/useExhaustiveDependencies: path and side are the triggers.
   useEffect(() => closePopover, [path, side, closePopover]);
 
+  const findReferences = (name: string) => {
+    closePopover();
+    setReferences(name);
+  };
+
   const jump = async (hit: Hit) => {
+    if (hit.wants === 'references') {
+      if (hit.target.kind === 'symbol') findReferences(hit.target.name);
+      return;
+    }
     const id = ++lookups.current;
     const name = hit.target.kind === 'symbol' ? hit.target.name : hit.target.spec;
     setPopover({ found: { kind: 'loading', name }, hit });
@@ -186,11 +203,12 @@ export function CodeView({
 
   const onMouseDown = (event: ReactMouseEvent) => {
     // Keep the selection as it was: a ⌘-click is a jump, not a click into the text.
-    if (isJumpClick(event)) event.preventDefault();
+    if (clickWants(event)) event.preventDefault();
   };
   const onClick = (event: ReactMouseEvent) => {
-    if (!isJumpClick(event)) return;
-    const hit = hitAtPoint(event.clientX, event.clientY);
+    const wants = clickWants(event);
+    if (!wants) return;
+    const hit = hitAtPoint(event.clientX, event.clientY, wants);
     if (!hit) return;
     event.preventDefault();
     void jump(hit);
@@ -200,7 +218,8 @@ export function CodeView({
     CSS.highlights?.delete('jump');
   }, []);
   const onMouseMove = (event: ReactMouseEvent) => {
-    const hit = isJumpClick(event) ? hitAtPoint(event.clientX, event.clientY) : null;
+    const wants = clickWants(event);
+    const hit = wants ? hitAtPoint(event.clientX, event.clientY, wants) : null;
     if (!hit) return clearHover();
     setHovering(true);
     if (typeof Highlight !== 'undefined') CSS.highlights?.set('jump', new Highlight(hit.range));
@@ -218,13 +237,15 @@ export function CodeView({
       clearHover();
     };
   }, [clearHover]);
+  // Enter or F12 jumps to the definition; with Shift, they list the references.
   const onKeyDown = (event: ReactKeyboardEvent) => {
     if (event.key !== 'Enter' && event.key !== 'F12') return;
-    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return;
     const range = selection.getRangeAt(0);
-    const hit = hitAt(range.startContainer, range.startOffset);
+    const wants = event.shiftKey ? 'references' : 'definition';
+    const hit = hitAt(range.startContainer, range.startOffset, wants);
     if (!hit) return;
     event.preventDefault();
     void jump(hit);
@@ -245,7 +266,7 @@ export function CodeView({
         ref={scroller}
         // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region needs a tab stop.
         tabIndex={0}
-        aria-label={`${path}, ${MOD_LABEL}-click a name, or select it and press Enter, to jump to its definition`}
+        aria-label={`${path}, ${MOD_LABEL}-click a name, or select it and press Enter, to jump to its definition. Add Shift to list its references.`}
         data-jump={hovering ? '' : undefined}
         onMouseDown={onMouseDown}
         onClick={onClick}
@@ -292,6 +313,15 @@ export function CodeView({
           </div>
         )}
       </section>
+      {references && (
+        <ReferencesPanel
+          key={references}
+          name={references}
+          current={{ path, line: side === 'new' ? (focus?.startLine ?? null) : null }}
+          onOpen={onJump}
+          onClose={closeReferences}
+        />
+      )}
       <div className="legend" aria-hidden="true">
         {changed.size > 0 && (
           <span>
@@ -323,6 +353,9 @@ export function CodeView({
         <span className="legend-keys">
           <kbd>{MOD_LABEL}</kbd> click or <kbd>Enter</kbd> on a name · its definition
         </span>
+        <span className="legend-keys">
+          add <kbd>⇧</kbd> · its references
+        </span>
       </div>
       {popover && (
         <DefinitionPopover
@@ -333,6 +366,7 @@ export function CodeView({
             setPopover(null);
             onJump(to);
           }}
+          onReferences={findReferences}
           onClose={closePopover}
         />
       )}
@@ -351,19 +385,24 @@ const lineAt = (box: HTMLElement, line: number) =>
 
 /** A box on screen, in viewport coordinates. */
 type Box = { left: number; top: number; bottom: number };
-/** What a jump starts from: the target, its line, and where it sits on screen. */
-type Hit = { target: JumpTarget; line: number; range: TextRange; box: Box };
+/** What a click or key asks for: a name's definition, or every use of it. */
+type Wants = 'definition' | 'references';
+/** What a jump starts from: the target, its line, where it sits on screen, and what's wanted. */
+type Hit = { target: JumpTarget; line: number; range: TextRange; box: Box; wants: Wants };
 /** The DOM's Range; this file's own Range is a span of lines. */
 type TextRange = globalThis.Range;
 
-const isJumpClick = (event: ReactMouseEvent) =>
-  (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.button === 0;
+/** ⌘-click (Ctrl-click elsewhere) is a jump; with Shift, the references. Else null. */
+const clickWants = (event: ReactMouseEvent): Wants | null => {
+  if (!(event.metaKey || event.ctrlKey) || event.altKey || event.button !== 0) return null;
+  return event.shiftKey ? 'references' : 'definition';
+};
 
 /** The name or import under the pointer, if the pointer is on it, not just near it. */
-function hitAtPoint(x: number, y: number): Hit | null {
+function hitAtPoint(x: number, y: number, wants: Wants): Hit | null {
   const caret = caretAt(x, y);
   if (!caret) return null;
-  const hit = hitAt(caret.node, caret.offset);
+  const hit = hitAt(caret.node, caret.offset, wants);
   if (!hit) return null;
   const inside = [...hit.range.getClientRects()].some(
     (r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom,
@@ -380,8 +419,11 @@ function caretAt(x: number, y: number): { node: Node; offset: number } | null {
   return range ? { node: range.startContainer, offset: range.startOffset } : null;
 }
 
-/** The target at a point in the text: a node and an offset, as a caret or selection gives. */
-function hitAt(node: Node, offset: number): Hit | null {
+/**
+ * The target at a point in the text: a node and an offset, as a caret or selection gives. Only
+ * a name has references; an import specifier doesn't.
+ */
+function hitAt(node: Node, offset: number, wants: Wants): Hit | null {
   const element = node instanceof Element ? node : node.parentElement;
   const text = element?.closest<HTMLElement>('.line-text');
   const line = text?.closest<HTMLElement>('.line');
@@ -390,11 +432,11 @@ function hitAt(node: Node, offset: number): Hit | null {
   before.setStart(text, 0);
   before.setEnd(node, offset);
   const target = targetAt(text.textContent ?? '', before.toString().length);
-  if (!target) return null;
+  if (!target || (wants === 'references' && target.kind !== 'symbol')) return null;
   const range = rangeIn(text, target.start, target.end);
   if (!range) return null;
   const { left, top, bottom } = range.getBoundingClientRect();
-  return { target, line: Number(line.dataset.line), range, box: { left, top, bottom } };
+  return { target, line: Number(line.dataset.line), range, box: { left, top, bottom }, wants };
 }
 
 /** A range over characters `start` to `end` of an element's text. */
