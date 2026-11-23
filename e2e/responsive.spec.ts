@@ -59,6 +59,14 @@ for (const { width, height, codeMin, drawer } of widths) {
         await expect(path).toHaveAttribute('title', 'src/middleware/cors/index.ts');
         // One line of 12.5px text is about 19px tall; the bug stacked it a letter per line.
         expect((await path.boundingBox())?.height ?? 0).toBeLessThan(28);
+        if (width < 800) {
+          // On a phone, why these lines are shown gets its own line rather than being cut off.
+          const range = page.locator('.code-range');
+          await expect(range).toHaveText('lines 77–83 · cited by this stop');
+          expect(await range.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(
+            0,
+          );
+        }
       });
 
       await test.step('the guide and the top bar buttons are fully in the window', async () => {

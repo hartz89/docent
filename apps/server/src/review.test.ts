@@ -712,6 +712,138 @@ describe('GET /api/review', () => {
   });
 });
 
+describe('POST /api/review/retry', () => {
+  test('Try again writes a failed tour once, through the cache, and a second click pays for nothing', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    // The first try fails; the second is held until the second click has been refused.
+    const model = scripted(undefined, goodTour);
+    const { promise: release, resolve } = Promise.withResolvers<void>();
+    const runner: AgentRunner = async (request) => {
+      if (model.requests.length > 0) await release;
+      return model.runner(request);
+    };
+    const reads = vi.fn();
+    const github = fakeGitHub();
+    const source: PrSource = async (onStep) => {
+      reads();
+      return sourceFor(github)(onStep);
+    };
+    const review = new Review({ source, runner, locator: noAuthor, model: 'm', cacheDir });
+    await review.done;
+    expect(review.snapshot().tour).toMatchObject({ state: 'failed' });
+    const app = createApp({ origin, token, version: '0.0.0', review });
+    const api = hc<AppType>(origin, {
+      fetch: app.request,
+      headers: { Authorization: `Bearer ${token}` },
+    }).api;
+
+    const first = await api.review.retry.$post();
+    const second = await api.review.retry.$post();
+    resolve();
+
+    expect(first.status).toBe(202);
+    expect(await first.json()).toMatchObject({ tour: { state: 'working' } });
+    expect(second.status).toBe(409);
+    await vi.waitFor(() => expect(review.snapshot().tour.state).toBe('ready'));
+    expect(model.requests.filter((r) => r.job === 'tour')).toHaveLength(2);
+    // The same PR, read once: the retry is for the head the screen already shows.
+    expect(reads).toHaveBeenCalledOnce();
+    const tours = join(cacheDir, 'tours', 'acme__web');
+    expect((await readdir(tours)).filter((f) => f.endsWith('.lock'))).toEqual([]);
+    expect(await readdir(tours)).toHaveLength(1);
+    await review.close();
+  });
+
+  test('a PR that failed to load is read again', async () => {
+    let fails = true;
+    const source: PrSource = async (onStep) => {
+      if (fails) throw new Error('GitHub is unreachable');
+      return sourceFor(fakeGitHub())(onStep);
+    };
+    const review = new Review({
+      source,
+      runner: scripted(goodTour).runner,
+      locator: noAuthor,
+      model: 'm',
+    });
+    await review.done;
+    fails = false;
+
+    expect(review.retry()).toBe(true);
+
+    await vi.waitFor(() => expect(review.snapshot().tour.state).toBe('ready'));
+    expect(review.snapshot().pr?.number).toBe(7);
+  });
+
+  test('refuses a tour that has not failed, or a closed review', async () => {
+    const model = scripted(goodTour);
+    const { review, api } = await open(model.runner);
+
+    const res = await api.review.retry.$post();
+
+    expect(res.status).toBe(409);
+    expect(model.requests).toHaveLength(1);
+
+    const failing = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: scripted().runner,
+      locator: noAuthor,
+      model: 'm',
+    });
+    await failing.done;
+    await failing.close();
+    expect(failing.retry()).toBe(false);
+    expect(review.retry()).toBe(false);
+  });
+
+  test('closing stops a retry the way it stops the first try', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    const started = Promise.withResolvers<void>();
+    const stopped = vi.fn();
+    let calls = 0;
+    const runner: AgentRunner = async (request) => {
+      calls++;
+      if (calls === 1) throw new Error('model unavailable');
+      started.resolve();
+      await new Promise((resolve) =>
+        request.signal?.addEventListener('abort', resolve, { once: true }),
+      );
+      stopped();
+      throw new Error('aborted');
+    };
+    const review = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await review.done;
+    review.retry();
+    await started.promise;
+
+    await review.close();
+
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(review.snapshot().tour).toMatchObject({ state: 'failed' });
+    // No lock left behind for the next Docent to wait on.
+    expect(await readdir(join(cacheDir, 'tours', 'acme__web'))).toEqual([]);
+  });
+
+  test('needs the token, from our own page', async () => {
+    const model = scripted();
+    const { app } = await open(model.runner);
+    const retry = (headers: Record<string, string>) =>
+      app.request(`${origin}/api/review/retry`, { method: 'POST', headers });
+
+    expect((await retry({})).status).toBe(401);
+    expect(
+      (await retry({ Authorization: `Bearer ${token}`, Origin: 'https://evil.example' })).status,
+    ).toBe(403);
+    expect(model.requests).toHaveLength(1);
+  });
+});
+
 describe('GET /api/review/events', () => {
   test('streams the tour state as server-sent events, ending when it is ready', async () => {
     const { api } = await open(scripted(goodTour).runner);

@@ -22,19 +22,25 @@ const BULLET = /^\s*[-*+]\s+(.*)$/;
 const NUMBERED = /^\s*(\d+)[.)]\s+(.*)$/;
 const HEADING = /^\s{0,3}#{1,6}\s+(.*?)\s*#*$/;
 const FENCE = /^\s{0,3}(```|~~~)/;
+/** A fenced code block, from its opening fence to its closing one, or to the end of the text. */
+const FENCED = /^\s{0,3}(?:```|~~~)[\s\S]*?(?:^\s{0,3}(?:```|~~~).*$|(?![\s\S]))/;
 
 /**
  * Drops closed HTML comments and `<details>` tags, and turns `<summary>` into a heading, but only
  * outside fenced code, so an example of them stays as written. An unclosed comment stays as text.
+ * A comment that starts outside a fence runs to its `-->` whatever is inside, fences included, as
+ * on GitHub, so one pass takes whichever comes first, a fence or a comment, and drops comments.
  */
 function tidy(text: string): string {
   return text
-    .split(/(^\s{0,3}(?:```|~~~)[\s\S]*?(?:^\s{0,3}(?:```|~~~).*$|(?![\s\S])))/m)
+    .replace(new RegExp(`(${FENCED.source})|<!--[\\s\\S]*?-->`, 'gm'), (_, fence?: string) =>
+      fence === undefined ? '' : fence,
+    )
+    .split(new RegExp(`(${FENCED.source})`, 'm'))
     .map((part, i) =>
       i % 2 === 1
         ? part
         : part
-            .replace(/<!--[\s\S]*?-->/g, '')
             .replace(/<\/?details\b[^>]*>/gi, '')
             .replace(/<summary\b[^>]*>([\s\S]*?)<\/summary>/gi, (_, label: string) =>
               label.trim() ? `\n\n#### ${label.replace(/<[^>]*>/g, '').trim()}\n\n` : '',

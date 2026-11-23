@@ -28,6 +28,24 @@ test('the CLI opens a recorded PR, and the reviewer walks the tour by keyboard',
       await expect(page.locator('.narration-title')).toHaveText(titles[0] ?? '');
     });
 
+    await test.step('the first Tab skips to the guide, and / comes back to the question box', async () => {
+      const box = page.getByLabel('Your question');
+      await page.keyboard.press('Tab');
+      const skip = page.getByRole('button', { name: 'Skip to the guide' });
+      await expect(skip).toBeFocused();
+      await expect(skip).toBeInViewport();
+      await page.keyboard.press('Enter');
+      await expect(box).toBeFocused();
+
+      // Leave the box, as a reviewer reading the code would; / brings them back.
+      await page.locator('.narration-title').click();
+      await expect(box).not.toBeFocused();
+      await page.keyboard.press('/');
+      await expect(box).toBeFocused();
+      await expect(box).toHaveValue('');
+      await page.locator('.narration-title').click();
+    });
+
     await test.step('→ moves to the second stop', async () => {
       await page.keyboard.press('ArrowRight');
       await expect(page.getByText(`Stop 2 of ${titles.length}`)).toBeVisible();

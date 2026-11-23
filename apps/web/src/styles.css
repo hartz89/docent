@@ -103,6 +103,29 @@ button {
   white-space: nowrap;
 }
 
+/* The first Tab on the tour screen: hidden until focused, then a chip over the top bar. Out of
+   the grid's flow, so it never takes a row. */
+.skip-link {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 50;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--brass-fill);
+  color: var(--brass-ink);
+  font-weight: 600;
+  font-size: 13.5px;
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+  transform: translateY(-160%);
+}
+
+.skip-link:focus {
+  transform: none;
+}
+
 code,
 .mono {
   font-family: var(--mono);
@@ -586,10 +609,29 @@ code,
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
+  border-radius: 7px;
+  transition: background 140ms var(--ease);
+}
+
+/* The whole row lights up, counts included, so they read as the row's. */
+.ledger-row:hover {
+  background: var(--panel-raised);
 }
 
 .ledger-row .ledger-file {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.ledger-row .ledger-file:hover {
+  background: transparent;
+}
+
+.ledger-row .side-count.added:hover {
+  background: var(--added-tint);
+}
+
+.ledger-row .side-count.removed:hover {
+  background: var(--removed-tint);
 }
 
 .ledger-sides {
@@ -1904,6 +1946,16 @@ kbd {
   font-size: 13px;
 }
 
+.status-actions {
+  margin-top: 22px;
+}
+
+.status-error {
+  margin: 10px 0 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+
 @keyframes pulse {
   0%,
   100% {
@@ -2460,8 +2512,21 @@ kbd {
     display: none;
   }
 
+  /* The path gets its own line, so why these lines are shown is never cut off. */
   .code-header {
+    flex-wrap: wrap;
+    row-gap: 4px;
     padding: 12px 16px;
+  }
+
+  .code-path {
+    flex: 1 0 100%;
+  }
+
+  .code-range {
+    flex: 0 1 auto;
+    min-width: 0;
+    white-space: normal;
   }
 
   .legend {
