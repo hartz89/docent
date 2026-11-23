@@ -193,7 +193,8 @@ describe('a push updates the tour instead of writing a new one', () => {
     expect(prompt).toContain('This is an update of an earlier tour');
     expect(prompt).toContain('3. [changed] edge: A helper names what varies');
     expect(prompt).toContain('2. [kept] core_change: The origin is reflected');
-    expect(prompt).toContain('- src/cors.ts new lines 7');
+    // The changed line, and the changed lines beside it, whose surroundings it changed.
+    expect(prompt).toContain('- src/cors.ts new lines 6-8');
     // The update's own rules sit above the line; the earlier stops, PR data, below the diff.
     expect(prompt.indexOf('This is an update')).toBeLessThan(prompt.indexOf('# PR #7'));
     expect(prompt.indexOf('# PR #7')).toBeLessThan(prompt.indexOf("earlier tour's stops"));
@@ -345,7 +346,7 @@ describe('a push updates the tour instead of writing a new one', () => {
     cleanup.push(cacheDir);
     await review(git.at(await git.push(push1)), scripted(firstTour).runner, cacheDir);
     const file = join(cacheDir, 'tour-bases', 'acme__web', 'pr-7-claude-test-p4.json');
-    expect(JSON.parse(await readFile(file, 'utf8')).version).toBe(1);
+    expect(JSON.parse(await readFile(file, 'utf8')).version).toBe(2);
     await writeFile(file, '{ not json');
 
     const guide = scripted(firstTour);
@@ -353,5 +354,75 @@ describe('a push updates the tour instead of writing a new one', () => {
 
     expect(guide.requests[0]?.prompt).not.toContain('This is an update');
     expect(tour.update).toBeNull();
+  });
+});
+
+describe('a push can never slip a change past an update', () => {
+  // A second changed file the first tour leaves off its route: a check, then an audit call.
+  const guard = (lines: string[]) => ({
+    ...push1,
+    'src/guard.ts': `export function guard(user: { admin: boolean }) {\n${lines.join('\n')}\n  return true;\n}\n`,
+  });
+  const check = '  if (!user.admin) return false;';
+  const audit = '  audit(user);';
+
+  async function pushed(second: Record<string, string>, ...answers: unknown[]) {
+    const git = await repo();
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-cache-'));
+    cleanup.push(cacheDir);
+    await review(
+      git.at(await git.push(guard([check, audit]))),
+      scripted(firstTour).runner,
+      cacheDir,
+    );
+    const guide = scripted(...answers);
+    const { tour } = await review(git.at(await git.push(second)), guide.runner, cacheDir);
+    return { guide, tour };
+  }
+  const explainGuard = {
+    stops: [
+      {
+        ...vary,
+        replaces: 0,
+        title: 'The guard changed',
+        citations: [{ ...cite('new', 1, 4), path: 'src/guard.ts' }],
+      },
+    ],
+  };
+
+  test('a changed line moved within its file, outside every cited range, counts as new', async () => {
+    const { guide, tour } = await pushed(guard([audit, check]), explainGuard);
+
+    expect(guide.requests).toHaveLength(1);
+    expect(guide.requests[0]?.prompt).toContain('- src/guard.ts new lines');
+    expect(tour.tour.stops.some((s) => s.title === 'The guard changed' && s.updated)).toBe(true);
+  });
+
+  test('a changed line taken out is not passed over: the guide is asked', async () => {
+    const { guide } = await pushed(guard([audit]), explainGuard);
+
+    expect(guide.requests).toHaveLength(1);
+    expect(guide.requests[0]?.prompt).toContain('This is an update');
+  });
+
+  test('a danger flag is never dropped with its stale stop: the guide must rewrite it', async () => {
+    const git = await repo();
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-cache-'));
+    cleanup.push(cacheDir);
+    const danger = { ...vary, flags: [{ kind: 'danger', note: 'Varies on nothing useful.' }] };
+    await review(
+      git.at(await git.push(push1)),
+      scripted({ stops: [intent, origin, danger, verdict] }).runner,
+      cacheDir,
+    );
+
+    // First the guide leaves the flagged stop alone; it is sent back, and rewrites it.
+    const guide = scripted({ stops: [] }, { stops: [{ ...danger, replaces: 3 }] });
+    const { tour } = await review(git.at(await git.push(push2)), guide.runner, cacheDir);
+
+    expect(guide.requests[0]?.prompt).toContain('Flag danger: Varies on nothing useful.');
+    expect(guide.requests[1]?.prompt).toContain('Stop 3 carried a danger flag');
+    expect(tour.tour.stops[2]?.flags).toEqual(['danger']);
+    expect(tour.update?.dropped).toBe(0);
   });
 });

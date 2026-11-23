@@ -982,7 +982,7 @@ Question: ${question}`,
       const basis = await basisFor(tour, diff, workspace.pr, workspace.readFile);
       if (!basis) return;
       await mkdir(dirname(file), { recursive: true });
-      const partial = `${file}.${process.pid}.partial`;
+      const partial = `${file}.${randomUUID()}.partial`;
       await writeFile(partial, JSON.stringify(basis));
       await rename(partial, file);
     } catch (error) {

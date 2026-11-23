@@ -14,6 +14,7 @@ import {
   type CommitSha,
   changedLines,
   type Diff,
+  type HunkLine,
   type LineRef,
   lineKey,
   reanchor,
@@ -24,7 +25,7 @@ import type { PrInfo } from './github.ts';
 import type { NoteView, TourView, WireNote, WireStop } from './tour.ts';
 
 /** Bump when the basis changes shape: an older one is then ignored, never misread. */
-export const BASIS_VERSION = 1;
+export const BASIS_VERSION = 2;
 
 type BasisCitation = {
   side: 'old' | 'new';
@@ -67,6 +68,8 @@ export type UpdatePlan = {
   notes: WireNote[];
   /** Changed lines of the new diff that no changed line of the old one matched. */
   moved: LineRef[];
+  /** How many changed lines of the old diff no longer are: the new commits took them out. */
+  gone: number;
 };
 
 type FileReader = (side: 'old' | 'new', path: string) => Promise<string | null>;
@@ -76,21 +79,32 @@ const fingerprint = (value: unknown) =>
 
 const descriptionOf = (pr: Pick<PrInfo, 'title' | 'body'>) => fingerprint([pr.title, pr.body]);
 
-/** Every changed line, with a fingerprint of what it is: side, file and text. */
+/**
+ * Every changed line, with a fingerprint of what it is: side, file, text, and the lines just
+ * before and after it on its side. The neighbors make a line moved within its file, say above the
+ * check that guarded it, count as new.
+ */
 function changedTexts(diff: Diff): { ref: LineRef; id: string }[] {
   const lines: { ref: LineRef; id: string }[] = [];
   for (const file of diff.files) {
     for (const hunk of file.hunks) {
+      // Each side's view of the hunk: the new side has no removed lines, the old no added ones.
+      const newSide = hunk.lines.filter((l) => l.kind !== 'removed');
+      const oldSide = hunk.lines.filter((l) => l.kind !== 'added');
+      const around = (side: readonly HunkLine[], line: HunkLine) => {
+        const at = side.indexOf(line);
+        return [side[at - 1]?.text ?? null, side[at + 1]?.text ?? null];
+      };
       for (const line of hunk.lines) {
         if (line.kind === 'added') {
           lines.push({
             ref: { path: file.path, side: 'new', line: line.newLine },
-            id: fingerprint(['new', file.path, line.text]),
+            id: fingerprint(['new', file.path, line.text, ...around(newSide, line)]),
           });
         } else if (line.kind === 'removed') {
           lines.push({
             ref: { path: file.oldPath, side: 'old', line: line.oldLine },
-            id: fingerprint(['old', file.oldPath, line.text]),
+            id: fingerprint(['old', file.oldPath, line.text, ...around(oldSide, line)]),
           });
         }
       }
@@ -238,7 +252,7 @@ export async function planUpdate(
     s.state === 'kept' && (s.stop.kind === 'core_change' || s.stop.kind === 'edge');
   if (!stops.some(anchored)) return null;
 
-  // Each old changed line matches at most one new one with the same side, file and text.
+  // Each old changed line matches at most one new one with the same fingerprint.
   const seen = new Map<string, number>();
   for (const id of basis.changed) seen.set(id, (seen.get(id) ?? 0) + 1);
   const moved: LineRef[] = [];
@@ -247,7 +261,12 @@ export async function planUpdate(
     if (left > 0) seen.set(id, left - 1);
     else moved.push(ref);
   }
-  return { from: basis.head, stops, notes: basis.notes, moved };
+  const gone = [...seen.values()].reduce((sum, n) => sum + n, 0);
+  // A note is the guide's word on a file it left off the route. A file with new lines may no
+  // longer be what the note says, so its note goes; the guide may write a new one.
+  const touched = new Set(moved.map((l) => l.path));
+  const notes = basis.notes.filter((n) => !touched.has(n.path));
+  return { from: basis.head, stops, notes, moved, gone };
 }
 
 /** Line numbers as short ranges: "3-5, 9". */
@@ -300,12 +319,21 @@ export function updatePrompt(plan: UpdatePlan, firstPrompt: string): string {
           ? stop.citations.map((c) => `${c.path} ${c.side} ${c.startLine}-${c.endLine}`).join('; ')
           : `code that changed in ${[...new Set(stop.citations.map((c) => c.path))].join(', ')}`
         : 'nothing';
-      return `${i + 1}. [${state === 'kept' ? 'kept' : 'changed'}] ${stop.kind}: ${oneLine(stop.title)}\n   ${oneLine(stop.body)}\n   Cites: ${cites}`;
+      const flags = (stop.flags ?? []).map((f) => `\n   Flag ${f.kind}: ${oneLine(f.note)}`);
+      return `${i + 1}. [${state === 'kept' ? 'kept' : 'changed'}] ${stop.kind}: ${oneLine(stop.title)}\n   ${oneLine(stop.body)}\n   Cites: ${cites}${flags.join('')}`;
     })
     .join('\n');
-  const moved = plan.moved.length
-    ? movedList(plan.moved)
-    : 'None: the changed lines are the same as before.';
+  const moved = [
+    plan.moved.length ? movedList(plan.moved) : 'None.',
+    ...(plan.gone
+      ? [
+          `${plan.gone} changed lines of the earlier tour are no longer in the diff: the new commits took them out or reverted them.`,
+        ]
+      : []),
+  ].join('\n');
+  const notes = plan.notes.length
+    ? plan.notes.map((n) => `- ${n.path}: ${oneLine(n.note)}`).join('\n')
+    : 'None.';
   return `${firstPrompt.slice(0, at)}
 
 ${UPDATE_RULES}
@@ -317,6 +345,10 @@ Written at the earlier head commit ${plan.from.slice(0, 12)}.
 
 ${stops}
 
+## The earlier tour's notes
+
+${notes}
+
 ## Changed lines new since the earlier tour
 
 ${moved}`;
@@ -327,6 +359,7 @@ export const UPDATE_RULES = `## This is an update of an earlier tour
 The reviewer already has a tour of this PR, written at an earlier head commit. The author has pushed since. Don't write a whole new tour: update the earlier one, whose stops are listed by number at the end, after the diff. The diff is the PR as it is now.
 - "kept" stops cite lines that haven't changed; their citations are shown at the commits you have now. "changed" stops cite code that changed since: rewrite each one for the code as it is now, or it is removed from the tour.
 - The changed lines listed as new since the earlier tour are what the reviewer hasn't seen. Explain them as you would in a whole tour: cite them in a core_change or edge stop, a new one or a rewrite of the stop they belong with, and flag them the same way.
+- A "changed" stop with a danger flag must be rewritten: check the danger against the code as it is now, and flag it again if it still holds.
 - Rewrite a kept stop, the verdict_prompt included, only if the new commits make it wrong or incomplete.
 
 Send back only what changes, in the same JSON shape:

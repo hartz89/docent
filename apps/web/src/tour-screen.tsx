@@ -1064,8 +1064,8 @@ function UpdateNote({
   if (writing?.updating) {
     return (
       <p className="update-note" aria-live="polite">
-        New commits since your last visit. These stops still hold; the guide is writing what
-        changed.
+        New commits since the last tour. These stops cite code that hasn't changed; the guide is
+        writing about what did.
       </p>
     );
   }

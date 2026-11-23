@@ -430,7 +430,8 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
   if (plan) {
     const kept = { stops: plan.stops.flatMap((s) => (s.state === 'kept' ? [s.stop] : [])) };
     // Nothing changed but the head, like a rebase: if the kept tour passes, no model call at all.
-    if (plan.moved.length === 0 && kept.stops.length === plan.stops.length) {
+    // A changed line taken out counts as a change too: the guide looks at it.
+    if (plan.moved.length === 0 && plan.gone === 0 && kept.stops.length === plan.stops.length) {
       const checked = await check({ ...kept, notes: plan.notes }, files, diff, await proofs, moved);
       if (checked.problems.length === 0) {
         update = { from: plan.from, dropped: 0 };
@@ -1328,6 +1329,13 @@ function applyUpdate(
   };
   const merged = applyRepair(earlier, reply, true);
   if (typeof merged === 'string') return merged;
+  // A danger flag never disappears because its code changed: the guide must look again.
+  const flagged = merged.stops.flatMap((s, i) =>
+    s.mark === 'stale' && s.flags?.some((f) => f.kind === 'danger') ? [i + 1] : [],
+  );
+  if (flagged.length) {
+    return `Stop ${flagged.join(', ')} carried a danger flag and its code changed, so it must be rewritten (set "replaces" to its number), with the flag again if the danger still holds.`;
+  }
   const stops = merged.stops.filter((s) => s.mark !== 'stale');
   return { wire: { ...merged, stops }, dropped: merged.stops.length - stops.length };
 }
