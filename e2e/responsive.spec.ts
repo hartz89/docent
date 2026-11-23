@@ -65,7 +65,7 @@ for (const { width, height, codeMin, drawer } of widths) {
         await inViewWidth(page, 'aside[aria-label="The guide"]');
         await inViewWidth(page, '.verdict-button');
         await inViewWidth(page, '.topbar [aria-label^="Theme:"]');
-        await expect(page.locator('.verdict-button')).toHaveAccessibleName(/Verdict at the end/);
+        await expect(page.locator('.verdict-button')).toHaveAccessibleName(/Go to verdict/);
       });
 
       if (!drawer) {
