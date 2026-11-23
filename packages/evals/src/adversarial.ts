@@ -22,6 +22,12 @@ export interface AdversarialFixture {
   /** Repo path → file text, before and after the PR. A path missing from `head` is deleted. */
   readonly base: Readonly<Record<string, string>>;
   readonly head: Readonly<Record<string, string>>;
+  /**
+   * The PR as first pushed, when the hidden change comes in a later push: a tour of this push is
+   * written first, and the head's tour updates it (issue #65).
+   */
+  readonly firstPush?: Readonly<Record<string, string>>;
+  readonly firstCommitMessage?: string;
   /** The real behavior change the PR hides: head lines that must end up on the route. */
   readonly hidden: readonly {
     readonly file: string;
@@ -46,14 +52,63 @@ export async function loadAdversarial(dir = ADVERSARIAL_DIR): Promise<Adversaria
   );
 }
 
+type Push = { files: Readonly<Record<string, string>>; message: string };
+
 /**
- * Commits the fixture's two trees to a fresh repo in the temp folder, and opens it the way a
- * GitHub PR is opened: the diff between the commits, files read from git objects, the head
- * checked out for the guide to read. Returns the workspace and a manifest for the scorer.
+ * Commits the fixture's trees to a fresh repo in the temp folder, and opens it the way a GitHub
+ * PR is opened: the diff between the commits, files read from git objects, the head checked out
+ * for the guide to read. Returns the workspace and a manifest for the scorer. A fixture with a
+ * first push also gets `first`: the PR as first pushed, in a repo of its own, so the guide reading
+ * it never sees the later push.
  */
-export async function openAdversarial(
-  fixture: AdversarialFixture,
-): Promise<{ workspace: Workspace; manifest: FixtureManifest; cleanup: () => Promise<void> }> {
+export async function openAdversarial(fixture: AdversarialFixture): Promise<{
+  workspace: Workspace;
+  manifest: FixtureManifest;
+  first: Workspace | null;
+  cleanup: () => Promise<void>;
+}> {
+  const firstPush: Push | null = fixture.firstPush
+    ? { files: fixture.firstPush, message: fixture.firstCommitMessage ?? 'first push' }
+    : null;
+  const head: Push = { files: fixture.head, message: fixture.commitMessage };
+  const opened = await openPushes(fixture, firstPush ? [firstPush, head] : [head]);
+  const first = firstPush ? await openPushes(fixture, [firstPush]) : null;
+  const { workspace, changed } = opened;
+  const { base } = workspace.pr;
+  const manifest: FixtureManifest = {
+    id: fixture.id,
+    visibility: 'public',
+    source: { repo: workspace.pr.repo, pr: 1, base, head: workspace.pr.head },
+    license: 'Apache-2.0',
+    title: fixture.title,
+    size: sizeFor(changed),
+    jobs: ['tour', 'danger'],
+    expectedFindings: fixture.hidden.map(({ file, lines, description }) => ({
+      file,
+      lines,
+      description,
+    })),
+    mustNotSkip: fixture.hidden.map(({ file, lines, description }) => ({
+      file,
+      lines,
+      reason: description,
+    })),
+    expectDangerFlag: fixture.expectDangerFlag,
+    evidence: [],
+  };
+  return {
+    workspace,
+    manifest,
+    first: first?.workspace ?? null,
+    cleanup: async () => {
+      await opened.cleanup();
+      await first?.cleanup();
+    },
+  };
+}
+
+/** A repo with the fixture's base and then each push, opened as a PR at the last one. */
+async function openPushes(fixture: AdversarialFixture, pushes: readonly Push[]) {
   const dir = await mkdtemp(join(tmpdir(), 'docent-adversarial-'));
   const commit = async (files: Readonly<Record<string, string>>, message: string) => {
     await git(dir, ['rm', '-r', '-q', '--ignore-unmatch', '.']);
@@ -77,7 +132,8 @@ export async function openAdversarial(
   };
   await git(dir, ['init', '--quiet', '--initial-branch=main']);
   const base = await commit(fixture.base, 'base');
-  const head = await commit(fixture.head, fixture.commitMessage);
+  let head = base;
+  for (const push of pushes) head = await commit(push.files, push.message);
   const diffText = (await git(dir, ['diff', '--no-color', base, head])).stdout;
   const changed = diffText
     .split('\n')
@@ -97,7 +153,7 @@ export async function openAdversarial(
       headRef: 'change',
     },
     diffText,
-    commitMessages: [fixture.commitMessage],
+    commitMessages: pushes.map((p) => p.message),
     headInBaseRepo: true,
     dir,
     ...commitReader(dir, base, head),
@@ -107,26 +163,5 @@ export async function openAdversarial(
       throw new Error('An eval never posts a review.');
     },
   };
-  const manifest: FixtureManifest = {
-    id: fixture.id,
-    visibility: 'public',
-    source: { repo: workspace.pr.repo, pr: 1, base, head },
-    license: 'Apache-2.0',
-    title: fixture.title,
-    size: sizeFor(changed),
-    jobs: ['tour', 'danger'],
-    expectedFindings: fixture.hidden.map(({ file, lines, description }) => ({
-      file,
-      lines,
-      description,
-    })),
-    mustNotSkip: fixture.hidden.map(({ file, lines, description }) => ({
-      file,
-      lines,
-      reason: description,
-    })),
-    expectDangerFlag: fixture.expectDangerFlag,
-    evidence: [],
-  };
-  return { workspace, manifest, cleanup: () => rm(dir, { recursive: true, force: true }) };
+  return { workspace, changed, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }

@@ -174,6 +174,7 @@ const context = await stopContext(
     flagNotes: [],
     anchors: stop.citations,
     refs: [],
+    updated: false,
   },
   workspace.readFile,
 );

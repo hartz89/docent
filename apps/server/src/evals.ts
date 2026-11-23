@@ -30,3 +30,4 @@ export {
   type TourPromptVersion,
   type TourView,
 } from './tour.ts';
+export { basisFor, planUpdate, type TourBasis, type UpdatePlan } from './tour-update.ts';

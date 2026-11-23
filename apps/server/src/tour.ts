@@ -4,6 +4,7 @@
 import {
   type Anchor,
   anchorAt,
+  type CommitSha,
   type CostRecord,
   changedLines,
   checkStopOrder,
@@ -28,6 +29,7 @@ import type { PrInfo, Workspace } from './github.ts';
 import type { RunLog } from './run-log.ts';
 import { type Span, type Timings, timings } from './timings.ts';
 import { StopScanner } from './tour-stream.ts';
+import { type UpdatePlan, updatePrompt } from './tour-update.ts';
 
 // ---- What the browser sees. Plain JSON, so the typed client keeps exact types. ----
 
@@ -53,6 +55,11 @@ export type StopView = {
   anchors: AnchorView[];
   /** Phrases of `body` that point at code, in order. Empty for tours written without them. */
   refs: RefView[];
+  /**
+   * Written or rewritten by an update, for commits pushed since the earlier tour: new since the
+   * reviewer's last visit. False in a whole tour.
+   */
+  updated: boolean;
 };
 /**
  * The guide's optional one-line note on a changed file it left off the route ("test fixture
@@ -76,7 +83,16 @@ export type TourOutcome = {
   timing: Span[];
   /** How the guide's references fared. */
   references: ReferenceCounts;
+  /** Set when this tour updates an earlier one instead of starting over (issue #65). */
+  update: TourUpdate | null;
 };
+
+/**
+ * An update of an earlier tour: the head it was written for, and how many of its stops were
+ * dropped because their code changed and the guide didn't rewrite them. Kept stops have
+ * `updated: false`; the rest were written for the new commits.
+ */
+export type TourUpdate = { from: CommitSha; dropped: number };
 
 /**
  * The references the guide wrote, over the whole tour: how many, how many were dropped because
@@ -93,10 +109,15 @@ export function fromCache(outcome: TourOutcome): TourOutcome {
     ...outcome,
     tour: {
       ...outcome.tour,
-      stops: outcome.tour.stops.map((stop) => ({ ...stop, refs: stop.refs ?? [] })),
+      stops: outcome.tour.stops.map((stop) => ({
+        ...stop,
+        refs: stop.refs ?? [],
+        updated: stop.updated ?? false,
+      })),
     },
     timing: outcome.timing ?? [],
     references: outcome.references ?? { written: 0, unresolved: 0, overCap: 0 },
+    update: outcome.update ?? null,
     cached: true,
   };
 }
@@ -107,8 +128,9 @@ export type TourProgress =
    * The guide is writing the tour. `stops` are the ones finished so far that passed every check a
    * single stop can pass on its own, in order. `writing` is how many it has begun. `route` is the
    * titles it planned ahead of the stops (v5 on), only a plan: the stops it writes win.
+   * `update`: the stops are an earlier tour's, kept, while the guide updates it.
    */
-  | { step: 'writing'; stops: StopView[]; writing: number; route: string[] }
+  | { step: 'writing'; stops: StopView[]; writing: number; route: string[]; update: boolean }
   | { step: 'checking'; attempt: number }
   | { step: 'retrying'; attempt: number; problems: number };
 
@@ -123,11 +145,16 @@ export class TourError extends Error {
 
 // ---- What the guide writes. ----
 
-type WireCitation = { path: string; side: 'old' | 'new'; startLine: number; endLine: number };
+export type WireCitation = {
+  path: string;
+  side: 'old' | 'new';
+  startLine: number;
+  endLine: number;
+};
 type WireFlag = { kind: StopFlag; note: string };
 /** A phrase of the stop's body, copied exactly, and the lines it names. */
 type WireReference = WireCitation & { phrase: string };
-type WireStop = {
+export type WireStop = {
   /**
    * In a repair, the number of the existing stop this one replaces (1 for the first), or 0 for a
    * new stop. Always 0 in a whole tour. Stops are matched by number, never by title, since a
@@ -141,13 +168,18 @@ type WireStop = {
   citations: WireCitation[];
   /** v6 on. Missing counts as none. */
   references?: WireReference[];
+  /**
+   * Docent's own, never the guide's: parsing drops it. In an update, "stale" marks an earlier
+   * stop whose code changed, dropped unless rewritten, and "updated" one written for the update.
+   */
+  mark?: 'stale' | 'updated';
 };
-type WireNote = { path: string; note: string };
+export type WireNote = { path: string; note: string };
 /**
  * `notes` is optional: a repair that leaves it out keeps the notes it had. `route` is the plan
  * written ahead of the stops; only the stream reads it, and the stops always win over it.
  */
-type WireTour = { route?: string[]; stops: WireStop[]; notes?: WireNote[] };
+export type WireTour = { route?: string[]; stops: WireStop[]; notes?: WireNote[] };
 
 export const tourSchema = {
   type: 'object',
@@ -344,6 +376,11 @@ export type TourJob = {
   timings?: Timings;
   /** Where each attempt is recorded, with why the checker sent it back. */
   log?: RunLog;
+  /**
+   * An earlier tour of this PR to update instead of writing a whole one (`planUpdate`). Its kept
+   * stops show at once, and the guide sends only the stops it rewrites or adds.
+   */
+  update?: UpdatePlan | null;
 };
 
 /** The checker loop: one attempt, then up to this many retries with the problems fed back. */
@@ -356,8 +393,10 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
   let ended = time.span('Build the prompt');
   const version = job.promptVersion ?? TOUR_PROMPT_VERSION;
   const routeFirst = ROUTE_FIRST.has(version);
-  let prompt = TOUR_PROMPTS[version](workspace.pr, diff);
-  ended(`${prompt.length} chars`);
+  const plan = job.update ?? null;
+  const first = TOUR_PROMPTS[version](workspace.pr, diff);
+  let prompt = plan ? updatePrompt(plan, first) : first;
+  ended(`${prompt.length} chars${plan ? ', an update' : ''}`);
   let resume: string | undefined;
   // The best tour so far: the latest one that matched the schema. A later attempt that fails
   // (bad JSON, a model error) never throws it away. Once there is one, retries repair it:
@@ -369,34 +408,73 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
   // A proof failure proves nothing, which only makes the checker stricter. Caught here so a
   // rejection never escapes the job or loses the costs paid so far.
   const proofs = Promise.resolve(job.proofs).catch((): readonly Proof[] => []);
+  // An update: the next answer is the guide's update, until one applies. `update` is set once it
+  // has, and cleared if a whole tour replaces it. While set, the lines new since the earlier tour
+  // must be explained, as a whole tour's changed lines must.
+  let updating = plan !== null;
+  let update: TourUpdate | null = null;
+  const moved = new Set(plan?.moved.map(lineKey));
+  const outcome = (checked: Checked): TourOutcome => ({
+    tour: checked.view,
+    problems: checked.problems,
+    costs,
+    model: costs.at(-1)?.model ?? model,
+    attempts,
+    createdAt: new Date().toISOString(),
+    cached: false,
+    timing: time.spans(),
+    references: checked.references,
+    update,
+  });
+
+  if (plan) {
+    const kept = { stops: plan.stops.flatMap((s) => (s.state === 'kept' ? [s.stop] : [])) };
+    // Nothing changed but the head, like a rebase: if the kept tour passes, no model call at all.
+    if (plan.moved.length === 0 && kept.stops.length === plan.stops.length) {
+      const checked = await check({ ...kept, notes: plan.notes }, files, diff, await proofs, moved);
+      if (checked.problems.length === 0) {
+        update = { from: plan.from, dropped: 0 };
+        return outcome(checked);
+      }
+    }
+    // The reviewer can read the kept stops while the guide updates.
+    await showKept(kept, diff, files, onProgress, () => time.span('First stop shown')());
+  }
 
   while (attempts <= MAX_RETRIES) {
     // A stopped job writes nothing more, and keeps no half-checked tour: it's never cached.
     if (job.signal?.aborted) throw new TourError('The tour was stopped.', costs);
     attempts++;
-    const repairing = best !== undefined && !best.reorder;
+    const mode = updating ? 'update' : best !== undefined && !best.reorder ? 'repair' : 'whole';
     const started = Date.now();
     const attempt = (fields: Record<string, unknown>) =>
       job.log?.event('tour.attempt', {
         attempt: attempts,
-        mode: repairing ? 'repair' : 'whole',
+        mode,
         ms: Date.now() - started,
         ...fields,
       });
     onProgress({
       step: 'planning',
-      detail: best ? 'Fixing the problems found' : 'Reading the changed files',
+      detail:
+        mode === 'update'
+          ? 'Reading what changed since the last tour'
+          : best
+            ? 'Fixing the problems found'
+            : 'Reading the changed files',
     });
-    // Only the first tour streams. Anything later is checked as a whole before it's shown.
+    // Only the first whole tour streams. Anything later is checked as a whole before it's shown.
     const stream =
-      attempts > 1
+      attempts > 1 || mode !== 'whole'
         ? null
         : streamStops(diff, files, onProgress, {
             firstStop: () => time.span('First stop shown')(),
             firstRoute: () => time.span('Route shown')(),
           });
     let reply: Awaited<ReturnType<AgentRunner>>;
-    ended = time.span(`Attempt ${attempts}: ${repairing ? 'repair' : 'whole tour'}`);
+    ended = time.span(
+      `Attempt ${attempts}: ${mode === 'update' ? 'update' : mode === 'repair' ? 'repair' : 'whole tour'}`,
+    );
     try {
       reply = await runner({
         job: 'tour',
@@ -435,31 +513,49 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
     ended = time.span(`Attempt ${attempts}: check`);
     const output = reply.structured ?? reply.text;
     const parsed = parseWire(output);
-    const repaired = best && repairing && parsed ? applyRepair(best.wire, parsed) : parsed;
-    if (typeof repaired === 'string' && best) {
-      ended(repaired);
-      attempt({ outcome: 'bad_repair', costMicroUsd: reply.cost.costMicroUsd, problem: repaired });
-      prompt = `${repaired} Send the repair again.\n\n${stopList(best.wire)}`;
+    let applied: { wire: WireTour; dropped: number } | string | null = null;
+    if (parsed && mode === 'update' && plan) applied = applyUpdate(plan, parsed);
+    else if (parsed && mode === 'repair' && best) {
+      const repaired = applyRepair(best.wire, parsed, update !== null);
+      applied = typeof repaired === 'string' ? repaired : { wire: repaired, dropped: 0 };
+    } else if (parsed) applied = { wire: parsed, dropped: 0 };
+    if (typeof applied === 'string') {
+      ended(applied);
+      attempt({ outcome: 'bad_repair', costMicroUsd: reply.cost.costMicroUsd, problem: applied });
+      prompt =
+        mode === 'update' || !best
+          ? `${applied} Send the update again, numbering stops as the earlier tour's list does.`
+          : `${applied} Send the repair again.\n\n${stopList(best.wire)}`;
       continue;
     }
-    const wire = typeof repaired === 'string' ? null : repaired;
-    if (!wire) {
+    if (!applied) {
       ended('did not match the schema');
       attempt({ outcome: 'bad_shape', costMicroUsd: reply.cost.costMicroUsd });
-      prompt = repairing
-        ? 'Your answer did not match the tour schema. Send the repair as JSON in that shape.'
-        : 'Your answer did not match the tour schema. Return the complete tour as JSON.';
+      prompt =
+        mode === 'update'
+          ? 'Your answer did not match the tour schema. Send the update as JSON in that shape.'
+          : mode === 'repair'
+            ? 'Your answer did not match the tour schema. Send the repair as JSON in that shape.'
+            : 'Your answer did not match the tour schema. Return the complete tour as JSON.';
       continue;
     }
-    best = { ...(await check(wire, files, diff, await proofs)), wire };
+    const { wire } = applied;
+    if (mode === 'update' && plan) {
+      updating = false;
+      update = { from: plan.from, dropped: applied.dropped };
+    }
+    // A whole tour after an update (to fix the stops' order) starts over: it updates nothing.
+    if (mode === 'whole') update = null;
+    best = { ...(await check(wire, files, diff, await proofs, update ? moved : null)), wire };
     ended(best.problems.length ? best.problems.join(' | ') : 'passed');
     attempt({
       outcome: best.problems.length ? 'rejected' : 'passed',
       costMicroUsd: reply.cost.costMicroUsd,
       problems: best.problems,
+      ...(mode === 'update' ? { dropped: applied.dropped } : {}),
       // How the plan shown while writing compares with the stops written. A repair's route is
       // empty by design, so only a whole tour's is measured.
-      ...(routeFirst && !repairing
+      ...(routeFirst && mode === 'whole'
         ? {
             // The route as the screen got it, so this agrees with what the eval measures.
             route: compareRoute(
@@ -477,17 +573,33 @@ export async function generateTour(job: TourJob): Promise<TourOutcome> {
   }
 
   if (!best) throw new TourError('The guide never returned a tour in the expected shape.', costs);
-  return {
-    tour: best.view,
-    problems: best.problems,
-    costs,
-    model: costs.at(-1)?.model ?? model,
-    attempts,
-    createdAt: new Date().toISOString(),
-    cached: false,
-    timing: time.spans(),
-    references: best.references,
-  };
+  return outcome(best);
+}
+
+/**
+ * Shows an earlier tour's kept stops while the guide updates it. Each goes through `checkStop`,
+ * as a streamed stop does, and the first that fails, or breaks the kind order, ends what's
+ * shown. The finished, fully checked tour replaces them.
+ */
+async function showKept(
+  kept: WireTour,
+  diff: Diff,
+  files: FileReader,
+  onProgress: (progress: TourProgress) => void,
+  firstStop: () => void,
+): Promise<void> {
+  const shown: StopView[] = [];
+  let rank = 0;
+  for (const [position, stop] of kept.stops.entries()) {
+    const stopRank = STOP_KINDS.indexOf(stop.kind);
+    if (stopRank < rank || shown.at(-1)?.kind === 'verdict_prompt') break;
+    const checked = await checkStop(stop, position, files, diff);
+    if (checked.problems.length > 0 || !checked.stop) break;
+    rank = stopRank;
+    shown.push(checked.view);
+  }
+  if (shown.length > 0) firstStop();
+  onProgress({ step: 'writing', stops: shown, writing: shown.length, route: [], update: true });
 }
 
 /** What a model call's time and money went on, for its timing span. */
@@ -533,7 +645,7 @@ function streamStops(
   let routeSeen = 0;
   let queue = Promise.resolve();
   const report = () => {
-    if (live) onProgress({ step: 'writing', stops: [...shown], writing, route });
+    if (live) onProgress({ step: 'writing', stops: [...shown], writing, route, update: false });
   };
 
   const take = async (raw: unknown) => {
@@ -766,16 +878,22 @@ async function checkStop(
     flagNotes: flagged.map((f) => ({ flag: f.kind, note: f.note })),
     anchors: anchors.flatMap((a) => anchorView(a, diff) ?? []),
     refs: refViews(body, diff),
+    updated: stop.mark === 'updated',
   };
   return { stop: core, view, problems, references };
 }
 
-/** Turns the guide's tour into core's Tour, and lists every rule it breaks, in words. */
+/**
+ * Turns the guide's tour into core's Tour, and lists every rule it breaks, in words. `moved`, for
+ * an update, holds the changed lines new since the earlier tour (as `lineKey`s): if any of them
+ * isn't proven, some core_change or edge stop must cite one, as for the whole diff.
+ */
 async function check(
   wire: WireTour,
   fileText: FileReader,
   diff: Diff,
   proofs: readonly Proof[],
+  moved: ReadonlySet<string> | null = null,
 ): Promise<Checked> {
   const problems: string[] = [];
   const stops: Stop[] = [];
@@ -810,6 +928,14 @@ async function check(
       `The tour has no core_change or edge stop that cites a changed line nothing proved, but ${unproven} changed lines are not proven safe to skip. Add at least one core_change stop that explains what the change does, citing its changed lines.`,
     );
   }
+  if (moved && moved.size > 0) {
+    const since = changeExplained(diff, tour, proofs, moved);
+    if (since.unproven > 0 && !since.explained) {
+      problems.push(
+        `${since.unproven} changed lines are new since the earlier tour and not proven safe to skip, but no core_change or edge stop cites any of them. Explain what the new commits change, citing those lines.`,
+      );
+    }
+  }
   // A missing verdict or a missing core_change is a stop to add, which a repair can do. Moving or
   // removing stops can't.
   const reorder = order.some((p) => p.kind === 'out_of_order') || verdicts > 1;
@@ -825,6 +951,8 @@ function changeExplained(
   diff: Diff,
   tour: Tour,
   proofs: readonly Proof[],
+  /** Only these lines (as `lineKey`s) count. Default: every changed line. */
+  only: ReadonlySet<string> | null = null,
 ): { unproven: number; explained: boolean } {
   const bare = computeLedger(diff, { ...tour, stops: [] }, proofs);
   const cited = computeLedger(diff, tour, proofs);
@@ -833,7 +961,11 @@ function changeExplained(
     return { unproven: changedLines(diff).length, explained: false };
   }
   const key = (l: (typeof bare.lines)[number]) => lineKey(l.line);
-  const open = new Set(bare.lines.filter((l) => l.place.kind === 'not_on_route').map(key));
+  const open = new Set(
+    bare.lines
+      .filter((l) => l.place.kind === 'not_on_route' && (!only || only.has(key(l))))
+      .map(key),
+  );
   return {
     unproven: open.size,
     explained: cited.lines.some((l) => l.place.kind === 'on_route' && open.has(key(l))),
@@ -878,9 +1010,11 @@ function parseWire(value: unknown): WireTour | null {
     Array.isArray(tour.route) && tour.route.every((t) => typeof t === 'string')
       ? { route: tour.route }
       : {};
-  if (tour.notes === undefined) return { ...route, stops: tour.stops };
+  // A mark is Docent's to set, never the guide's.
+  const stops = tour.stops.map((stop) => marked(stop, null));
+  if (tour.notes === undefined) return { ...route, stops };
   return Array.isArray(tour.notes) && tour.notes.every(isWireNote)
-    ? { ...route, stops: tour.stops, notes: tour.notes }
+    ? { ...route, stops, notes: tour.notes }
     : null;
 }
 
@@ -1141,26 +1275,34 @@ Change as little as you can: the reviewer may already be reading the stops.
 ${stopList(tour)}`;
 }
 
+/** The stop with this mark, or none. */
+function marked(stop: WireStop, mark: WireStop['mark'] | null): WireStop {
+  const { mark: _, ...rest } = stop;
+  return mark ? { ...rest, mark } : rest;
+}
+
 /**
  * Applies a repair to the tour it fixes. A repaired stop that names an existing stop's number
  * replaces it in place, whatever its title; one that names 0 is new, and goes after the stops of
  * its kind. Notes, when sent, are replaced whole. A number with no stop, or one named twice,
- * refuses the repair with the reason, so the guide sends it again.
+ * refuses the repair with the reason, so the guide sends it again. `updating`: the tour is an
+ * update, so every stop the repair writes is marked as written for it.
  */
-function applyRepair(tour: WireTour, repair: WireTour): WireTour | string {
+function applyRepair(tour: WireTour, repair: WireTour, updating = false): WireTour | string {
   const stops = [...tour.stops];
   const added: WireStop[] = [];
   const replaced = new Set<number>();
+  const mark = updating ? 'updated' : null;
   for (const stop of repair.stops) {
     const n = stop.replaces ?? 0;
     if (n === 0) {
-      added.push(stop);
+      added.push(marked(stop, mark));
       continue;
     }
     if (n > tour.stops.length) return `The repair replaces stop ${n}, but there is no stop ${n}.`;
     if (replaced.has(n)) return `The repair replaces stop ${n} twice.`;
     replaced.add(n);
-    stops[n - 1] = stop;
+    stops[n - 1] = marked(stop, mark);
   }
   for (const stop of added) {
     const rank = STOP_KINDS.indexOf(stop.kind);
@@ -1169,4 +1311,23 @@ function applyRepair(tour: WireTour, repair: WireTour): WireTour | string {
   }
   const notes = repair.notes ?? tour.notes;
   return notes ? { stops, notes } : { stops };
+}
+
+/**
+ * Applies the guide's update to the earlier tour, the way a repair applies: by the numbers of the
+ * earlier tour's list, stale stops included. A stale stop it didn't rewrite is dropped, so no
+ * stop is left citing code that changed. Returns the tour and how many were dropped.
+ */
+function applyUpdate(
+  plan: UpdatePlan,
+  reply: WireTour,
+): { wire: WireTour; dropped: number } | string {
+  const earlier: WireTour = {
+    stops: plan.stops.map(({ state, stop }) => marked(stop, state === 'stale' ? 'stale' : null)),
+    notes: plan.notes,
+  };
+  const merged = applyRepair(earlier, reply, true);
+  if (typeof merged === 'string') return merged;
+  const stops = merged.stops.filter((s) => s.mark !== 'stale');
+  return { wire: { ...merged, stops }, dropped: merged.stops.length - stops.length };
 }

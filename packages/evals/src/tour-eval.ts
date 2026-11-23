@@ -13,6 +13,7 @@ import {
   TourError,
   type TourPromptVersion,
   type TourView,
+  type UpdatePlan,
   type Workspace,
 } from '@docent/server/evals';
 import {
@@ -117,6 +118,8 @@ export type RunOptions = {
   judgeModel: string;
   /** An empty folder for the judge, which needs no files. */
   judgeCwd: string;
+  /** An earlier tour to update instead of writing a whole one (issue #65). */
+  update?: UpdatePlan | null;
 };
 
 /** Every expected finding, none found yet. */
@@ -180,6 +183,7 @@ export async function runFixture(options: RunOptions): Promise<FixtureRun> {
       model: options.model,
       promptVersion: prompt,
       proofs,
+      update: options.update ?? null,
       onProgress: (progress) => {
         if (progress.step !== 'writing') return;
         if (progress.route.length) {
