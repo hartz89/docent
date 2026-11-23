@@ -205,6 +205,18 @@ export type QuestionView = Omit<AskedQuestion, 'stopTitle'> & {
 
 /** A jump returns at most this many candidates; `truncated` says when there were more. */
 export const MAX_CANDIDATES = 50;
+/** Find references returns at most this many lines; `truncated` says when there were more. */
+export const MAX_REFERENCES = 300;
+/** A reference's line of context is cut to this many characters. */
+const MAX_CONTEXT_CHARS = 240;
+
+/** The lines in one file that use a name, each with its text at head, for find references. */
+export type ReferenceFile = {
+  path: string;
+  /** Changed by this PR. These files come first. */
+  changed: boolean;
+  lines: { line: number; text: string }[];
+};
 const INDEX_RETRY_MS = 30_000;
 
 const DEFAULT_FORK_BUDGET_USD = 2;
@@ -305,6 +317,45 @@ export class Review {
     const built = await this.#symbolIndex();
     if (!built) return null;
     return { ...built.index.definitions(symbol, from, MAX_CANDIDATES), index: built.status };
+  }
+
+  /**
+   * Every line at head that uses `symbol` as a name, grouped by file, the PR's changed files
+   * first. Each line comes with its text, so the reviewer sees it in context. Null until the PR
+   * has been read.
+   */
+  async references(symbol: string): Promise<{
+    files: ReferenceFile[];
+    total: number;
+    truncated: boolean;
+    index: IndexStatus;
+  } | null> {
+    const workspace = this.#workspace;
+    const built = await this.#symbolIndex();
+    if (!workspace || !built) return null;
+    const changed = new Set(this.#diff?.files.map((f) => f.path));
+    const found = built.index.references(symbol, (path) => changed.has(path), MAX_REFERENCES);
+    // The same blobs the index read, in one batch: never the working tree. A failed read still
+    // gives the places, just without their text.
+    const texts = await workspace
+      .openAll(
+        'new',
+        found.files.map((f) => f.path),
+      )
+      .catch(() => new Map<string, RepoFile>());
+    const files = found.files.map(({ path, lines }) => {
+      const file = texts.get(path);
+      const all = file?.kind === 'text' ? file.text.split(/\r?\n/) : [];
+      return {
+        path,
+        changed: changed.has(path),
+        lines: lines.map((line) => ({
+          line,
+          text: (all[line - 1] ?? '').trim().slice(0, MAX_CONTEXT_CHARS),
+        })),
+      };
+    });
+    return { files, total: found.total, truncated: found.truncated, index: built.status };
   }
 
   /** The repo file an import specifier names, or a null path when it doesn't resolve. */

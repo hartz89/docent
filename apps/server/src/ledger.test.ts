@@ -10,7 +10,6 @@ import { commitSha, type Diff, type MicroUsd, parseUnifiedDiff } from '@docent/c
 import { beforeAll, describe, expect, test } from 'vitest';
 import type { AgentRequest, AgentRunner } from './agent.ts';
 import { commitReader, type Workspace } from './github.ts';
-import { gitHeadFiles } from './head-files.ts';
 import { type LedgerFileView, ledgerFor, proveForReview } from './ledger.ts';
 import { generateTour, type TourView } from './tour.ts';
 
@@ -88,7 +87,6 @@ async function repoOf(
       headInBaseRepo: true,
       dir: repo,
       ...commitReader(repo, base, head),
-      headFiles: () => gitHeadFiles(repo, head),
       currentHead: async () => head,
       postReview: async () => {
         throw new Error('not in this test');

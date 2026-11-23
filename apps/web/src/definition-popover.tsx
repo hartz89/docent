@@ -80,6 +80,7 @@ export function DefinitionPopover({
   at,
   name,
   onPick,
+  onReferences,
   onClose,
 }: {
   found: Found;
@@ -88,6 +89,8 @@ export function DefinitionPopover({
   /** The clicked name in the page. Once it moves from `at`, the popover closes. */
   name: globalThis.Range;
   onPick: (to: JumpTo) => void;
+  /** Lists every use of the name instead. */
+  onReferences: (name: string) => void;
   onClose: () => void;
 }) {
   const box = useRef<HTMLDialogElement>(null);
@@ -215,6 +218,16 @@ export function DefinitionPopover({
               {found.partial ? 'The index covers part of the repo, so some may be missing.' : ''}
             </p>
           )}
+          <div className="jump-footer">
+            <button
+              type="button"
+              className="jump-candidate jump-references"
+              onClick={() => onReferences(found.name)}
+            >
+              Find references to <code>{found.name}</code>
+              <kbd className="jump-references-key">⇧</kbd>
+            </button>
+          </div>
         </>
       )}
     </dialog>

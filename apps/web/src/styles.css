@@ -1178,6 +1178,213 @@ code,
   color: var(--muted);
 }
 
+/* "Find references" under an ambiguous jump's candidates. */
+.jump-footer {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.jump-candidate.jump-references {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.jump-references code {
+  color: var(--text);
+}
+
+.jump-references-key {
+  margin-left: auto;
+}
+
+/* Find references: docked under the code, so it stays while results are opened one by one. */
+.refs-panel {
+  position: static;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  width: auto;
+  max-width: none;
+  max-height: min(42%, 360px);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--border-strong);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.refs-panel:focus-visible {
+  outline-offset: -2px;
+  border-radius: 0;
+}
+
+.refs-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px 6px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.refs-title {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.refs-title code {
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+.refs-count {
+  flex: none;
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.refs-close {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.refs-body {
+  overflow: auto;
+  min-height: 0;
+  padding: 4px 8px 8px;
+}
+
+.refs-note {
+  margin: 8px 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.refs-note p {
+  margin: 0 0 8px;
+}
+
+.refs-file + .refs-file {
+  margin-top: 4px;
+}
+
+/* Sticks while its lines scroll by, so a long list never loses which file it's in. */
+.refs-file-head {
+  position: sticky;
+  top: -4px;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 12px 4px;
+  background: var(--panel);
+  font: inherit;
+}
+
+/* Truncates from the start, like the code header's path. */
+.refs-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.refs-tag {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--brass-soft);
+  color: var(--brass-text);
+  font-size: 11px;
+}
+
+.refs-file-count {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.refs-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.refs-line {
+  display: grid;
+  grid-template-columns: 5ch minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  width: 100%;
+  padding: 3px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.refs-line:hover,
+.refs-line:focus-visible {
+  background: var(--brass-tint);
+}
+
+.refs-line:focus-visible {
+  outline-offset: -2px;
+}
+
+/* The result open now. */
+.refs-line[aria-current] {
+  background: var(--brass-soft);
+  color: var(--text);
+}
+
+.refs-number {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--faint);
+  text-align: right;
+}
+
+.refs-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+  font-family: var(--mono);
+  font-variant-ligatures: none;
+  font-size: 12px;
+}
+
+.refs-text mark {
+  background: transparent;
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: var(--brass-text);
+  text-underline-offset: 3px;
+}
+
 .legend {
   display: flex;
   flex-wrap: wrap;
@@ -2298,6 +2505,14 @@ kbd {
 
   .legend {
     padding: 8px 16px;
+  }
+
+  .refs-header {
+    padding-left: 16px;
+  }
+
+  .refs-body {
+    padding: 4px 4px 8px;
   }
 
   /* No keyboard, usually. */

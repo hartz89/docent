@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { type CommitSha, commitSha } from '@docent/core';
 import { beforeAll, describe, expect, test } from 'vitest';
-import { commitReader, explainGhFailure, MAX_FILE_BYTES, prefetchBlobs } from './github.ts';
+import { commitReader, explainGhFailure, git, MAX_FILE_BYTES, prefetchBlobs } from './github.ts';
 
 const run = promisify(execFile);
 
@@ -70,6 +70,19 @@ const missingBlobs = async (dir: string, sha: CommitSha) =>
   (await sh(dir, 'rev-list', '--objects', '--no-object-names', '--missing=print', sha))
     .split('\n')
     .filter((line) => line.startsWith('?')).length;
+
+describe('git', () => {
+  test('a call that hangs is stopped at its timeout', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'docent-git-timeout-'));
+    await sh(repo, 'init', '--quiet');
+    // `cat-file --batch` waits on stdin for ids, which never come.
+    const started = Date.now();
+    await expect(git(repo, ['cat-file', '--batch'], { timeout: 200 })).rejects.toMatchObject({
+      killed: true,
+    });
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+});
 
 describe('prefetchBlobs', () => {
   let origin: string;

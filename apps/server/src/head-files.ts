@@ -24,14 +24,26 @@ export type HeadFiles = {
 };
 export type HeadText = { path: string; text: string | null };
 
-/** The listing keeps at most this many files. */
+/** The listing keeps at most this many entries. */
 export const MAX_LISTED_FILES = 200_000;
 
-export async function gitHeadFiles(
+/**
+ * One entry of a commit's tree, as `ls-tree --long` lists it. `bytes` is null for a submodule,
+ * which has no size.
+ */
+export type ListedEntry = { path: string; mode: string; oid: string; bytes: number | null };
+/** Every entry at a commit, up to a cap. `truncated` says some are missing. */
+export type CommitListing = { entries: ListedEntry[]; truncated: boolean };
+
+/**
+ * Every file, symlink and submodule at a commit, in one `ls-tree`. The file browser and the
+ * symbol index share one listing of head, so a big repo is listed once.
+ */
+export async function listCommit(
   dir: string,
-  head: CommitSha,
+  sha: CommitSha,
   maxEntries = MAX_LISTED_FILES,
-): Promise<HeadFiles> {
+): Promise<CommitListing> {
   let stdout: string;
   let truncated = false;
   try {
@@ -45,7 +57,7 @@ export async function gitHeadFiles(
         '-z',
         '--long',
         '--full-tree',
-        head,
+        sha,
       ]),
       { maxBuffer: 64 * 1024 * 1024, env: hardenedGitEnv({ offline: true }), timeout: 30_000 },
     ));
@@ -57,20 +69,31 @@ export async function gitHeadFiles(
     stdout = failure.stdout.slice(0, failure.stdout.lastIndexOf('\0') + 1);
     truncated = true;
   }
-  const entries: HeadFile[] = [];
-  const blobs = new Map<string, string>();
+  const entries: ListedEntry[] = [];
   for (const record of stdout.split('\0')) {
-    // `<mode> <type> <oid> <size>\t<path>`, sizes padded with spaces.
-    const match = /^(100644|100755) blob ([0-9a-f]{40,64}) +(\d+)\t(.+)$/s.exec(record);
+    // `<mode> <type> <oid> <size>\t<path>`, sizes padded with spaces, `-` for a submodule.
+    const match = /^(\d{6}) \w+ ([0-9a-f]{40,64}) +(\d+|-)\t(.+)$/s.exec(record);
     if (!match) continue;
-    const [, , oid = '', size = '', path = ''] = match;
+    const [, mode = '', oid = '', size = '', path = ''] = match;
     if (entries.length === maxEntries) {
       truncated = true;
       break;
     }
-    entries.push({ path, bytes: Number(size) });
+    entries.push({ path, mode, oid, bytes: size === '-' ? null : Number(size) });
+  }
+  return { entries, truncated };
+}
+
+/** The regular files of a listing, ready for the symbol index. */
+export function headFilesFrom(dir: string, listing: CommitListing): HeadFiles {
+  const entries: HeadFile[] = [];
+  const blobs = new Map<string, string>();
+  for (const { path, mode, oid, bytes } of listing.entries) {
+    if ((mode !== '100644' && mode !== '100755') || bytes === null) continue;
+    entries.push({ path, bytes });
     blobs.set(path, oid);
   }
+  const truncated = listing.truncated;
   return {
     entries,
     truncated,
@@ -84,6 +107,15 @@ export async function gitHeadFiles(
         signal,
       ),
   };
+}
+
+/** The files at one commit, listed on their own: for callers with no listing to share. */
+export async function gitHeadFiles(
+  dir: string,
+  head: CommitSha,
+  maxEntries = MAX_LISTED_FILES,
+): Promise<HeadFiles> {
+  return headFilesFrom(dir, await listCommit(dir, head, maxEntries));
 }
 
 /** Streams blobs through one `git cat-file --batch`, parsing its `<oid> <type> <size>` headers. */

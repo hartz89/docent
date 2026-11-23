@@ -100,7 +100,7 @@ test('an ambiguous name lists its candidates; imports, history and Esc', async (
         .first()
         .click({ modifiers: ['ControlOrMeta'] });
       await expect(popover).toBeVisible();
-      const candidates = popover.getByRole('button');
+      const candidates = popover.getByRole('list').getByRole('button');
       await expect(candidates).toHaveCount(2);
       await expect(candidates.nth(0)).toContainText('src/middleware/cors/index.ts:63');
       await expect(candidates.nth(0)).toContainText('export const cors =');
