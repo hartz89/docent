@@ -29,7 +29,8 @@ export const MAX_LISTED_FILES = 200_000;
 
 /**
  * One entry of a commit's tree, as `ls-tree --long` lists it. `bytes` is null for a submodule,
- * which has no size.
+ * which has no size, and for a blob this blobless clone doesn't have yet: offline, git can't
+ * size it, and prints `BAD`. That entry is still listed, so nothing goes missing for it.
  */
 export type ListedEntry = { path: string; mode: string; oid: string; bytes: number | null };
 /** Every entry at a commit, up to a cap. `truncated` says some are missing. */
@@ -71,20 +72,24 @@ export async function listCommit(
   }
   const entries: ListedEntry[] = [];
   for (const record of stdout.split('\0')) {
-    // `<mode> <type> <oid> <size>\t<path>`, sizes padded with spaces, `-` for a submodule.
-    const match = /^(\d{6}) \w+ ([0-9a-f]{40,64}) +(\d+|-)\t(.+)$/s.exec(record);
+    // `<mode> <type> <oid> <size>\t<path>`, sizes padded with spaces, `-` for a submodule and
+    // `BAD` for a blob not fetched yet.
+    const match = /^(\d{6}) \w+ ([0-9a-f]{40,64}) +(\d+|-|BAD)\t(.+)$/s.exec(record);
     if (!match) continue;
     const [, mode = '', oid = '', size = '', path = ''] = match;
     if (entries.length === maxEntries) {
       truncated = true;
       break;
     }
-    entries.push({ path, mode, oid, bytes: size === '-' ? null : Number(size) });
+    entries.push({ path, mode, oid, bytes: /^\d+$/.test(size) ? Number(size) : null });
   }
   return { entries, truncated };
 }
 
-/** The regular files of a listing, ready for the symbol index. */
+/**
+ * The regular files of a listing, ready for the symbol index. One with no known size can't be
+ * held to the index's byte caps, so it's left out, as it always was.
+ */
 export function headFilesFrom(dir: string, listing: CommitListing): HeadFiles {
   const entries: HeadFile[] = [];
   const blobs = new Map<string, string>();

@@ -122,6 +122,28 @@ describe('prefetchBlobs', () => {
     expect(await prefetchBlobs(clone, [sha])).toBe(2);
     expect(await missingBlobs(clone, sha)).toBe(2);
   });
+
+  test('blobs not fetched yet are still listed, so a .gitattributes is never silently lost', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'docent-unfetched-'));
+    await sh(repo, 'init', '--quiet', '--initial-branch=main');
+    await sh(repo, 'config', 'uploadpack.allowFilter', 'true');
+    await writeFile(join(repo, '.gitattributes'), 'vendor/** -linguist-vendored\n');
+    await writeFile(join(repo, 'a.ts'), 'export const a = 1;\n');
+    await sh(repo, 'add', '-A');
+    await sh(repo, 'commit', '--quiet', '-m', 'one');
+    const at = commitSha((await sh(repo, 'rev-parse', 'HEAD')).trim());
+    const parent = await mkdtemp(join(tmpdir(), 'docent-unfetched-clone-'));
+    const clone = join(parent, 'clone');
+    const url = `file://${repo}`;
+    await sh(parent, 'clone', '--quiet', '--no-checkout', '--filter=blob:none', url, clone);
+    expect(await missingBlobs(clone, at)).toBe(2);
+
+    const reader = commitReader(clone, at, at);
+    expect((await reader.tree()).entries.map((e) => e.path)).toEqual(['.gitattributes', 'a.ts']);
+    // Its text can't be fetched here (Docent's git refuses file://), so the answer is unknown,
+    // never "there are none".
+    expect(await reader.baseGitattributes()).toBeNull();
+  });
 });
 
 describe('reading many files at once', () => {

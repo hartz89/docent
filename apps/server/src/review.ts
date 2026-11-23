@@ -209,6 +209,8 @@ export const MAX_CANDIDATES = 50;
 export const MAX_REFERENCES = 300;
 /** A reference's line of context is cut to this many characters. */
 const MAX_CONTEXT_CHARS = 240;
+/** Characters of a line kept before trimming, so leading indentation can't eat the context. */
+const MAX_LINE_SCAN = 4_096;
 
 /** The lines in one file that use a name, each with its text at head, for find references. */
 export type ReferenceFile = {
@@ -345,13 +347,13 @@ export class Review {
       .catch(() => new Map<string, RepoFile>());
     const files = found.files.map(({ path, lines }) => {
       const file = texts.get(path);
-      const all = file?.kind === 'text' ? file.text.split(/\r?\n/) : [];
+      const text = file?.kind === 'text' ? linesOf(file.text, lines) : new Map<number, string>();
       return {
         path,
         changed: changed.has(path),
         lines: lines.map((line) => ({
           line,
-          text: (all[line - 1] ?? '').trim().slice(0, MAX_CONTEXT_CHARS),
+          text: (text.get(line) ?? '').trim().slice(0, MAX_CONTEXT_CHARS),
         })),
       };
     });
@@ -1167,4 +1169,27 @@ export function tourCacheName(
   const safeModel = model.replace(/[^\w.-]/g, '_');
   const fingerprint = createHash('sha256').update(prompt).digest('hex').slice(0, 12);
   return `${pr.base.slice(0, 12)}-${pr.head}-${safeModel}-p${TOUR_PROMPT_VERSION}-${fingerprint}.json`;
+}
+
+/**
+ * The text of the given lines (ascending, 1-based), found by walking newlines only as far as
+ * the last one. Never splits the whole file: a file of nothing but newlines would otherwise
+ * make one lookup allocate a string per line.
+ */
+function linesOf(text: string, wanted: readonly number[]): Map<number, string> {
+  const found = new Map<number, string>();
+  let line = 1;
+  let start = 0;
+  for (const want of wanted) {
+    while (line < want && start <= text.length) {
+      const end = text.indexOf('\n', start);
+      start = end === -1 ? text.length + 1 : end + 1;
+      line++;
+    }
+    if (start > text.length) break;
+    const end = text.indexOf('\n', start);
+    const raw = text.slice(start, Math.min(end === -1 ? text.length : end, start + MAX_LINE_SCAN));
+    found.set(want, raw.endsWith('\r') ? raw.slice(0, -1) : raw);
+  }
+  return found;
 }
