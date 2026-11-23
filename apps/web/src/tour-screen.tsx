@@ -68,6 +68,7 @@ const sameView = (a: Viewing, b: Viewing) =>
   a.path === b.path &&
   a.side === b.side &&
   a.focus?.startLine === b.focus?.startLine &&
+  a.focus?.endLine === b.focus?.endLine &&
   a.at === b.at;
 
 /** Alt+← and Alt+→ move through explored files, as an editor's back and forward do. */
@@ -94,11 +95,17 @@ export function TourScreen({ snapshot, tour }: Props) {
   // is always its start.
   const [trail, setTrail] = useState<Trail<Viewing>>(emptyTrail);
   const viewing = current(trail);
-  const explore = useCallback((view: Viewing) => setTrail((t) => visit(t, view, sameView)), []);
-  const toTour = useCallback(() => setTrail(emptyTrail()), []);
   // The lines a phrase of the stop points at, while it's hovered or focused. Shown over whatever
   // the code column shows, and gone when the phrase lets go.
   const [peek, setPeek] = useState<CurrentRef | null>(null);
+  // Any move along the trail ends a peek, so the place moved to is what shows, even while a
+  // phrase keeps keyboard focus.
+  const move = useCallback((step: (t: Trail<Viewing>) => Trail<Viewing>) => {
+    setPeek(null);
+    setTrail(step);
+  }, []);
+  const explore = useCallback((view: Viewing) => move((t) => visit(t, view, sameView)), [move]);
+  const toTour = useCallback(() => move(emptyTrail), [move]);
   // The left pane shows the route or the whole repo's files.
   const [pane, setPane] = useState<'route' | 'files'>('route');
   const goToFile = useRef<HTMLInputElement>(null);
@@ -307,12 +314,12 @@ export function TourScreen({ snapshot, tour }: Props) {
         // Always kept from the browser: elsewhere than macOS, Alt+← is its own Back, and one
         // press too many would leave the review.
         event.preventDefault();
-        setTrail(event.key === 'ArrowLeft' ? back : forward);
+        move(event.key === 'ArrowLeft' ? back : forward);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [trail, toTour]);
+  }, [trail, toTour, move]);
 
   // ⌘P (Ctrl+P elsewhere) jumps to "Go to file", as in an editor.
   useEffect(() => {
@@ -495,7 +502,7 @@ export function TourScreen({ snapshot, tour }: Props) {
                       aria-label="Back"
                       title={`Back (${BACK_KEYS})`}
                       disabled={!canGoBack(trail)}
-                      onClick={() => setTrail(back)}
+                      onClick={() => move(back)}
                     >
                       <span aria-hidden="true">‹</span>
                     </button>
@@ -505,7 +512,7 @@ export function TourScreen({ snapshot, tour }: Props) {
                       aria-label="Forward"
                       title={`Forward (${FORWARD_KEYS})`}
                       disabled={!canGoForward(trail)}
-                      onClick={() => setTrail(forward)}
+                      onClick={() => move(forward)}
                     >
                       <span aria-hidden="true">›</span>
                     </button>

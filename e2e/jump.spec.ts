@@ -173,3 +173,44 @@ test('at phone width, the code header still fits after a jump', async ({ page })
     await docent.stop();
   }
 });
+
+test('phrases of the stop share the trail with jumps', async ({ page }) => {
+  const docent = await launch('cli.js', ['review', '--fixture', fixture]);
+  try {
+    await page.goto(docent.url);
+    await showFirstStop(page);
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('.narration-title')).toHaveText(/Wildcard plus credentials/);
+
+    await test.step('a pinned phrase, then a jump: ‹ walks back through both', async () => {
+      const resolver = page.getByRole('button', { name: /the resolver returns origin \|\| null/ });
+      await resolver.focus();
+      await page.keyboard.press('Enter');
+      await resolver.blur();
+      await expect(page.locator('.code-range')).toHaveText('lines 80–82 · named in the text');
+      await page.locator('[data-line="63"]').scrollIntoViewIfNeeded();
+      await token(page, 63, 'CORSOptions').click({ modifiers: ['ControlOrMeta'] });
+      await expect(page.locator('.code-range')).toHaveText('line 9 · definition of CORSOptions');
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
+      await expect(page.locator('.code-range')).toHaveText('lines 80–82 · named in the text');
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
+      await expect(page.locator('.code-range')).toHaveText(/cited by this stop/);
+    });
+
+    await test.step('a jump from a file a focused phrase shows is what shows next', async () => {
+      await page.keyboard.press('ArrowLeft');
+      await expect(page.locator('.narration-title')).toHaveText(/One resolver branch/);
+      await page.getByRole('button', { name: /^index\.test\.ts/ }).focus();
+      await expect(page.locator('.code-path')).toHaveText('src/middleware/cors/index.test.ts');
+      await page.locator('[data-line="2"]').scrollIntoViewIfNeeded();
+      await token(page, 2, '../../middleware/cors')
+        .first()
+        .click({ modifiers: ['ControlOrMeta'] });
+      await expect(page.locator('.code-range')).toHaveText("imported as '../../middleware/cors'");
+      await expect(page.getByRole('button', { name: 'Back to stop 2' })).toBeVisible();
+    });
+  } finally {
+    await docent.stop();
+  }
+});
