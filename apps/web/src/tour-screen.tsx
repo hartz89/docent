@@ -167,6 +167,17 @@ export function TourScreen({ snapshot, tour }: Props) {
     },
     [settle, followCheck],
   );
+  // Asking again drops the failed exchange and asks the same question as a new one.
+  const retry = useCallback(
+    (stopId: string, id: string, question: string) => {
+      setThreads((all) => ({
+        ...all,
+        [stopId]: (all[stopId] ?? []).filter((e) => e.id !== id),
+      }));
+      void ask(stopId, question);
+    },
+    [ask],
+  );
 
   // Under 1200px wide the route leaves its column for a drawer; under 800px the layout stacks,
   // and a bottom bar moves between stops.
@@ -355,7 +366,7 @@ export function TourScreen({ snapshot, tour }: Props) {
           aria-controls="pane-route"
           onClick={() => setPane('route')}
         >
-          Route <span className="pane-count">{stops.length} stops</span>
+          Route <span className="pane-count">{plural(stops.length, 'stop')}</span>
         </button>
         <button
           type="button"
@@ -409,6 +420,17 @@ export function TourScreen({ snapshot, tour }: Props) {
         finished={ready !== null}
         posted={posted}
         drawer={drawer ? { open: routeOpen, onOpen: openRoute } : null}
+        onVerdict={
+          ready && stops.at(-1)?.kind === 'verdict_prompt'
+            ? () => {
+                go(stops.length - 1);
+                // Once the verdict stop has rendered, start the reviewer on its choices.
+                requestAnimationFrame(() =>
+                  document.querySelector<HTMLInputElement>('.verdict-choices input')?.focus(),
+                );
+              }
+            : null
+        }
       />
       <div className="columns" ref={columns}>
         {drawer ? (
@@ -499,6 +521,7 @@ export function TourScreen({ snapshot, tour }: Props) {
               threadsLoaded={threadsLoaded}
               head={snapshot.pr?.head ?? ''}
               onAsk={(question) => void ask(stop.id, question)}
+              onRetry={(exchange) => retry(stop.id, exchange.id, exchange.question)}
               onOpenCite={(cite) =>
                 setViewing({
                   path: cite.path,
@@ -601,6 +624,7 @@ function TopBar({
   finished,
   posted,
   drawer,
+  onVerdict,
 }: {
   snapshot: ReviewSnapshot;
   diff: Diff;
@@ -611,6 +635,8 @@ function TopBar({
   posted: PostedReview | null;
   /** How to open the route when it's a drawer; null when it has its own column. */
   drawer: { open: boolean; onOpen: () => void } | null;
+  /** Goes to the verdict stop; null until the whole tour is written and checked. */
+  onVerdict: (() => void) | null;
 }) {
   const pr = snapshot.pr;
   const lines = diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
@@ -688,12 +714,21 @@ function TopBar({
           <span aria-hidden="true">✓</span>{' '}
           <span className="verdict-button-label">{postedLabel(posted)}</span>
         </a>
+      ) : onVerdict ? (
+        <button
+          type="button"
+          className="verdict-button ready"
+          title="Go to the verdict, the last stop"
+          onClick={onVerdict}
+        >
+          <FlagIcon /> <span className="verdict-button-label">Go to verdict</span>
+        </button>
       ) : (
         <button
           type="button"
           className="verdict-button"
           disabled
-          title="Comes at the end of the tour"
+          title="Opens once the whole tour is written and checked"
         >
           <FlagIcon /> <span className="verdict-button-label">Verdict at the end</span>
         </button>
@@ -1075,7 +1110,13 @@ function Overview({
   return (
     <div className="overview fade-in">
       <h3>What the PR says</h3>
-      <p className="description">{snapshot.pr?.body.trim() || 'No description.'}</p>
+      {snapshot.pr?.body.trim() ? (
+        <div className="description">
+          <Markdown text={snapshot.pr.body} />
+        </div>
+      ) : (
+        <p className="description empty">The PR has no description.</p>
+      )}
       <h3>Files in this change</h3>
       <ul className="file-list">
         {diff.files.map((file) => {
@@ -1149,6 +1190,7 @@ function Narration({
   threadsLoaded,
   head,
   onAsk,
+  onRetry,
   onOpenCite,
   activeAnchor,
   onAnchor,
@@ -1167,6 +1209,8 @@ function Narration({
   /** The head commit this tour covers. */
   head: string;
   onAsk: (question: string) => void;
+  /** Asks a question that couldn't be answered again. */
+  onRetry: (exchange: Exchange) => void;
   onOpenCite: (cite: AnchorView) => void;
   activeAnchor: number;
   onAnchor: (index: number) => void;
@@ -1269,15 +1313,26 @@ function Narration({
                     )}
                   </>
                 ) : exchange.error ? (
-                  <div className="exchange-source" role="alert">
-                    Couldn't answer: {exchange.error}
+                  <div className="exchange-error" role="alert">
+                    <p className="exchange-error-label">Couldn't answer this one</p>
+                    <p>{exchange.error}</p>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={pending}
+                      onClick={() => onRetry(exchange)}
+                    >
+                      Ask again
+                    </button>
                   </div>
                 ) : (
-                  <div className="exchange-source" aria-live="polite">
-                    {author?.found
-                      ? "The author's session is thinking it over…"
-                      : 'The guide is reading the code…'}
-                  </div>
+                  <Pending
+                    label={
+                      author?.found
+                        ? "The author's session is thinking it over"
+                        : 'The guide is reading the code'
+                    }
+                  />
                 )}
               </div>
             ))}
@@ -1300,8 +1355,8 @@ function Narration({
               }}
             />
             <div className="question-actions">
-              <span>
-                <kbd>⌘</kbd> <kbd>Enter</kbd> to ask
+              <span className="shortcut-hint">
+                <kbd>{IS_MAC ? '⌘' : 'Ctrl'}</kbd> <kbd>Enter</kbd> to ask
               </span>
               <button
                 type="button"
@@ -1317,7 +1372,7 @@ function Narration({
       </div>
 
       <footer className="narration-footer">
-        <span className="batch-note">Pending batch · no changes yet</span>
+        <span className="batch-note">No change requests yet</span>
         {!isLast ? (
           <button type="button" className="primary-button" onClick={onNext}>
             Next stop <span aria-hidden="true">→</span>
@@ -1328,6 +1383,38 @@ function Narration({
           </button>
         ) : null}
       </footer>
+    </div>
+  );
+}
+
+/** The modifier the question box's shortcut takes: ⌘ on a Mac, Ctrl elsewhere. */
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
+/**
+ * An answer on its way. Answers take from seconds to a minute, so it pulses and counts the
+ * seconds: honest about time passing, without guessing how long is left.
+ */
+function Pending({ label }: { label: string }) {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const started = Date.now();
+    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <div className="exchange-pending">
+      <span className="pending-dots" aria-hidden="true">
+        <span className="dot" />
+        <span className="dot" />
+        <span className="dot" />
+      </span>
+      {/* Announced once; the seconds aren't, so a screen reader isn't read a clock. */}
+      <span aria-live="polite">{label}…</span>
+      {seconds >= 3 && (
+        <span className="elapsed" aria-hidden="true">
+          {seconds} s
+        </span>
+      )}
     </div>
   );
 }
