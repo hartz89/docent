@@ -3,9 +3,10 @@ import { Fragment, type ReactNode } from 'react';
 /**
  * A small Markdown renderer for the guide's answers and the PR's description: headings,
  * paragraphs, bullet and numbered lists, fenced code, `code`, **bold**, *italics* and links. It
- * builds React elements, never HTML strings, so the text can't inject markup. HTML comments (PR
- * templates are full of them) are dropped, and images show as their alt text, so a description
- * can't make the page fetch anything. Anything else shows as the plain text it is.
+ * builds React elements, never HTML strings, so the text can't inject markup. Outside code, HTML
+ * comments (PR templates are full of them) and `<details>` tags are dropped, and a `<summary>`
+ * becomes a heading. Images show as their alt text, so the text can't make the page fetch
+ * anything. Anything else shows as the plain text it is.
  */
 export function Markdown({ text }: { text: string }) {
   return <>{blocks(text)}</>;
@@ -22,10 +23,29 @@ const NUMBERED = /^\s*(\d+)[.)]\s+(.*)$/;
 const HEADING = /^\s{0,3}#{1,6}\s+(.*?)\s*#*$/;
 const FENCE = /^\s{0,3}(```|~~~)/;
 
+/**
+ * Drops closed HTML comments and `<details>` tags, and turns `<summary>` into a heading, but only
+ * outside fenced code, so an example of them stays as written. An unclosed comment stays as text.
+ */
+function tidy(text: string): string {
+  return text
+    .split(/(^\s{0,3}(?:```|~~~)[\s\S]*?(?:^\s{0,3}(?:```|~~~).*$|(?![\s\S])))/m)
+    .map((part, i) =>
+      i % 2 === 1
+        ? part
+        : part
+            .replace(/<!--[\s\S]*?-->/g, '')
+            .replace(/<\/?details\b[^>]*>/gi, '')
+            .replace(/<summary\b[^>]*>([\s\S]*?)<\/summary>/gi, (_, label: string) =>
+              label.trim() ? `\n\n#### ${label.replace(/<[^>]*>/g, '').trim()}\n\n` : '',
+            ),
+    )
+    .join('');
+}
+
 function blocks(text: string): ReactNode[] {
   const out: Block[] = [];
-  const source = text.replace(/\r\n/g, '\n').replace(/<!--[\s\S]*?(-->|$)/g, '');
-  for (const raw of source.split('\n')) {
+  for (const raw of tidy(text.replace(/\r\n/g, '\n')).split('\n')) {
     const line = raw.trimEnd();
     const last = out.at(-1);
     if (last?.kind === 'pre' && last.open) {
@@ -69,9 +89,9 @@ function blocks(text: string): ReactNode[] {
       if (block.kind === 'h') {
         return (
           // biome-ignore lint/suspicious/noArrayIndexKey: blocks are positional.
-          <p key={i} className="md-heading">
+          <h4 key={i} className="md-heading">
             {spans(block.text)}
-          </p>
+          </h4>
         );
       }
       if (block.kind === 'pre') {
@@ -128,7 +148,7 @@ function links(text: string): ReactNode[] {
     }
     return (
       // biome-ignore lint/suspicious/noArrayIndexKey: fragments are positional.
-      <a key={i} href={href} target="_blank" rel="noreferrer">
+      <a key={i} href={href} title={href} target="_blank" rel="noreferrer">
         {emphasis(label)}
       </a>
     );

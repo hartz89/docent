@@ -101,6 +101,8 @@ test('a slow answer shows it is on its way; a failed one says so and can be aske
 
     await test.step('asking again replaces the failure with the answer', async () => {
       await guide.getByRole('button', { name: 'Ask again' }).click();
+      // The button left with the failure; focus stays in the guide, on the question box.
+      await expect(guide.locator('textarea')).toBeFocused();
       await expect(guide.locator('.exchange-answer')).toContainText('It returns null.');
       await expect(guide.getByRole('alert')).toHaveCount(0);
       await expect(guide.locator('.exchange-question')).toHaveText([

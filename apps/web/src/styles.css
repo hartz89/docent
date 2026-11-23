@@ -1135,7 +1135,8 @@ code,
   padding-left: 22px;
 }
 
-.description .md-heading {
+/* Headings and code blocks look the same in the description and in answers. */
+.md-heading {
   font-family: var(--sans);
   font-size: 13px;
   font-weight: 600;
@@ -1143,7 +1144,7 @@ code,
   margin: 20px 0 6px;
 }
 
-.description .md-heading:first-child {
+.md-heading:first-child {
   margin-top: 0;
 }
 
@@ -1154,20 +1155,13 @@ code,
   background: var(--panel-raised);
 }
 
-.description .md-code {
+.md-code {
   margin: 0 0 12px;
   padding: 10px 12px;
   overflow-x: auto;
   border-radius: 6px;
-  background: var(--ground);
+  background: var(--panel-raised);
   border: 1px solid var(--border);
-}
-
-.md-code > code {
-  padding: 0;
-  background: none;
-  font-size: 12.5px;
-  line-height: 1.55;
 }
 
 .description a,
@@ -1508,6 +1502,15 @@ code,
   padding: 0 4px;
   border-radius: 3px;
   background: var(--panel-raised);
+}
+
+/* A code block's code isn't inline code: no chip of its own. After every inline-code rule. */
+pre.md-code > code {
+  padding: 0;
+  background: none;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
 }
 
 .exchange-earlier {

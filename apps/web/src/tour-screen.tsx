@@ -149,7 +149,15 @@ export function TourScreen({ snapshot, tour }: Props) {
         ...all,
         [stopId]: [
           ...(all[stopId] ?? []),
-          { id, question, answer: null, error: null, correction: null, earlier: null },
+          {
+            id,
+            question,
+            answer: null,
+            error: null,
+            correction: null,
+            earlier: null,
+            askedAt: Date.now(),
+          },
         ],
       }));
       let checkId: string | null = null;
@@ -1153,6 +1161,8 @@ type Exchange = {
   correction: CorrectionView | null;
   /** Set for a question asked at another head commit, or at a stop this tour doesn't have. */
   earlier: QuestionView['earlier'];
+  /** When it was asked on this page, so the wait counts from then; null for a stored question. */
+  askedAt: number | null;
 };
 
 const fromStored = (q: QuestionView): Exchange => ({
@@ -1162,6 +1172,7 @@ const fromStored = (q: QuestionView): Exchange => ({
   error: null,
   correction: q.correction,
   earlier: q.earlier,
+  askedAt: null,
 });
 
 /** Where an earlier question was asked, when that isn't this commit and this stop. */
@@ -1225,6 +1236,7 @@ function Narration({
   verdict: ReactNode;
 }) {
   const [draft, setDraft] = useState('');
+  const questionBox = useRef<HTMLTextAreaElement>(null);
   const last = exchanges.at(-1);
   const pending = last !== undefined && last.answer === null && last.error === null;
   // A new question scrolls into view at the top, so its answer arrives below it and the
@@ -1320,13 +1332,18 @@ function Narration({
                       type="button"
                       className="secondary-button"
                       disabled={pending}
-                      onClick={() => onRetry(exchange)}
+                      onClick={() => {
+                        onRetry(exchange);
+                        // The button goes with the failed exchange; keep focus in the guide.
+                        requestAnimationFrame(() => questionBox.current?.focus());
+                      }}
                     >
                       Ask again
                     </button>
                   </div>
                 ) : (
                   <Pending
+                    since={exchange.askedAt ?? Date.now()}
                     label={
                       author?.found
                         ? "The author's session is thinking it over"
@@ -1343,6 +1360,7 @@ function Narration({
               {exchanges.length > 0 ? 'Ask a follow-up' : 'Your question'}
             </label>
             <textarea
+              ref={questionBox}
               id={`question-${stop.id}`}
               value={draft}
               placeholder="Why is it built this way? What calls this?"
@@ -1394,13 +1412,15 @@ const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
  * An answer on its way. Answers take from seconds to a minute, so it pulses and counts the
  * seconds: honest about time passing, without guessing how long is left.
  */
-function Pending({ label }: { label: string }) {
-  const [seconds, setSeconds] = useState(0);
+function Pending({ label, since }: { label: string; since: number }) {
+  const elapsed = () => Math.floor((Date.now() - since) / 1000);
+  const [seconds, setSeconds] = useState(elapsed);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `elapsed` only reads `since`.
   useEffect(() => {
-    const started = Date.now();
-    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    setSeconds(elapsed());
+    const timer = setInterval(() => setSeconds(elapsed()), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [since]);
   return (
     <div className="exchange-pending">
       <span className="pending-dots" aria-hidden="true">
