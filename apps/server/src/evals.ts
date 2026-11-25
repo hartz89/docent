@@ -17,7 +17,6 @@ export {
   type PrSource,
   type Workspace,
 } from './github.ts';
-export { gitHeadFiles } from './head-files.ts';
 export { type LedgerView, ledgerFor, placeLines, proveForReview } from './ledger.ts';
 export {
   compareRoute,

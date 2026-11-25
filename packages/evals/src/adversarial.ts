@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { commitSha } from '@docent/core';
-import { commitReader, git, gitHeadFiles, type Workspace } from '@docent/server/evals';
+import { commitReader, git, type Workspace } from '@docent/server/evals';
 import { type FixtureManifest, type LineRange, sizeFor } from './manifest.ts';
 
 export const ADVERSARIAL_DIR = join(import.meta.dirname, '..', 'fixtures', 'adversarial');
@@ -157,7 +157,6 @@ async function openPushes(fixture: AdversarialFixture, pushes: readonly Push[]) 
     headInBaseRepo: true,
     dir,
     ...commitReader(dir, base, head),
-    headFiles: () => gitHeadFiles(dir, head),
     currentHead: async () => head,
     postReview: async () => {
       throw new Error('An eval never posts a review.');

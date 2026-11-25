@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { type CommitSha, commitSha } from '@docent/core';
 import { beforeAll, describe, expect, test } from 'vitest';
-import { commitReader, explainGhFailure, MAX_FILE_BYTES, prefetchBlobs } from './github.ts';
+import { commitReader, explainGhFailure, git, MAX_FILE_BYTES, prefetchBlobs } from './github.ts';
 
 const run = promisify(execFile);
 
@@ -71,6 +71,19 @@ const missingBlobs = async (dir: string, sha: CommitSha) =>
     .split('\n')
     .filter((line) => line.startsWith('?')).length;
 
+describe('git', () => {
+  test('a call that hangs is stopped at its timeout', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'docent-git-timeout-'));
+    await sh(repo, 'init', '--quiet');
+    // `cat-file --batch` waits on stdin for ids, which never come.
+    const started = Date.now();
+    await expect(git(repo, ['cat-file', '--batch'], { timeout: 200 })).rejects.toMatchObject({
+      killed: true,
+    });
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+});
+
 describe('prefetchBlobs', () => {
   let origin: string;
   let sha: CommitSha;
@@ -108,6 +121,28 @@ describe('prefetchBlobs', () => {
 
     expect(await prefetchBlobs(clone, [sha])).toBe(2);
     expect(await missingBlobs(clone, sha)).toBe(2);
+  });
+
+  test('blobs not fetched yet are still listed, so a .gitattributes is never silently lost', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'docent-unfetched-'));
+    await sh(repo, 'init', '--quiet', '--initial-branch=main');
+    await sh(repo, 'config', 'uploadpack.allowFilter', 'true');
+    await writeFile(join(repo, '.gitattributes'), 'vendor/** -linguist-vendored\n');
+    await writeFile(join(repo, 'a.ts'), 'export const a = 1;\n');
+    await sh(repo, 'add', '-A');
+    await sh(repo, 'commit', '--quiet', '-m', 'one');
+    const at = commitSha((await sh(repo, 'rev-parse', 'HEAD')).trim());
+    const parent = await mkdtemp(join(tmpdir(), 'docent-unfetched-clone-'));
+    const clone = join(parent, 'clone');
+    const url = `file://${repo}`;
+    await sh(parent, 'clone', '--quiet', '--no-checkout', '--filter=blob:none', url, clone);
+    expect(await missingBlobs(clone, at)).toBe(2);
+
+    const reader = commitReader(clone, at, at);
+    expect((await reader.tree()).entries.map((e) => e.path)).toEqual(['.gitattributes', 'a.ts']);
+    // Its text can't be fetched here (Docent's git refuses file://), so the answer is unknown,
+    // never "there are none".
+    expect(await reader.baseGitattributes()).toBeNull();
   });
 });
 

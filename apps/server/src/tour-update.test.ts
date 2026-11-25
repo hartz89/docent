@@ -8,7 +8,6 @@ import { afterEach, describe, expect, test } from 'vitest';
 import type { AgentReply, AgentRequest, AgentRunner } from './agent.ts';
 import { fixedSession } from './author-session.ts';
 import { commitReader, git, type PrSource } from './github.ts';
-import { gitHeadFiles } from './head-files.ts';
 import { Review, type TourState } from './review.ts';
 
 const base = {
@@ -147,7 +146,6 @@ async function repo() {
           headInBaseRepo: true,
           dir,
           ...commitReader(dir, baseSha, head),
-          headFiles: () => gitHeadFiles(dir, head),
           currentHead: async () => head,
           postReview: async () => {
             throw new Error('not in this test');

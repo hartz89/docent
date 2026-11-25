@@ -25,6 +25,16 @@ import {
 import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
 import { FileTree, type Place } from './file-tree.tsx';
+import {
+  back,
+  canGoBack,
+  canGoForward,
+  current,
+  emptyTrail,
+  forward,
+  type Trail,
+  visit,
+} from './jump.ts';
 import { Markdown } from './markdown.tsx';
 import type { Ready, Working } from './review-page.tsx';
 import {
@@ -54,6 +64,18 @@ type Viewing = {
 /** Opens a file on one side (by default head, or base if the PR deleted it), at a line if given. */
 type OpenFile = (path: string, side?: 'old' | 'new', at?: number) => void;
 
+const sameView = (a: Viewing, b: Viewing) =>
+  a.path === b.path &&
+  a.side === b.side &&
+  a.focus?.startLine === b.focus?.startLine &&
+  a.focus?.endLine === b.focus?.endLine &&
+  a.at === b.at;
+
+/** Alt+← and Alt+→ move through explored files, as an editor's back and forward do. */
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+const BACK_KEYS = isMac ? '⌥←' : 'Alt+←';
+const FORWARD_KEYS = isMac ? '⌥→' : 'Alt+→';
+
 const KIND_LABELS: Record<StopView['kind'], string> = {
   intent: 'Intent',
   map: 'Map',
@@ -68,11 +90,22 @@ export function TourScreen({ snapshot, tour }: Props) {
   const writing = ready ? null : (tour as Working);
   const [index, setIndex] = useState(0);
   const [anchorIndex, setAnchorIndex] = useState(0);
-  // A file opened from the ledger, the overview or the file tree, in place of the stop's citation.
-  const [viewing, setViewing] = useState<Viewing | null>(null);
+  // Files opened from the ledger, the overview, the file tree, a phrase of the stop or a jump to
+  // definition, in place of the stop's citation. Back and forward move along the trail; the stop
+  // is always its start.
+  const [trail, setTrail] = useState<Trail<Viewing>>(emptyTrail);
+  const viewing = current(trail);
   // The lines a phrase of the stop points at, while it's hovered or focused. Shown over whatever
   // the code column shows, and gone when the phrase lets go.
   const [peek, setPeek] = useState<CurrentRef | null>(null);
+  // Any move along the trail ends a peek, so the place moved to is what shows, even while a
+  // phrase keeps keyboard focus.
+  const move = useCallback((step: (t: Trail<Viewing>) => Trail<Viewing>) => {
+    setPeek(null);
+    setTrail(step);
+  }, []);
+  const explore = useCallback((view: Viewing) => move((t) => visit(t, view, sameView)), [move]);
+  const toTour = useCallback(() => move(emptyTrail), [move]);
   // The left pane shows the route or the whole repo's files.
   const [pane, setPane] = useState<'route' | 'files'>('route');
   const goToFile = useRef<HTMLInputElement>(null);
@@ -149,7 +182,15 @@ export function TourScreen({ snapshot, tour }: Props) {
         ...all,
         [stopId]: [
           ...(all[stopId] ?? []),
-          { id, question, answer: null, error: null, correction: null, earlier: null },
+          {
+            id,
+            question,
+            answer: null,
+            error: null,
+            correction: null,
+            earlier: null,
+            askedAt: Date.now(),
+          },
         ],
       }));
       let checkId: string | null = null;
@@ -166,6 +207,17 @@ export function TourScreen({ snapshot, tour }: Props) {
       if (checkId) await followCheck(stopId, id, checkId);
     },
     [settle, followCheck],
+  );
+  // Asking again drops the failed exchange and asks the same question as a new one.
+  const retry = useCallback(
+    (stopId: string, id: string, question: string) => {
+      setThreads((all) => ({
+        ...all,
+        [stopId]: (all[stopId] ?? []).filter((e) => e.id !== id),
+      }));
+      void ask(stopId, question);
+    },
+    [ask],
   );
 
   // Under 1200px wide the route leaves its column for a drawer; under 800px the layout stacks,
@@ -223,7 +275,7 @@ export function TourScreen({ snapshot, tour }: Props) {
       setIndex(Math.max(0, Math.min(stops.length - 1, next)));
       setAnchorIndex(0);
       setOverviewFirst(false);
-      setViewing(null);
+      setTrail(emptyTrail());
       setPeek(null);
     },
     [stop, stops.length],
@@ -250,13 +302,24 @@ export function TourScreen({ snapshot, tour }: Props) {
     columns.current.scrollTop = columnsTop;
   }, [stopId]);
 
+  // The skip link and / go straight to the question box, past the route and the code. A stop
+  // with no question box, like the verdict, starts at its first control instead.
+  const toGuide = useCallback(() => {
+    const column = guide.current;
+    const target = column?.querySelector<HTMLElement>('textarea, .verdict-choices input');
+    (target ?? column)?.focus();
+  }, []);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       // In the route drawer, keys belong to the drawer.
       if (target?.closest('input, textarea, select, [contenteditable="true"], dialog')) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (event.key === 'ArrowRight') {
+      if (event.key === '/') {
+        event.preventDefault();
+        toGuide();
+      } else if (event.key === 'ArrowRight') {
         event.preventDefault();
         go(index + 1);
       } else if (event.key === 'ArrowLeft') {
@@ -266,7 +329,27 @@ export function TourScreen({ snapshot, tour }: Props) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [go, index]);
+  }, [go, index, toGuide]);
+
+  // Esc leaves explored files for the tour; Alt+← and Alt+→ go back and forward among them.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], dialog')) return;
+      if (event.key === 'Escape' && !event.altKey && trail.at >= 0) {
+        event.preventDefault();
+        toTour();
+      } else if (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        // Always kept from the browser: elsewhere than macOS, Alt+← is its own Back, and one
+        // press too many would leave the review.
+        event.preventDefault();
+        move(event.key === 'ArrowLeft' ? back : forward);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [trail, toTour, move]);
 
   // ⌘P (Ctrl+P elsewhere) jumps to "Go to file", as in an editor.
   useEffect(() => {
@@ -314,7 +397,7 @@ export function TourScreen({ snapshot, tour }: Props) {
     (): RefHandlers => ({
       onPeek: setPeek,
       onPin: ({ path, side, startLine, endLine }) => {
-        setViewing({
+        explore({
           path,
           side,
           focus: { path, side, startLine, endLine },
@@ -328,7 +411,7 @@ export function TourScreen({ snapshot, tour }: Props) {
         });
       },
     }),
-    [stacked],
+    [stacked, explore],
   );
   if (!snapshot.pr) return null;
 
@@ -355,7 +438,7 @@ export function TourScreen({ snapshot, tour }: Props) {
           aria-controls="pane-route"
           onClick={() => setPane('route')}
         >
-          Route <span className="pane-count">{stops.length} stops</span>
+          Route <span className="pane-count">{plural(stops.length, 'stop')}</span>
         </button>
         <button
           type="button"
@@ -377,7 +460,7 @@ export function TourScreen({ snapshot, tour }: Props) {
             closeRoute();
           }}
           onOpenFile={(path, side, at) => {
-            setViewing({ path, side: side ?? sideFor(diff, path), ...(at ? { at } : {}) });
+            explore({ path, side: side ?? sideFor(diff, path), ...(at ? { at } : {}) });
             closeRoute();
           }}
           tour={ready}
@@ -390,7 +473,7 @@ export function TourScreen({ snapshot, tour }: Props) {
           places={places}
           selected={shown?.side === 'new' ? shown.path : null}
           onOpen={(path) => {
-            setViewing({ path, side: 'new' });
+            explore({ path, side: 'new' });
             closeRoute();
           }}
           filterRef={goToFile}
@@ -401,6 +484,10 @@ export function TourScreen({ snapshot, tour }: Props) {
 
   return (
     <div className="app">
+      {/* A button, not a link: it focuses the question box itself rather than moving the URL. */}
+      <button type="button" className="skip-link" onClick={toGuide}>
+        Skip to the guide
+      </button>
       <TopBar
         snapshot={snapshot}
         diff={diff}
@@ -409,6 +496,17 @@ export function TourScreen({ snapshot, tour }: Props) {
         finished={ready !== null}
         posted={posted}
         drawer={drawer ? { open: routeOpen, onOpen: openRoute } : null}
+        onVerdict={
+          ready && stops.at(-1)?.kind === 'verdict_prompt'
+            ? () => {
+                go(stops.length - 1);
+                // Once the verdict stop has rendered, start the reviewer on its choices.
+                requestAnimationFrame(() =>
+                  document.querySelector<HTMLInputElement>('.verdict-choices input')?.focus(),
+                );
+              }
+            : null
+        }
       />
       <div className="columns" ref={columns}>
         {drawer ? (
@@ -441,11 +539,36 @@ export function TourScreen({ snapshot, tour }: Props) {
                         : ''}
                 </span>
                 <span className="code-side">{showing.side === 'new' ? 'head' : 'base'}</span>
+                {trail.entries.length > 0 && !peekElsewhere && (
+                  <span className="trail-nav">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="Back"
+                      title={`Back (${BACK_KEYS})`}
+                      disabled={!canGoBack(trail)}
+                      onClick={() => move(back)}
+                    >
+                      <span aria-hidden="true">‹</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="Forward"
+                      title={`Forward (${FORWARD_KEYS})`}
+                      disabled={!canGoForward(trail)}
+                      onClick={() => move(forward)}
+                    >
+                      <span aria-hidden="true">›</span>
+                    </button>
+                  </span>
+                )}
                 {viewing && !peekElsewhere && (
                   <button
                     type="button"
                     className="secondary-button back-to-stop"
-                    onClick={() => setViewing(null)}
+                    title="Back to the tour (Esc)"
+                    onClick={toTour}
                   >
                     <span aria-hidden="true">←</span>{' '}
                     {stop && !overviewFirst ? `Back to stop ${index + 1}` : 'Back to the overview'}
@@ -477,13 +600,30 @@ export function TourScreen({ snapshot, tour }: Props) {
                 changed={changes.get(`${showing.side}:${showing.path}`) ?? new Set()}
                 offRoute={offRoute.get(`${showing.side}:${showing.path}`) ?? new Set()}
                 onStep={viewing || peekElsewhere ? undefined : stepAnchor}
+                onJump={(to) =>
+                  explore({
+                    path: to.path,
+                    side: 'new',
+                    ...(to.line
+                      ? {
+                          focus: {
+                            path: to.path,
+                            side: 'new',
+                            startLine: to.line,
+                            endLine: to.line,
+                          },
+                        }
+                      : {}),
+                    label: to.line ? `line ${to.line} · ${to.label}` : to.label,
+                  })
+                }
               />
             </>
           ) : (
-            <Overview snapshot={snapshot} diff={diff} onOpen={setViewing} />
+            <Overview snapshot={snapshot} diff={diff} onOpen={explore} />
           )}
         </section>
-        <aside className="column" aria-label="The guide" ref={guide}>
+        <aside className="column" aria-label="The guide" ref={guide} tabIndex={-1}>
           {!stop ? (
             <div className="narration">
               <div className="narration-body fade-in">
@@ -499,8 +639,9 @@ export function TourScreen({ snapshot, tour }: Props) {
               threadsLoaded={threadsLoaded}
               head={snapshot.pr?.head ?? ''}
               onAsk={(question) => void ask(stop.id, question)}
+              onRetry={(exchange) => retry(stop.id, exchange.id, exchange.question)}
               onOpenCite={(cite) =>
-                setViewing({
+                explore({
                   path: cite.path,
                   side: cite.side,
                   focus: cite,
@@ -511,7 +652,7 @@ export function TourScreen({ snapshot, tour }: Props) {
               onAnchor={(i) => {
                 setOverviewFirst(false);
                 setAnchorIndex(i);
-                setViewing(null);
+                toTour();
               }}
               refHandlers={refHandlers}
               isLast={index === stops.length - 1}
@@ -603,6 +744,7 @@ function TopBar({
   finished,
   posted,
   drawer,
+  onVerdict,
 }: {
   snapshot: ReviewSnapshot;
   diff: Diff;
@@ -613,6 +755,8 @@ function TopBar({
   posted: PostedReview | null;
   /** How to open the route when it's a drawer; null when it has its own column. */
   drawer: { open: boolean; onOpen: () => void } | null;
+  /** Goes to the verdict stop; null until the whole tour is written and checked. */
+  onVerdict: (() => void) | null;
 }) {
   const pr = snapshot.pr;
   const lines = diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
@@ -690,12 +834,21 @@ function TopBar({
           <span aria-hidden="true">✓</span>{' '}
           <span className="verdict-button-label">{postedLabel(posted)}</span>
         </a>
+      ) : onVerdict ? (
+        <button
+          type="button"
+          className="verdict-button ready"
+          title="Go to the verdict, the last stop"
+          onClick={onVerdict}
+        >
+          <FlagIcon /> <span className="verdict-button-label">Go to verdict</span>
+        </button>
       ) : (
         <button
           type="button"
           className="verdict-button"
           disabled
-          title="Comes at the end of the tour"
+          title="Opens once the whole tour is written and checked"
         >
           <FlagIcon /> <span className="verdict-button-label">Verdict at the end</span>
         </button>
@@ -1121,7 +1274,13 @@ function Overview({
   return (
     <div className="overview fade-in">
       <h3>What the PR says</h3>
-      <p className="description">{snapshot.pr?.body.trim() || 'No description.'}</p>
+      {snapshot.pr?.body.trim() ? (
+        <div className="description">
+          <Markdown text={snapshot.pr.body} />
+        </div>
+      ) : (
+        <p className="description empty">The PR has no description.</p>
+      )}
       <h3>Files in this change</h3>
       <ul className="file-list">
         {diff.files.map((file) => {
@@ -1158,6 +1317,8 @@ type Exchange = {
   correction: CorrectionView | null;
   /** Set for a question asked at another head commit, or at a stop this tour doesn't have. */
   earlier: QuestionView['earlier'];
+  /** When it was asked on this page, so the wait counts from then; null for a stored question. */
+  askedAt: number | null;
 };
 
 const fromStored = (q: QuestionView): Exchange => ({
@@ -1167,6 +1328,7 @@ const fromStored = (q: QuestionView): Exchange => ({
   error: null,
   correction: q.correction,
   earlier: q.earlier,
+  askedAt: null,
 });
 
 /** Where an earlier question was asked, when that isn't this commit and this stop. */
@@ -1195,6 +1357,7 @@ function Narration({
   threadsLoaded,
   head,
   onAsk,
+  onRetry,
   onOpenCite,
   activeAnchor,
   onAnchor,
@@ -1213,6 +1376,8 @@ function Narration({
   /** The head commit this tour covers. */
   head: string;
   onAsk: (question: string) => void;
+  /** Asks a question that couldn't be answered again. */
+  onRetry: (exchange: Exchange) => void;
   onOpenCite: (cite: AnchorView) => void;
   activeAnchor: number;
   onAnchor: (index: number) => void;
@@ -1227,6 +1392,7 @@ function Narration({
   verdict: ReactNode;
 }) {
   const [draft, setDraft] = useState('');
+  const questionBox = useRef<HTMLTextAreaElement>(null);
   const last = exchanges.at(-1);
   const pending = last !== undefined && last.answer === null && last.error === null;
   // A new question scrolls into view at the top, so its answer arrives below it and the
@@ -1318,15 +1484,31 @@ function Narration({
                     )}
                   </>
                 ) : exchange.error ? (
-                  <div className="exchange-source" role="alert">
-                    Couldn't answer: {exchange.error}
+                  <div className="exchange-error" role="alert">
+                    <p className="exchange-error-label">Couldn't answer this one</p>
+                    <p>{exchange.error}</p>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={pending}
+                      onClick={() => {
+                        onRetry(exchange);
+                        // The button goes with the failed exchange; keep focus in the guide.
+                        requestAnimationFrame(() => questionBox.current?.focus());
+                      }}
+                    >
+                      Ask again
+                    </button>
                   </div>
                 ) : (
-                  <div className="exchange-source" aria-live="polite">
-                    {author?.found
-                      ? "The author's session is thinking it over…"
-                      : 'The guide is reading the code…'}
-                  </div>
+                  <Pending
+                    since={exchange.askedAt ?? Date.now()}
+                    label={
+                      author?.found
+                        ? "The author's session is thinking it over"
+                        : 'The guide is reading the code'
+                    }
+                  />
                 )}
               </div>
             ))}
@@ -1337,6 +1519,7 @@ function Narration({
               {exchanges.length > 0 ? 'Ask a follow-up' : 'Your question'}
             </label>
             <textarea
+              ref={questionBox}
               id={`question-${stop.id}`}
               value={draft}
               placeholder="Why is it built this way? What calls this?"
@@ -1349,8 +1532,8 @@ function Narration({
               }}
             />
             <div className="question-actions">
-              <span>
-                <kbd>⌘</kbd> <kbd>Enter</kbd> to ask
+              <span className="shortcut-hint">
+                <kbd>{IS_MAC ? '⌘' : 'Ctrl'}</kbd> <kbd>Enter</kbd> to ask · <kbd>/</kbd> jumps here
               </span>
               <button
                 type="button"
@@ -1366,7 +1549,7 @@ function Narration({
       </div>
 
       <footer className="narration-footer">
-        <span className="batch-note">Pending batch · no changes yet</span>
+        <span className="batch-note">No change requests yet</span>
         {!isLast ? (
           <button type="button" className="primary-button" onClick={onNext}>
             Next stop <span aria-hidden="true">→</span>
@@ -1377,6 +1560,40 @@ function Narration({
           </button>
         ) : null}
       </footer>
+    </div>
+  );
+}
+
+/** The modifier the question box's shortcut takes: ⌘ on a Mac, Ctrl elsewhere. */
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
+/**
+ * An answer on its way. Answers take from seconds to a minute, so it pulses and counts the
+ * seconds: honest about time passing, without guessing how long is left.
+ */
+function Pending({ label, since }: { label: string; since: number }) {
+  const elapsed = () => Math.floor((Date.now() - since) / 1000);
+  const [seconds, setSeconds] = useState(elapsed);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `elapsed` only reads `since`.
+  useEffect(() => {
+    setSeconds(elapsed());
+    const timer = setInterval(() => setSeconds(elapsed()), 1000);
+    return () => clearInterval(timer);
+  }, [since]);
+  return (
+    <div className="exchange-pending">
+      <span className="pending-dots" aria-hidden="true">
+        <span className="dot" />
+        <span className="dot" />
+        <span className="dot" />
+      </span>
+      {/* Announced once; the seconds aren't, so a screen reader isn't read a clock. */}
+      <span aria-live="polite">{label}…</span>
+      {seconds >= 3 && (
+        <span className="elapsed" aria-hidden="true">
+          {seconds} s
+        </span>
+      )}
     </div>
   );
 }

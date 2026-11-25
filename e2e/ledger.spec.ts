@@ -39,6 +39,12 @@ test('the left pane shows where every changed line stands: on the route, proven,
       );
       // A note is prose, never a proof chip.
       await expect(off.locator('.proof')).toHaveCount(0);
+      // Hovering lights the whole row, its line counts included.
+      const row = off.locator('.ledger-row').filter({ hasText: 'notes.md' });
+      const clear = 'rgba(0, 0, 0, 0)';
+      await expect(row).toHaveCSS('background-color', clear);
+      await notes.hover();
+      await expect(row).not.toHaveCSS('background-color', clear);
       await notes.click();
       await expect(page.locator('.code-path')).toHaveText('docs/notes.md');
       await expect(page.locator('.code-side')).toHaveText('head');

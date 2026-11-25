@@ -16,7 +16,6 @@ import {
   defaultCacheDir,
   generateTour,
   git,
-  gitHeadFiles,
   planUpdate,
   proveForReview,
   sdkRunner,
@@ -110,7 +109,6 @@ async function openAt(
     headInBaseRepo: true,
     dir,
     ...commitReader(dir, base, head),
-    headFiles: () => gitHeadFiles(dir, head),
     currentHead: async () => head,
     postReview: async () => {
       throw new Error('An eval never posts a review.');

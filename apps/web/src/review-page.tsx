@@ -26,6 +26,8 @@ export function ReviewPage() {
     },
   });
   const [tour, setTour] = useState<TourState | null>(null);
+  // Bumped by Try again, so the page follows the new try even if the snapshot reads the same.
+  const [attempt, setAttempt] = useState(0);
 
   const data = snapshot.data;
   // The tab names the PR, "Title · Docent", the usual "page · site" order, so tabs stay
@@ -34,6 +36,7 @@ export function ReviewPage() {
   useEffect(() => {
     document.title = prTitle ? `${prTitle} · Docent` : 'Docent';
   }, [prTitle]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each Try again follows the tour anew.
   useEffect(() => {
     if (!data) return;
     if (data.tour.state !== 'working') {
@@ -50,11 +53,23 @@ export function ReviewPage() {
       });
     });
     return () => controller.abort();
-  }, [data]);
+  }, [data, attempt]);
 
   // The PR and diff arrive once the server has read them; fetch them as soon as they exist.
   const stillReading = tour?.state === 'working' && tour.steps[0]?.status === 'active';
   const refetch = snapshot.refetch;
+  // Try again: the server restarts a failed tour. A 409 means it isn't failed there, as when only
+  // this page lost the progress stream, so the page just picks the tour up again.
+  const retryTour = async () => {
+    const res = await api.review.retry.$post();
+    if (res.status !== 202 && res.status !== 409) {
+      const body = (await res.json()) as { error?: string };
+      throw new Error(body.error ?? `The server answered ${res.status}`);
+    }
+    await refetch();
+    setTour(null);
+    setAttempt((n) => n + 1);
+  };
   const missingPr = data !== undefined && data !== null && data.pr === null;
   const started = tour !== null;
   useEffect(() => {
@@ -71,7 +86,13 @@ export function ReviewPage() {
   if (snapshot.isError) {
     return (
       <div className="app">
-        <StatusScreen tour={{ state: 'failed', reason: snapshot.error.message, costs: [] }} />
+        <StatusScreen
+          tour={{ state: 'failed', reason: snapshot.error.message, costs: [] }}
+          onRetry={async () => {
+            const again = await refetch();
+            if (again.isError) throw again.error;
+          }}
+        />
       </div>
     );
   }
@@ -83,7 +104,7 @@ export function ReviewPage() {
   ) : (
     <div className="app">
       <TopBarShell snapshot={data} />
-      <StatusScreen tour={current} />
+      <StatusScreen tour={current} onRetry={retryTour} />
     </div>
   );
 }
