@@ -19,7 +19,8 @@
     "build": "tsc -b && pnpm --filter @docent/web build",
     "prepare": "lefthook install",
     "pack:cli": "pnpm build && node scripts/pack.ts",
-    "eval:tours": "node packages/evals/src/run-tours.ts"
+    "eval:tours": "node packages/evals/src/run-tours.ts",
+    "eval:updates": "node packages/evals/src/run-updates.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.5",

@@ -661,7 +661,9 @@ export function TourScreen({ snapshot, tour }: Props) {
               waiting={
                 writing?.attempt === 1 &&
                 writing.steps.find((s) => s.status === 'active')?.id === 'writing'
-                  ? 'Writing the next stop…'
+                  ? writing.updating
+                    ? 'Updating for the new commits…'
+                    : 'Writing the next stop…'
                   : 'Checking the whole tour…'
               }
               verdict={
@@ -927,6 +929,7 @@ function Route({
   return (
     <div className="route">
       {tour && <LedgerSummary ledger={tour.ledger} />}
+      <UpdateNote stops={stops} tour={tour} writing={writing} />
       <h2 className="section-label">On the route</h2>
       <ol className="stops">
         {stops.map((stop, i) => {
@@ -950,6 +953,11 @@ function Route({
                         · {flag}
                       </span>
                     ))}
+                    {stop.updated && (
+                      <span className="stop-new" title="New since your last visit">
+                        · new
+                      </span>
+                    )}
                   </span>
                   <span className="stop-title">{inline(stop.title)}</span>
                 </span>
@@ -1193,6 +1201,42 @@ function FilePath({ path }: { path: string }) {
   );
 }
 
+/**
+ * When the tour updates an earlier one for new commits: what was kept and what's new. While the
+ * guide updates it, the stops shown are the kept ones.
+ */
+function UpdateNote({
+  stops,
+  tour,
+  writing,
+}: {
+  stops: readonly StopView[];
+  tour: Ready | null;
+  writing: Working | null;
+}) {
+  if (writing?.updating) {
+    return (
+      <p className="update-note" aria-live="polite">
+        New commits since the last tour. These stops cite code that hasn't changed; the guide is
+        writing about what did.
+      </p>
+    );
+  }
+  const update = tour?.update;
+  if (!update) return null;
+  const fresh = stops.filter((s) => s.updated).length;
+  const parts = [
+    `${fresh} new`,
+    `${stops.length - fresh} kept`,
+    ...(update.dropped ? [`${update.dropped} removed`] : []),
+  ];
+  return (
+    <p className="update-note">
+      Updated for the commits since <code>{update.from.slice(0, 7)}</code>: {parts.join(', ')}.
+    </p>
+  );
+}
+
 /** The route's next row while the guide writes: says what's happening, never how long it'll take. */
 function UpcomingStop({ stops, writing }: { stops: readonly StopView[]; writing: Working }) {
   const step = writing.steps.find((s) => s.status === 'active')?.id;
@@ -1200,11 +1244,13 @@ function UpcomingStop({ stops, writing }: { stops: readonly StopView[]; writing:
   const label =
     writing.attempt > 1
       ? 'Fixing what the checker found'
-      : step === 'checking' || verdictIn
-        ? 'Checking the whole tour'
-        : step === 'writing'
-          ? `Writing stop ${Math.max(writing.writing, stops.length + 1)}`
-          : 'Planning the route';
+      : writing.updating && step !== 'checking'
+        ? 'Updating for the new commits'
+        : step === 'checking' || verdictIn
+          ? 'Checking the whole tour'
+          : step === 'writing'
+            ? `Writing stop ${Math.max(writing.writing, stops.length + 1)}`
+            : 'Planning the route';
   return (
     <li className="upcoming-stop" aria-live="polite">
       <span className="upcoming-dot" aria-hidden="true" />
@@ -1370,7 +1416,10 @@ function Narration({
   return (
     <div className="narration">
       <div className="narration-body fade-in">
-        <div className="narration-kind">{KIND_LABELS[stop.kind]}</div>
+        <div className="narration-kind">
+          {KIND_LABELS[stop.kind]}
+          {stop.updated && <span className="new-badge">New since your last visit</span>}
+        </div>
         <h2 className="narration-title">{inline(stop.title)}</h2>
         <div className="narration-text">{prose(stop.body, stop.refs, refHandlers)}</div>
 

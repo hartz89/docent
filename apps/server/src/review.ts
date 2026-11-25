@@ -3,9 +3,9 @@
 // the author's session sit behind injected boundaries.
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   type Candidate,
   type CommitSha,
@@ -56,8 +56,10 @@ import {
   TourError,
   type TourOutcome,
   type TourProgress,
+  type TourView,
 } from './tour.ts';
 import { cachedOnce, type LockHolder } from './tour-lock.ts';
+import { basisFor, planUpdate, type UpdatePlan } from './tour-update.ts';
 
 export type StepId = 'reading' | 'planning' | 'writing' | 'checking';
 export type Step = { id: StepId; label: string; status: 'done' | 'active' | 'pending' };
@@ -75,6 +77,8 @@ export type TourState =
       stops: StopView[];
       /** How many stops the guide has begun writing, shown or not. */
       writing: number;
+      /** The stops shown are an earlier tour's, kept, while the guide updates it for new commits. */
+      updating: boolean;
     }
   /** `ledger`: where every changed line stands, computed for this tour by core (L1–L4). */
   | ({ state: 'ready'; ledger: LedgerView } & TourOutcome)
@@ -887,6 +891,70 @@ Question: ${question}`,
     }
   }
 
+  /** Where this PR's tour basis lives: one per PR, model and prompt version. Null without a cache. */
+  #basisFile(pr: PrInfo): string | null {
+    const dir = this.#options.cacheDir;
+    if (!dir) return null;
+    const model = this.#options.model.replace(/[^\w.-]/g, '_');
+    return join(
+      dir,
+      'tour-bases',
+      pr.repo.replace('/', '__'),
+      `pr-${pr.number}-${model}-p${TOUR_PROMPT_VERSION}.json`,
+    );
+  }
+
+  /**
+   * How to update the tour of an earlier head of this PR, or null to write a whole one. Never
+   * throws: a basis that can't be read or used means a whole tour, as before updates existed.
+   */
+  async #planUpdate(workspace: Workspace, diff: Diff): Promise<UpdatePlan | null> {
+    const file = this.#basisFile(workspace.pr);
+    if (!file || !existsSync(file)) return null;
+    const ended = this.#timings.span('Plan the update');
+    try {
+      const saved: unknown = JSON.parse(await readFile(file, 'utf8'));
+      const plan = await planUpdate(saved, workspace.pr, diff, workspace.readFile);
+      ended(plan ? `from ${plan.from.slice(0, 12)}` : 'a whole tour');
+      if (plan) {
+        this.#log.event('tour.update', {
+          from: plan.from,
+          kept: plan.stops.filter((s) => s.state === 'kept').length,
+          stale: plan.stops.filter((s) => s.state === 'stale').length,
+          movedLines: plan.moved.length,
+        });
+      }
+      return plan;
+    } catch (error) {
+      ended(`failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.#log.error('tour update', error);
+      return null;
+    }
+  }
+
+  /**
+   * Leaves this tour's basis for the next head's update. Best effort: without one, the next push
+   * writes a whole tour. Written aside and renamed in, so a reader never sees half of it.
+   */
+  async #saveBasis(workspace: Workspace, diff: Diff, tour: TourView): Promise<void> {
+    const file = this.#basisFile(workspace.pr);
+    if (!file) return;
+    try {
+      const saved = existsSync(file)
+        ? (JSON.parse(await readFile(file, 'utf8')) as { head?: unknown })
+        : null;
+      if (saved?.head === diff.head) return;
+      const basis = await basisFor(tour, diff, workspace.pr, workspace.readFile);
+      if (!basis) return;
+      await mkdir(dirname(file), { recursive: true });
+      const partial = `${file}.${randomUUID()}.partial`;
+      await writeFile(partial, JSON.stringify(basis));
+      await rename(partial, file);
+    } catch (error) {
+      this.#log.error('tour basis', error);
+    }
+  }
+
   /** Reads the PR: its workspace, diff and earlier questions. Run once, unless it fails. */
   async #open(started: number): Promise<Opened> {
     const time = this.#timings;
@@ -960,6 +1028,7 @@ Question: ${question}`,
       await lookup;
       ended('hit');
       await this.#tourReady(fromCache(outcome), await proofs, tourStarted);
+      await this.#saveBasis(workspace, diff, outcome.tour);
       return;
     }
     ended('missed');
@@ -972,7 +1041,7 @@ Question: ${question}`,
       endWait();
       endWait = () => {};
     };
-    const write = () => {
+    const write = async () => {
       stopWaiting();
       return generateTour({
         workspace,
@@ -980,6 +1049,8 @@ Question: ${question}`,
         runner: this.#options.runner,
         model: this.#options.model,
         proofs,
+        // An earlier tour of this PR, at an older head, is updated rather than written again.
+        update: await this.#planUpdate(workspace, diff),
         // Progress only moves a tour that's still being written, never a ready or failed one.
         onProgress: (progress) => {
           if (this.#tour.state === 'working') this.#set(fromProgress(progress, this.#tour));
@@ -1010,6 +1081,7 @@ Question: ${question}`,
     const outcome: TourOutcome = written.cached ? fromCache(written.value) : written.value;
     await lookup;
     await this.#tourReady(outcome, await proofs, tourStarted);
+    await this.#saveBasis(workspace, diff, outcome.tour);
   }
 
   /**
@@ -1046,9 +1118,17 @@ Question: ${question}`,
       stops: outcome.tour.stops.length,
       ledger: ledger.lines,
       attempts: outcome.attempts,
-      retries: outcome.attempts - 1,
+      // An update that needed no model call made no attempt at all.
+      retries: Math.max(0, outcome.attempts - 1),
       problems: outcome.problems,
       model: outcome.model,
+      ...(outcome.update
+        ? {
+            updatedFrom: outcome.update.from,
+            updatedStops: outcome.tour.stops.filter((s) => s.updated).length,
+            dropped: outcome.update.dropped,
+          }
+        : {}),
       // A cached tour cost nothing this run.
       costMicroUsd: outcome.cached ? 0 : totalMicroUsd(outcome.costs),
       ms: Date.now() - started,
@@ -1124,6 +1204,7 @@ function working(
   attempt: number,
   stops: StopView[],
   writing = 0,
+  updating = false,
 ): TourState {
   const order: StepId[] = ['reading', 'planning', 'writing', 'checking'];
   const at = order.indexOf(active);
@@ -1138,6 +1219,7 @@ function working(
     attempt,
     stops,
     writing,
+    updating,
   };
 }
 
@@ -1165,25 +1247,36 @@ function fromProgress(progress: TourProgress, previous: TourState): TourState {
   // Stops already shown stay shown until the finished tour replaces them.
   const stops = was?.stops ?? [];
   const writing = was?.writing ?? 0;
+  const updating = was?.updating ?? false;
   switch (progress.step) {
     case 'planning': {
       // A file read while the stops are being written doesn't send the steps backwards.
       const step =
         was?.steps.find((s) => s.status === 'active')?.id === 'writing' ? 'writing' : 'planning';
-      return working(step, progress.detail ?? was?.detail ?? null, attempt, stops, writing);
+      return working(
+        step,
+        progress.detail ?? was?.detail ?? null,
+        attempt,
+        stops,
+        writing,
+        updating,
+      );
     }
     case 'writing':
       return working(
         'writing',
-        progress.writing > progress.stops.length
-          ? `Writing stop ${progress.writing}`
-          : `${progress.stops.length} stop${progress.stops.length === 1 ? '' : 's'} written`,
+        progress.update
+          ? 'Updating the tour for the new commits'
+          : progress.writing > progress.stops.length
+            ? `Writing stop ${progress.writing}`
+            : `${progress.stops.length} stop${progress.stops.length === 1 ? '' : 's'} written`,
         attempt,
         progress.stops,
         progress.writing,
+        progress.update,
       );
     case 'checking':
-      return working('checking', null, progress.attempt, stops, writing);
+      return working('checking', null, progress.attempt, stops, writing, updating);
     case 'retrying':
       return working(
         'planning',
@@ -1191,6 +1284,7 @@ function fromProgress(progress: TourProgress, previous: TourState): TourState {
         progress.attempt + 1,
         stops,
         writing,
+        updating,
       );
   }
 }

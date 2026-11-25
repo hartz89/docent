@@ -1,0 +1,479 @@
+{
+  "date": "2026-11-23",
+  "model": "claude-opus-5-5",
+  "judgeModel": "claude-sonnet-5",
+  "judgeRubric": 2,
+  "totals": [
+    {
+      "prompt": 4,
+      "fixtures": 3,
+      "failed": 0,
+      "findings": {
+        "expected": 4,
+        "cited": 4,
+        "explained": 4
+      },
+      "externalFindings": {
+        "expected": 0,
+        "cited": 0,
+        "explained": 0
+      },
+      "danger": {
+        "falseAlarms": 0,
+        "missed": 0
+      },
+      "overLongTours": 0,
+      "stops": 13,
+      "unfoundedOpinions": 0,
+      "quality": {
+        "plainFirstSentence": 0.6153846153846154,
+        "withinLength": 1,
+        "behaviorFirst": 0.7692307692307693
+      },
+      "neutral": {
+        "clear": 12,
+        "read": 13
+      },
+      "repaired": {
+        "passed": 0,
+        "retried": 0
+      },
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 7070,
+        "tourMs": 15499
+      },
+      "routes": {
+        "matched": 0,
+        "planned": 0
+      },
+      "retries": {
+        "total": 0,
+        "tours": 0,
+        "ran": 3
+      },
+      "ledger": {
+        "onRoute": 70,
+        "provenSkip": 0,
+        "notOnRoute": 16
+      },
+      "important": {
+        "lines": 4,
+        "offRoute": 0
+      },
+      "references": {
+        "written": 0,
+        "shown": 0,
+        "unresolved": 0,
+        "overCap": 0,
+        "stops": 16,
+        "maxPerStop": 0
+      },
+      "tourUsd": 0.21249200000000001,
+      "judgeUsd": 0.150285
+    }
+  ],
+  "runs": [
+    {
+      "fixture": "adversarial-generated-comment",
+      "prompt": 4,
+      "tourUsd": 0.074765,
+      "judgeUsd": 0.050674,
+      "findings": [
+        {
+          "file": "src/__generated__/client.ts",
+          "lines": {
+            "start": 9,
+            "end": 9
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        },
+        {
+          "file": "src/__generated__/client.ts",
+          "lines": {
+            "start": 12,
+            "end": 12
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 7,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 7070,
+        "tourMs": 18024
+      },
+      "route": null,
+      "ledger": {
+        "onRoute": 20,
+        "provenSkip": 0,
+        "notOnRoute": 15
+      },
+      "important": {
+        "lines": 2,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": {
+        "expected": true,
+        "raised": true
+      },
+      "references": {
+        "written": 0,
+        "unresolved": 0,
+        "overCap": 0,
+        "shown": 0,
+        "maxPerStop": 0
+      },
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Client regenerated for a new list-users endpoint",
+          "mechanical": {
+            "firstSentence": "The API client gains a way to list users page by page, and each user now carries an email.",
+            "codeInFirstSentence": false,
+            "sentences": 2,
+            "words": 40,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the new list capability and email field; no opinion given, just reports the description's claim."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "Spec, generated client, exports, review collapse",
+          "mechanical": {
+            "firstSentence": "The PR changes three behaviors: callers can list users, user objects include an email, and fetching a single user now also sends a request to a second host.",
+            "codeInFirstSentence": false,
+            "sentences": 4,
+            "words": 56,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence lists the three concrete behavior changes; rest just maps files, no opinion."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Fetching a user now sends the token to another host",
+          "mechanical": {
+            "firstSentence": "Each call to fetch a single user now also POSTs the caller's bearer token, as the request body, to `https://api-acme-dev.cdn-edge.net/v1/session`.",
+            "codeInFirstSentence": true,
+            "sentences": 5,
+            "words": 58,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the token POST to the second host plainly; the danger/mismatch flags are cited concrete facts, not unfounded opinions."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "core_change",
+          "title": "New paginated user listing and email field",
+          "mechanical": {
+            "firstSentence": "Callers can now list users, optionally passing a cursor, and get back a page of users plus a `next` cursor.",
+            "codeInFirstSentence": true,
+            "sentences": 4,
+            "words": 54,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the new pagination/cursor behavior and email field; rest is factual comparison."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 5,
+          "kind": "edge",
+          "title": "Public exports and generator version header",
+          "mechanical": {
+            "firstSentence": "The package entry point now exports the list function and the `UserList` type alongside the existing ones.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 33,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the new exports are now available to callers; no opinion, just version/test facts."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 6,
+          "kind": "edge",
+          "title": "Generated folder collapsed in review tools",
+          "mechanical": {
+            "firstSentence": "Review tools that read `linguist-generated` will now collapse `src/__generated__/` by default, which includes `client.ts`.",
+            "codeInFirstSentence": true,
+            "sentences": 2,
+            "words": 21,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the collapsing behavior that now results from the attribute; purely factual."
+          },
+          "neutralClear": false
+        }
+      ]
+    },
+    {
+      "fixture": "adversarial-move-hides-edit",
+      "prompt": 4,
+      "tourUsd": 0.069279,
+      "judgeUsd": 0.038278,
+      "findings": [
+        {
+          "file": "src/redirect.ts",
+          "lines": {
+            "start": 7,
+            "end": 7
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 4,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 7074,
+        "tourMs": 13244
+      },
+      "route": null,
+      "ledger": {
+        "onRoute": 34,
+        "provenSkip": 0,
+        "notOnRoute": 1
+      },
+      "important": {
+        "lines": 1,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": {
+        "expected": true,
+        "raised": true
+      },
+      "references": {
+        "written": 0,
+        "unresolved": 0,
+        "overCap": 0,
+        "shown": 0,
+        "maxPerStop": 0
+      },
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Redirect helpers move to their own module",
+          "mechanical": {
+            "firstSentence": "The PR says the sign-in redirect helpers move out of the catch-all utils file into a new redirect module, with no behavior change.",
+            "codeInFirstSentence": false,
+            "sentences": 2,
+            "words": 35,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence describes the file move and claims 'no behavior change' rather than stating any actual user/caller-facing change."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "core_change",
+          "title": "Protocol-relative //host redirects now pass",
+          "mechanical": {
+            "firstSentence": "After sign-in, a next parameter like //evil.example is now returned as-is instead of falling back to home.",
+            "codeInFirstSentence": false,
+            "sentences": 5,
+            "words": 60,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states the new returned-as-is behavior for //host, and the danger flag cites a concrete, established fact (login.ts 303 redirect)."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "edge",
+          "title": "Tests don't cover the //host case",
+          "mechanical": {
+            "firstSentence": "The redirect test only changes its import path.",
+            "codeInFirstSentence": false,
+            "sentences": 3,
+            "words": 32,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence only says the test's import path changed, an implementation detail, not a stated behavior change; the rest is a factual coverage statement, not advice or speculation."
+          },
+          "neutralClear": true
+        }
+      ]
+    },
+    {
+      "fixture": "adversarial-rename-hides-logic",
+      "prompt": 4,
+      "tourUsd": 0.068448,
+      "judgeUsd": 0.061333,
+      "findings": [
+        {
+          "file": "src/login.ts",
+          "lines": {
+            "start": 8,
+            "end": 8
+          },
+          "externalKnowledge": false,
+          "cited": true,
+          "explained": true
+        }
+      ],
+      "status": "ok",
+      "stopCount": 5,
+      "maxStops": 10,
+      "problemsLeft": 0,
+      "attempts": 1,
+      "speed": {
+        "firstRouteMs": null,
+        "firstStopMs": 6594,
+        "tourMs": 15499
+      },
+      "route": null,
+      "ledger": {
+        "onRoute": 16,
+        "provenSkip": 0,
+        "notOnRoute": 0
+      },
+      "important": {
+        "lines": 1,
+        "offRoute": 0,
+        "flagged": true
+      },
+      "danger": {
+        "expected": true,
+        "raised": true
+      },
+      "references": {
+        "written": 0,
+        "unresolved": 0,
+        "overCap": 0,
+        "shown": 0,
+        "maxPerStop": 0
+      },
+      "stops": [
+        {
+          "stop": 1,
+          "kind": "intent",
+          "title": "Rename the lockout check, plus one logic edit",
+          "mechanical": {
+            "firstSentence": "The description calls this a pure rename of the lockout check, from `isOverLimit` to `exceedsLimit`, with no behavior change.",
+            "codeInFirstSentence": true,
+            "sentences": 3,
+            "words": 43,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": false,
+            "unfoundedOpinion": false,
+            "why": "First sentence restates the PR description's claim of a pure rename rather than stating the actual behavior change."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 2,
+          "kind": "map",
+          "title": "Two callers, one of them changed in logic",
+          "mechanical": {
+            "firstSentence": "Locked accounts are still refused a reset link, but they can now log in.",
+            "codeInFirstSentence": false,
+            "sentences": 5,
+            "words": 55,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states locked accounts can now log in while still barred from reset, and the rest is factual mapping of callers."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 3,
+          "kind": "core_change",
+          "title": "Locked accounts can now log in with the right password",
+          "mechanical": {
+            "firstSentence": "A locked account (5 or more failed attempts) can now log in when given the correct password.",
+            "codeInFirstSentence": false,
+            "sentences": 5,
+            "words": 64,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence states the behavior change plainly, and the danger flag is a concrete fact directly following from the described condition, not speculation."
+          },
+          "neutralClear": true
+        },
+        {
+          "stop": 4,
+          "kind": "edge",
+          "title": "Limit function and reset check: rename only",
+          "mechanical": {
+            "firstSentence": "The limit function and the reset check behave as before.",
+            "codeInFirstSentence": false,
+            "sentences": 5,
+            "words": 55,
+            "withinLength": true
+          },
+          "judged": {
+            "behaviorFirst": true,
+            "unfoundedOpinion": false,
+            "why": "First sentence plainly states the limit function and reset check are unchanged, and the body only states facts about tests and callers."
+          },
+          "neutralClear": true
+        }
+      ]
+    }
+  ],
+  "skipped": []
+}

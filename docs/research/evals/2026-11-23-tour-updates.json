@@ -1,0 +1,224 @@
+{
+  "date": "2026-11-23",
+  "model": "claude-opus-5-5",
+  "judgeModel": "claude-sonnet-5",
+  "spent": 6.018846,
+  "results": [
+    {
+      "id": "docent-92",
+      "first": {
+        "usd": 0.387584,
+        "tourMs": 47964,
+        "stops": 12
+      },
+      "plan": {
+        "kept": 6,
+        "stale": 6,
+        "movedLines": 85,
+        "changedLines": 1027
+      },
+      "updated": {
+        "usd": 0.373208,
+        "firstStopMs": 318,
+        "tourMs": 27789,
+        "attempts": 1,
+        "problemsLeft": 0,
+        "stops": 12,
+        "newStops": 6,
+        "behaviorFirst": "10/11",
+        "unfounded": 0,
+        "mechanical": "9/11",
+        "ledger": {
+          "onRoute": 1006,
+          "provenSkip": 2,
+          "notOnRoute": 19
+        },
+        "explained": null,
+        "hiddenOffRoute": null,
+        "danger": null
+      },
+      "fresh": {
+        "usd": 0.407956,
+        "firstStopMs": 12852,
+        "tourMs": 46486,
+        "attempts": 1,
+        "problemsLeft": 0,
+        "stops": 12,
+        "newStops": 0,
+        "behaviorFirst": "10/11",
+        "unfounded": 0,
+        "mechanical": "4/11",
+        "ledger": {
+          "onRoute": 984,
+          "provenSkip": 6,
+          "notOnRoute": 37
+        },
+        "explained": null,
+        "hiddenOffRoute": null,
+        "danger": null
+      }
+    },
+    {
+      "id": "docent-108",
+      "first": {
+        "usd": 0.265084,
+        "tourMs": 34396,
+        "stops": 9
+      },
+      "plan": {
+        "kept": 5,
+        "stale": 4,
+        "movedLines": 43,
+        "changedLines": 414
+      },
+      "updated": {
+        "usd": 0.273845,
+        "firstStopMs": 340,
+        "tourMs": 24680,
+        "attempts": 1,
+        "problemsLeft": 0,
+        "stops": 9,
+        "newStops": 5,
+        "behaviorFirst": "8/8",
+        "unfounded": 0,
+        "mechanical": "1/8",
+        "ledger": {
+          "onRoute": 406,
+          "provenSkip": 0,
+          "notOnRoute": 8
+        },
+        "explained": null,
+        "hiddenOffRoute": null,
+        "danger": null
+      },
+      "fresh": {
+        "usd": 0.265455,
+        "firstStopMs": 8499,
+        "tourMs": 33477,
+        "attempts": 1,
+        "problemsLeft": 0,
+        "stops": 10,
+        "newStops": 0,
+        "behaviorFirst": "9/9",
+        "unfounded": 0,
+        "mechanical": "4/9",
+        "ledger": {
+          "onRoute": 389,
+          "provenSkip": 4,
+          "notOnRoute": 21
+        },
+        "explained": null,
+        "hiddenOffRoute": null,
+        "danger": null
+      }
+    },
+    {
+      "id": "docent-109",
+      "first": {
+        "usd": 1.18951,
+        "tourMs": 69582,
+        "stops": 12
+      },
+      "plan": {
+        "kept": 9,
+        "stale": 3,
+        "movedLines": 46,
+        "changedLines": 4659
+      },
+      "updated": {
+        "usd": 1.060428,
+        "firstStopMs": 497,
+        "tourMs": 25149,
+        "attempts": 1,
+        "problemsLeft": 0,
+        "stops": 12,
+        "newStops": 3,
+        "behaviorFirst": "10/11",
+        "unfounded": 0,
+        "mechanical": "5/11",
+        "ledger": {
+          "onRoute": 1171,
+          "provenSkip": 3,
+          "notOnRoute": 3485
+        },
+        "explained": null,
+        "hiddenOffRoute": null,
+        "danger": null
+      },
+      "fresh": {
+        "usd": 1.180609,
+        "firstStopMs": 15714,
+        "tourMs": 59211,
+        "attempts": 1,
+        "problemsLeft": 0,
+        "stops": 11,
+        "newStops": 0,
+        "behaviorFirst": "9/10",
+        "unfounded": 0,
+        "mechanical": "5/10",
+        "ledger": {
+          "onRoute": 1186,
+          "provenSkip": 3,
+          "notOnRoute": 3470
+        },
+        "explained": null,
+        "hiddenOffRoute": null,
+        "danger": null
+      }
+    },
+    {
+      "id": "adversarial-second-push",
+      "first": {
+        "usd": 0.058838,
+        "tourMs": 12400,
+        "stops": 5
+      },
+      "plan": {
+        "kept": 3,
+        "stale": 2,
+        "movedLines": 6,
+        "changedLines": 21
+      },
+      "updated": {
+        "usd": 0.078437,
+        "firstStopMs": 26,
+        "tourMs": 16301,
+        "attempts": 1,
+        "problemsLeft": 0,
+        "stops": 6,
+        "newStops": 4,
+        "behaviorFirst": "5/5",
+        "unfounded": 0,
+        "mechanical": "4/5",
+        "ledger": {
+          "onRoute": 21,
+          "provenSkip": 0,
+          "notOnRoute": 0
+        },
+        "explained": "2/2",
+        "hiddenOffRoute": 0,
+        "danger": true
+      },
+      "fresh": {
+        "usd": 0.069674,
+        "firstStopMs": 7226,
+        "tourMs": 16584,
+        "attempts": 1,
+        "problemsLeft": 0,
+        "stops": 6,
+        "newStops": 0,
+        "behaviorFirst": "5/5",
+        "unfounded": 0,
+        "mechanical": "4/5",
+        "ledger": {
+          "onRoute": 20,
+          "provenSkip": 0,
+          "notOnRoute": 1
+        },
+        "explained": "2/2",
+        "hiddenOffRoute": 0,
+        "danger": true
+      }
+    }
+  ]
+}
