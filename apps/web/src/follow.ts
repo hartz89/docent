@@ -6,10 +6,13 @@ type Stop = { readonly kind: string; readonly title: string };
  *
  * A repair rewrites stops in place and adds new ones after the stops of their kind, and it may
  * retitle any of them. So a stop keeps its place among the stops of its kind (the second edge
- * stop stays the second edge stop), while its title and its number may both change. An update
- * shows only the stops it kept, so there the unchanged title is what finds the stop again. The
+ * stop stays the second edge stop), while its title and its number may both change. The
  * reader follows a stop of the same kind and title, the nearest one if there are several; else
  * the stop in the same place among its kind; else stays as close as the new route allows.
+ *
+ * An update shows only the stops it kept, and the finished tour puts the rewritten ones back
+ * among them, so there only an unchanged title finds the stop. If the update also retitles the
+ * stop being read, the place among its kind can be off by the rewritten stops before it.
  */
 export function follow(was: readonly Stop[], index: number, stops: readonly Stop[]): number {
   const closest = Math.min(index, Math.max(0, stops.length - 1));
