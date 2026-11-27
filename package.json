@@ -24,6 +24,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.5",
+    "@docent/core": "workspace:*",
     "@playwright/test": "1.65.0",
     "@types/node": "24.19.2",
     "fast-check": "4.10.2",

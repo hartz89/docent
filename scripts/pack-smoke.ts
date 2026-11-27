@@ -110,6 +110,22 @@ try {
   }
   if (state !== 'ready') throw new Error(`The tour never finished:\n${lines.join('\n')}`);
 
+  // Jump to definition runs in a worker, on the grammar files the package carries.
+  let definition: { candidates?: { path: string; line: number }[] } = {};
+  for (let i = 0; i < 100 && !definition.candidates; i++) {
+    const response = await fetch(`${origin}/api/definition?symbol=CORSOptions`, { headers: auth });
+    if (response.status === 503) await new Promise((r) => setTimeout(r, 100));
+    else if (response.ok) definition = (await response.json()) as typeof definition;
+    else throw new Error(`Jump to definition gave ${response.status}: ${await response.text()}`);
+  }
+  const [found] = definition.candidates ?? [];
+  if (!found) throw new Error('Jump to definition found nothing for CORSOptions');
+  console.log(`ok  jump to definition: ${found.path}:${found.line}`);
+  const grammarPackages = readdirSync(join(scratch, 'node_modules')).filter((name) =>
+    name.startsWith('tree-sitter-'),
+  );
+  if (grammarPackages.length) throw new Error(`Grammar packages got installed: ${grammarPackages}`);
+
   const unauthorized = await fetch(`${origin}/api/review`);
   if (unauthorized.status !== 401) throw new Error(`No token gave ${unauthorized.status}, not 401`);
   console.log('ok  refuses requests without the token');
