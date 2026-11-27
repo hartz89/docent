@@ -124,9 +124,9 @@ const GO_EXTRAS = `
 (source_file (var_declaration (var_spec name: (identifier) @name) @definition.constant))
 `;
 
-const GRAMMAR_FILES: Record<
-  SourceLanguage,
-  { wasm: GrammarFile; tags: GrammarFile[]; extras: string }
+/** Every file the grammars are loaded from. The npm package carries just these (scripts/pack.ts). */
+export const GRAMMAR_FILES: Readonly<
+  Record<SourceLanguage, { wasm: GrammarFile; tags: GrammarFile[]; extras: string }>
 > = {
   typescript: {
     wasm: { packages: ['tree-sitter-typescript'], path: 'tree-sitter-typescript.wasm' },

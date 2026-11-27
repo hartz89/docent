@@ -6,7 +6,8 @@
 //
 //   package.json          name, version, bin, exact dependencies, `files`
 //   npm-shrinkwrap.json   pins the whole dependency tree for everyone who installs it
-//   server/dist/cli.js    the CLI and server, bundled with @docent/core
+//   server/dist/          the CLI and server, and the parser worker it starts, bundled with @docent/core
+//   server/grammars/      just the Tree-sitter grammar files the parser reads, not their packages
 //   server/package.json   just "name", "type" and "version", read by the server at startup
 //   web/dist/             the built web app
 //   README.md, LICENSE, NOTICE, SECURITY.md, THIRD_PARTY_LICENSES.md
@@ -22,7 +23,9 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { GRAMMAR_FILES, type GrammarFile } from '@docent/core';
 import { build } from 'rolldown';
 import { licenseProblems } from './check-deps.ts';
 
@@ -68,17 +71,33 @@ const isExternal = (id: string) =>
 
 rmSync(out, { recursive: true, force: true });
 
+// The server starts the parser worker from its own file, next to cli.js, so it's an entry too.
 await build({
-  input: join(root, 'apps/server/src/cli.ts'),
+  input: {
+    cli: join(root, 'apps/server/src/cli.ts'),
+    'symbol-worker': join(root, 'apps/server/src/symbol-worker.ts'),
+  },
   platform: 'node',
   external: isExternal,
   write: true,
   output: {
-    file: join(out, 'server/dist/cli.js'),
+    dir: join(out, 'server/dist'),
     format: 'esm',
-    banner: '#!/usr/bin/env node',
+    entryFileNames: '[name].js',
+    chunkFileNames: '[name]-[hash].js',
+    banner: (chunk) => (chunk.name === 'cli' ? '#!/usr/bin/env node' : ''),
   },
 });
+
+// The grammar packages are mostly native sources and prebuilt binaries, ~60 MB with an install
+// script, and the parser reads only a few files from them. So those files ship instead, laid out
+// as symbol-worker.ts looks for them, and the packages stay out of the dependencies.
+const grammarDirs = new Set<string>();
+for (const file of Object.values(GRAMMAR_FILES).flatMap(({ wasm, tags }) => [wasm, ...tags])) {
+  const dir = grammarPackage(file);
+  grammarDirs.add(dir);
+  cpSync(join(dir, file.path), join(out, 'server/grammars', ...file.packages, file.path));
+}
 
 cpSync(webDist, join(out, 'web/dist'), { recursive: true });
 
@@ -116,7 +135,7 @@ write('package.json', {
 for (const file of ['README.md', 'LICENSE', 'NOTICE', 'SECURITY.md']) {
   cpSync(join(root, file), join(out, file));
 }
-writeFileSync(join(out, 'THIRD_PARTY_LICENSES.md'), thirdPartyLicenses());
+writeFileSync(join(out, 'THIRD_PARTY_LICENSES.md'), thirdPartyLicenses(grammarDirs));
 
 // A shrinkwrap is the one lockfile npm honors inside an installed package, so every user gets
 // exactly the tree resolved here, not whatever is newest on the day they run npx.
@@ -169,11 +188,18 @@ console.log(
   `Packed ${tarball}\n  ${kb(packed.size)} compressed, ${kb(packed.unpackedSize)} unpacked, ${packed.entryCount} files`,
 );
 
+/** The folder of the grammar package a file comes from, resolved as symbol-worker.ts does. */
+function grammarPackage({ packages }: GrammarFile): string {
+  let from = join(root, 'apps/server/package.json');
+  for (const name of packages) from = createRequire(from).resolve(`${name}/package.json`);
+  return dirname(from);
+}
+
 /**
- * The web app bundles its dependencies' code, so their license texts ship with it. The server's
- * npm dependencies install as packages and carry their own.
+ * The web app bundles its dependencies' code, and the grammar files are copied in, so their
+ * license texts ship with them. The server's npm dependencies install as packages and carry their own.
  */
-function thirdPartyLicenses(): string {
+function thirdPartyLicenses(grammarDirs: Iterable<string>): string {
   type Entry = { name: string; versions: string[]; license: string; paths: string[] };
   const byLicense = JSON.parse(
     execFileSync(
@@ -185,8 +211,16 @@ function thirdPartyLicenses(): string {
       },
     ),
   ) as Record<string, Entry[]>;
-  const entries = Object.values(byLicense)
-    .flat()
+  const grammars = [...grammarDirs].map((dir): Entry => {
+    const { name, version, license } = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+    return { name, versions: [version], license: license ?? 'Unknown', paths: [dir] };
+  });
+  const problems = licenseProblems(
+    grammars.map(({ name, versions, license }) => ({ name, version: versions.join(), license })),
+  );
+  if (problems.length > 0)
+    throw new Error(`pack: grammar license problems\n${problems.join('\n')}`);
+  const entries = [...Object.values(byLicense).flat(), ...grammars]
     .filter((entry) => !entry.name.startsWith('@docent/'))
     .sort((a, b) => a.name.localeCompare(b.name));
   const sections = entries.map((entry) => {
@@ -199,5 +233,5 @@ function thirdPartyLicenses(): string {
     const text = file ? readFileSync(join(dir, file), 'utf8').trim() : `License: ${entry.license}`;
     return `## ${entry.name}@${entry.versions.join(', ')} (${entry.license})\n\n\`\`\`\n${text}\n\`\`\``;
   });
-  return `# Third-party licenses\n\nThe web app in \`web/dist\` includes code and fonts from these packages.\n\n${sections.join('\n\n')}\n`;
+  return `# Third-party licenses\n\nThe web app in \`web/dist\` and the Tree-sitter grammars in \`server/grammars\` include code and fonts from these packages.\n\n${sections.join('\n\n')}\n`;
 }

@@ -1,6 +1,7 @@
 // Parses one file at a time for the symbol index, off the server's main thread. A hostile file
 // can exhaust the WASM parser's memory, and a parser that has failed once stays broken. So any
 // failure ends this worker, and the server starts a fresh one for the next file.
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -18,11 +19,16 @@ import * as treeSitter from 'web-tree-sitter';
 export type ParseRequest = { language: SourceLanguage; text: string; deadline: number };
 export type ParseReply = { symbols: FileSymbols | null };
 
-const locate = ({ packages, path }: GrammarFile) => {
-  let from = import.meta.filename;
-  for (const name of packages) from = createRequire(from).resolve(`${name}/package.json`);
-  return join(dirname(from), path);
-};
+// The npm package carries just the grammar files, in ../grammars (scripts/pack.ts), so users don't
+// install the grammar packages' native sources and build scripts. A checkout resolves the packages.
+const vendored = join(import.meta.dirname, '..', 'grammars');
+const locate = existsSync(vendored)
+  ? ({ packages, path }: GrammarFile) => join(vendored, ...packages, path)
+  : ({ packages, path }: GrammarFile) => {
+      let from = import.meta.filename;
+      for (const name of packages) from = createRequire(from).resolve(`${name}/package.json`);
+      return join(dirname(from), path);
+    };
 
 let grammars: Grammars;
 try {
