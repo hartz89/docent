@@ -398,6 +398,57 @@ describe('GET /api/review', () => {
     ]);
   });
 
+  test('a second repair numbers stops as the first left them, and no stop shows twice', async () => {
+    // The first repair adds a stop but leaves stop 2 broken. The second rewords stop 3 (the
+    // added one) and fixes stop 2 under a new title, by the numbers the first repair left.
+    const extra = {
+      kind: 'edge',
+      title: 'The old wildcard',
+      body: 'It is gone.',
+      citations: [cite('old', 2)],
+    };
+    const fixed = { ...goodTour.stops[1], flags: [], replaces: 2 };
+    const { runner, requests } = scripted(
+      gappyTour,
+      repairOf(extra),
+      repairOf({ ...extra, title: 'The wildcard, gone', replaces: 3 }, fixed),
+    );
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(requests[2]?.prompt).toContain(
+      "The tour's stops now, by number:\n1. intent: Why\n2. core_change: x\n3. edge: The old wildcard\n4. verdict_prompt: Your call",
+    );
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.stops.map((s) => [s.id, s.title])).toEqual([
+      ['stop-1', 'Why'],
+      ['stop-2', 'The origin is reflected'],
+      ['stop-3', 'The wildcard, gone'],
+      ['stop-4', 'Your call'],
+    ]);
+  });
+
+  test('a repair that replaces one stop twice is sent back', async () => {
+    const fixed = { ...goodTour.stops[1], flags: [], replaces: 2 };
+    const { runner, requests } = scripted(
+      gappyTour,
+      repairOf(fixed, { ...fixed, title: 'Again' }),
+      repairOf(fixed),
+    );
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(requests[2]?.prompt).toContain('The repair replaces stop 2 twice.');
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.stops.map((s) => s.title)).toEqual([
+      'Why',
+      'The origin is reflected',
+      'Your call',
+    ]);
+  });
+
   test('stops after two retries and shows what is still wrong', async () => {
     const { runner, requests } = scripted(gappyTour, repairOf(), repairOf(), goodTour);
     const { api } = await open(runner);
