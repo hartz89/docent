@@ -25,6 +25,7 @@ import {
 import { api } from './api.ts';
 import { CodeView } from './code-view.tsx';
 import { FileTree, type Place } from './file-tree.tsx';
+import { follow } from './follow.ts';
 import {
   back,
   canGoBack,
@@ -241,24 +242,21 @@ export function TourScreen({ snapshot, tour }: Props) {
 
   const stop = stops[index];
   // When the finished tour replaces the streamed stops, a repair may have added a stop before
-  // this one. Follow the stop the reviewer was reading, by its title, not its number.
-  const reading = useRef<{ stops: readonly StopView[]; title: string | null } | null>(null);
+  // this one, or retitled it. Follow the stop the reviewer was reading (see `follow`).
+  const reading = useRef<{ stops: readonly StopView[]; index: number } | null>(null);
   // A layout effect, so the wrong stop never shows for a frame.
   useLayoutEffect(() => {
     const was = reading.current;
-    const title = stops[index]?.title ?? null;
-    // Only a new list of stops re-selects; the reviewer moving changes the title on purpose.
-    if (was && was.stops !== stops && was.title !== null && title !== was.title) {
-      const moved = stops.findIndex((s) => s.title === was.title);
-      // A whole new tour may have dropped that stop: stay as close as the new route allows.
-      const next = moved !== -1 ? moved : Math.min(index, Math.max(0, stops.length - 1));
+    // Only a new list of stops re-selects; the reviewer moving changes the stop on purpose.
+    if (was && was.stops !== stops) {
+      const next = follow(was.stops, was.index, stops);
       if (next !== index) {
-        reading.current = { stops, title: stops[next]?.title ?? null };
+        reading.current = { stops, index: next };
         setIndex(next);
         return;
       }
     }
-    reading.current = { stops, title };
+    reading.current = { stops, index };
   }, [stops, index]);
   // The guide outlives each stop, so it would keep the last stop's scroll position. A stop seen
   // for the first time opens at the top; a revisited stop opens where it was left. The guide
