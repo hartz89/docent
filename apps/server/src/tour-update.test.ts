@@ -355,6 +355,76 @@ describe('a push updates the tour instead of writing a new one', () => {
   });
 });
 
+describe('retrying a failed update', () => {
+  test('stays an update from the earlier head, and only then moves the basis to the new head', async () => {
+    const git = await repo();
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-cache-'));
+    cleanup.push(cacheDir);
+    const first = await git.push(push1);
+    await review(git.at(first), scripted(firstTour).runner, cacheDir);
+    const file = join(cacheDir, 'tour-bases', 'acme__web', 'pr-7-claude-test-p4.json');
+    const basisHead = async () => JSON.parse(await readFile(file, 'utf8')).head;
+    expect(await basisHead()).toBe(first);
+
+    // The guide is down for the first try, then answers the retry like a normal update.
+    const second = await git.push(push2);
+    const answer = { stops: [{ ...vary, replaces: 3, body: 'The helper now names Accept too.' }] };
+    const requests: AgentRequest[] = [];
+    const runner: AgentRunner = async (request) => {
+      requests.push(request);
+      if (requests.length === 1) throw new Error('model unavailable');
+      return {
+        sessionId: 'session-1',
+        text: '',
+        structured: answer,
+        denials: [],
+        cost: cost(request.job, 1500),
+      } satisfies AgentReply;
+    };
+    const opened = new Review({
+      source: git.at(second),
+      runner,
+      locator: fixedSession({ found: false, reason: 'none' }),
+      model: 'claude-test',
+      cacheDir,
+    });
+    await opened.done;
+    expect(opened.snapshot().tour.state).toBe('failed');
+    // The failed update left the basis where it was: the next try still starts from the first head.
+    expect(await basisHead()).toBe(first);
+
+    // `done` covers only the first try. The retry's state is working from the moment it starts,
+    // so subscribing right after it begins sees its end, not the failure before it.
+    expect(opened.retry()).toBe(true);
+    const settled = new Promise<void>((resolve) => {
+      opened.subscribe((state) => {
+        if (state.state === 'ready' || state.state === 'failed') resolve();
+      });
+    });
+    await settled;
+    await opened.close();
+    const tour = opened.snapshot().tour;
+    if (tour.state !== 'ready') throw new Error(`Tour is ${tour.state}: ${JSON.stringify(tour)}`);
+
+    // Both tries asked for an update of the earlier tour, not a whole new one.
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.prompt).toContain('This is an update of an earlier tour');
+      expect(request.prompt).toContain('2. [kept] core_change: The origin is reflected');
+    }
+    // The reviewer gets the kept stops, with the rewritten one marked.
+    expect(tour.update).toEqual(expect.objectContaining({ from: first, dropped: 0 }));
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.stops.map((s) => [s.title, s.updated])).toEqual([
+      ['Why', false],
+      ['The origin is reflected', false],
+      ['A helper names what varies', true],
+      ['Your call', false],
+    ]);
+    expect(await basisHead()).toBe(second);
+  });
+});
+
 describe('a push can never slip a change past an update', () => {
   // A second changed file the first tour leaves off its route: a check, then an audit call.
   const guard = (lines: string[]) => ({
