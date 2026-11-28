@@ -1281,6 +1281,7 @@ function withAuthor(
     if (!request.fork) return guide.runner(request);
     if (request.keepIn !== undefined) {
       primers.push(request);
+      request.signal?.throwIfAborted();
       await options.primerGate;
       if (options.failPrimer && primers.length === 1) {
         const subtype =
@@ -1301,10 +1302,10 @@ function withAuthor(
       };
     }
     forks.push(request);
+    // As the real runner does: an abort listener never fires for a signal that's already
+    // aborted, so a deadline that passed before the fork started must be checked first.
+    request.signal?.throwIfAborted();
     if (options.hold) {
-      // As the real runner does: an abort listener never fires for a signal that's already
-      // aborted, so a deadline that passed before the fork started must be checked first.
-      request.signal?.throwIfAborted();
       await new Promise<void>((resolve, reject) => {
         releases.push(resolve);
         request.signal?.addEventListener('abort', () => reject(new Error('aborted')));
@@ -1801,6 +1802,9 @@ describe('POST /api/questions', () => {
     expect(await (await res).json()).toMatchObject({
       answer: { source: 'guide', whyNotAuthor: "The author's session took longer than 1 second" },
     });
+    // It got as far as the fork, with the deadline already gone.
+    expect(author.forks).toHaveLength(1);
+    expect(author.forks[0]?.signal?.aborted).toBe(true);
   });
 
   test('when the reviewer goes away, the fork is aborted and nothing else runs', async () => {
