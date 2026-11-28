@@ -1,6 +1,7 @@
 // Reads the tour's JSON while the model is still writing it, and hands back each stop the moment
 // its object closes. It only finds the boundaries: every stop it returns is still raw model output,
-// and goes through the same checks as a finished tour before anyone sees it.
+// and goes through the same checks as a finished tour before anyone sees it. It also collects the
+// route, the stop titles some prompts ask for ahead of the stops, one title as each one closes.
 
 /** Finds complete stops in the top-level `stops` array of a growing JSON text. */
 export class StopScanner {
@@ -14,6 +15,9 @@ export class StopScanner {
   #key = '';
   #inStops = false;
   #stopsDone = false;
+  #inRoute = false;
+  #routeDone = false;
+  #route: string[] = [];
   #stopStart = -1;
   #started = 0;
   #broken = false;
@@ -21,6 +25,14 @@ export class StopScanner {
   /** How many stops the model has begun writing so far. */
   get started(): number {
     return this.#started;
+  }
+
+  /**
+   * The route's titles closed so far, raw from the model: the top-level `route` array's strings.
+   * Anything else in that array is ignored.
+   */
+  get route(): readonly string[] {
+    return this.#route;
   }
 
   /**
@@ -43,6 +55,10 @@ export class StopScanner {
         else if (ch === '"') {
           this.#inString = false;
           if (this.#depth === 1) this.#key = text.slice(this.#stringStart + 1, this.#at);
+          else if (this.#inRoute && this.#depth === 2) {
+            const title = parse(text.slice(this.#stringStart, this.#at + 1));
+            if (typeof title === 'string') this.#route.push(title);
+          }
         }
         continue;
       }
@@ -52,6 +68,8 @@ export class StopScanner {
       } else if (ch === '{' || ch === '[') {
         if (ch === '[' && this.#depth === 1 && this.#key === 'stops' && !this.#stopsDone) {
           this.#inStops = true;
+        } else if (ch === '[' && this.#depth === 1 && this.#key === 'route' && !this.#routeDone) {
+          this.#inRoute = true;
         } else if (ch === '{' && this.#inStops && this.#depth === 2) {
           this.#stopStart = this.#at;
           this.#started++;
@@ -65,6 +83,9 @@ export class StopScanner {
         } else if (this.#inStops && this.#depth === 1 && ch === ']') {
           this.#inStops = false;
           this.#stopsDone = true;
+        } else if (this.#inRoute && this.#depth === 1 && ch === ']') {
+          this.#inRoute = false;
+          this.#routeDone = true;
         }
       }
     }

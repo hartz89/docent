@@ -1,4 +1,5 @@
-// Jump to definition and imports, through the real endpoints, over a real git repo. The index
+// Jump to definition, imports and find references, through the real endpoints, over a real git
+// repo. The index
 // reads untrusted PR code, so these tests also try to make it read something it shouldn't.
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
@@ -10,6 +11,7 @@ import { hc } from 'hono/client';
 import { beforeAll, describe, expect, test, vi } from 'vitest';
 import { type AppType, createApp } from './app.ts';
 import { fixedSession } from './author-session.ts';
+import { commitReader } from './github.ts';
 import { gitHeadFiles, type HeadFiles } from './head-files.ts';
 import { Review } from './review.ts';
 import { INDEX_LIMITS, type IndexLimits } from './symbols.ts';
@@ -97,6 +99,7 @@ async function serve(
   limits: Partial<IndexLimits> = {},
   files: () => Promise<HeadFiles> = () => gitHeadFiles(repo, head),
   indexRetryMs = 30_000,
+  diffText = '',
 ) {
   let listings = 0;
   const review = new Review({
@@ -114,13 +117,14 @@ async function serve(
         headRef: 'symbols',
         handoff: null,
       },
-      diffText: '',
+      diffText,
       commitMessages: [],
       commitShas: [],
       headInBaseRepo: true,
       dir: repo,
       readFile: async () => null,
       open: async () => ({ kind: 'missing' }),
+      openAll: commitReader(repo, head, head).openAll,
       tree: async () => ({ entries: [], truncated: false }),
       baseGitattributes: async () => new Map(),
       findWords: async () => new Map(),
@@ -217,10 +221,10 @@ describe('GET /api/definition', () => {
     const { index } = await definition(capped.api, { symbol: 'helper' });
     expect(index).toMatchObject({ state: 'partial', reason: 'files' });
     expect(index.files).toBeLessThanOrEqual(2);
-    // The total of definitions, imports and exports is capped too, for memory.
-    const dense = await serve({ entries: 4 });
+    // The memory held for definitions, imports and exports is capped too.
+    const dense = await serve({ symbolBytes: 400 });
     const denseIndex = (await definition(dense.api, { symbol: 'helper' })).index;
-    expect(denseIndex).toMatchObject({ state: 'partial', reason: 'entries' });
+    expect(denseIndex).toMatchObject({ state: 'partial', reason: 'memory' });
     expect(denseIndex.files).toBeLessThan(6);
     const timed = await serve({ ms: -1 });
     expect(await definition(timed.api, { symbol: 'helper' })).toMatchObject({
@@ -286,6 +290,25 @@ describe('GET /api/definition', () => {
     logged.mockRestore();
   }, 15_000);
 
+  test('a file the parser gives up on in time is logged as skipped too', async () => {
+    // With no time per file the parser cancels itself, usually before its grace period ends. A
+    // loaded machine decides which way it stops, so either way it must be logged the same.
+    const files = { 'a/slow.ts': 'export function f() { return [1, 2, 3]; }\n'.repeat(2_000) };
+    const { api } = await serve({ fileMs: 0 }, async () => ({
+      entries: Object.entries(files).map(([path, text]) => ({ path, bytes: text.length })),
+      truncated: false,
+      read: async function* (paths) {
+        for (const path of paths) yield { path, text: files[path as keyof typeof files] };
+      },
+    }));
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const found = await definition(api, { symbol: 'f' });
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('"a/slow.ts"'));
+    logged.mockRestore();
+    expect(found.candidates).toEqual([]);
+    expect(found.index).toMatchObject({ files: 0, skipped: 1 });
+  });
+
   test('after a few files that break the parser, only small files are tried', async () => {
     // Found by the security review: enough hostile files would spend the whole time budget.
     const bomb = 'a<b,\n'.repeat(20_000);
@@ -348,5 +371,70 @@ describe('GET /api/import', () => {
     expect(await resolve('./later')).toBeNull();
     const bad = await api.import.$get({ query: { from: 'src/app.ts', spec: 'a\nb' } });
     expect(bad.status).toBe(400);
+  });
+});
+
+describe('GET /api/references', () => {
+  const changeLib = [
+    'diff --git a/src/lib.ts b/src/lib.ts',
+    '--- a/src/lib.ts',
+    '+++ b/src/lib.ts',
+    '@@ -1 +1 @@',
+    '-export function helper() { }',
+    '+export function helper() {}',
+    '',
+  ].join('\n');
+
+  test('every line that uses a name, by file, changed files first, each with its text', async () => {
+    const { api } = await serve({}, undefined, undefined, changeLib);
+    const res = await api.references.$get({ query: { symbol: 'helper' } });
+    if (res.status !== 200) throw new Error(`answered ${res.status}`);
+    const found = await res.json();
+    // At head only: not the later push, the edit on disk, or vendored and skipped files.
+    expect(found.files).toEqual([
+      {
+        path: 'src/lib.ts',
+        changed: true,
+        lines: [{ line: 1, text: 'export function helper() {}' }],
+      },
+      {
+        path: 'src/app.ts',
+        changed: false,
+        lines: [
+          { line: 1, text: "import { helper } from './lib';" },
+          { line: 5, text: 'return helper(new Widget());' },
+        ],
+      },
+      { path: 'tools/helper.py', changed: false, lines: [{ line: 1, text: 'def helper():' }] },
+    ]);
+    expect(found).toMatchObject({ total: 4, truncated: false, index: { state: 'complete' } });
+    expect(found.index.usesFiles).toBe(found.index.files);
+  });
+
+  test('past the memory for uses, later files keep their definitions, and the status says so', async () => {
+    const { api } = await serve({ useBytes: 1 });
+    const res = await api.references.$get({ query: { symbol: 'helper' } });
+    if (res.status !== 200) throw new Error(`answered ${res.status}`);
+    const found = await res.json();
+    expect(found.files).toEqual([]);
+    expect(found.index).toMatchObject({ state: 'complete', usesFiles: 0, files: 6 });
+    // Jump to definition still works.
+    expect((await definition(api, { symbol: 'helper' })).candidates).toHaveLength(2);
+  });
+
+  test('a failed index answers 500; bad input 400; no token 401', async () => {
+    const failing = await serve({}, async () => {
+      throw new Error('git is gone');
+    });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failed = await failing.api.references.$get({ query: { symbol: 'helper' } });
+    logged.mockRestore();
+    expect(failed.status).toBe(500);
+
+    const { api, app } = await serve();
+    for (const symbol of ['', 'a.b', 'x'.repeat(201)]) {
+      expect((await api.references.$get({ query: { symbol } })).status, symbol).toBe(400);
+    }
+    expect((await app.request(`${origin}/api/references?symbol=helper`)).status).toBe(401);
   });
 });

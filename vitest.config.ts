@@ -11,6 +11,7 @@ export default defineConfig({
         test: { name: 'claude-code', root: 'packages/claude-code', include: ['test/**/*.test.ts'] },
       },
       { test: { name: 'server', root: 'apps/server', include: ['src/**/*.test.ts'] } },
+      { test: { name: 'web', root: 'apps/web', include: ['src/**/*.test.ts'] } },
       { test: { name: 'scripts', root: 'scripts', include: ['*.test.ts'] } },
     ],
   },

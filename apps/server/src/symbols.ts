@@ -1,4 +1,5 @@
-// Builds the symbol index for jump to definition and imports, from the PR's files at head.
+// Builds the symbol index for jump to definition, imports and find references, from the PR's
+// files at head.
 // The PR's code is untrusted: it's only ever parsed, by WASM grammars, and never run. Parsing
 // happens in a worker thread that's thrown away if a file breaks it, so the server stays up and
 // responsive. Indexing is capped in files, bytes and time, so a huge or hostile repo gets a
@@ -19,8 +20,16 @@ export type IndexLimits = {
   ms: number;
   /** Time for one file; a slower one is skipped. */
   fileMs: number;
-  /** Definitions, imports and exports held in all, which bounds the index's memory. */
-  entries: number;
+  /**
+   * Memory held for definitions, imports and exports across files, as estimated by
+   * `symbolBytes`. Past it, the index stops.
+   */
+  symbolBytes: number;
+  /**
+   * Memory held for uses (find references) across files, as estimated by `useBytes`. Past it,
+   * later files keep their definitions but not their uses.
+   */
+  useBytes: number;
 };
 
 export const INDEX_LIMITS: IndexLimits = {
@@ -29,18 +38,23 @@ export const INDEX_LIMITS: IndexLimits = {
   totalBytes: 64 * 1024 * 1024,
   ms: 20_000,
   fileMs: 1_000,
-  entries: 500_000,
+  symbolBytes: 64 * 1024 * 1024,
+  useBytes: 128 * 1024 * 1024,
 };
 
-/** Why an index stopped early. */
-/** `wary`: files kept breaking the parser, so larger ones after them were skipped. */
-export type PartialReason = 'time' | 'files' | 'bytes' | 'entries' | 'listing' | 'wary';
+/**
+ * Why an index stopped early. `wary`: files kept breaking the parser, so larger ones after them
+ * were skipped. `memory`: the symbols held reached `symbolBytes`.
+ */
+export type PartialReason = 'time' | 'files' | 'bytes' | 'memory' | 'listing' | 'wary';
 
 /**
  * How much of the repo the index covers. `skipped` counts files in a known language that weren't
- * indexed. Partial means the index stopped early, so a candidate may be missing.
+ * indexed. Partial means the index stopped early, so a candidate may be missing. `usesFiles`
+ * counts the indexed files whose uses are kept: fewer than `files` once uses reach `useBytes`,
+ * so references may be missing then too.
  */
-export type IndexStatus = { files: number; skipped: number; ms: number } & (
+export type IndexStatus = { files: number; skipped: number; usesFiles: number; ms: number } & (
   | { state: 'complete' }
   | { state: 'partial'; reason: PartialReason }
 );
@@ -125,7 +139,9 @@ export async function buildIndex(
   );
   const parser = new ParserWorker();
   let strikes = 0;
-  let entries = 0;
+  let heldSymbols = 0;
+  let heldUses = 0;
+  let usesFiles = 0;
   try {
     for await (const { path, text } of head.read(toRead, stop.signal)) {
       read++;
@@ -150,15 +166,22 @@ export async function buildIndex(
       const began = Date.now();
       const parsed = await parser.parse(path, language, text, ms, deadline);
       if (parsed) {
-        entries +=
-          parsed.definitions.length +
-          parsed.imports.length +
-          parsed.exports.length +
-          parsed.exportsAll.length;
-        // Many small, dense files could otherwise hold hundreds of MB between them.
-        if (entries > limits.entries) {
-          reason ??= 'entries';
+        // Many small, dense files could otherwise hold hundreds of MB between them. Uses are by
+        // far the most, so they run out first, and later files still get jump to definition.
+        heldSymbols += symbolBytes(parsed);
+        if (heldSymbols > limits.symbolBytes) {
+          reason ??= 'memory';
           break;
+        }
+        const uses = useBytes(parsed);
+        if (heldUses + uses <= limits.useBytes) {
+          heldUses += uses;
+          usesFiles++;
+        } else {
+          // Once one file's uses don't fit, none after it are kept, so references cover a
+          // clear set of files rather than whichever happened to be small.
+          heldUses = Number.POSITIVE_INFINITY;
+          parsed.uses = [];
         }
         symbols.set(path, parsed);
       }
@@ -183,12 +206,36 @@ export async function buildIndex(
   const counts = {
     files: symbols.size,
     skipped: sources.length - symbols.size,
+    usesFiles,
     ms: Math.round(Date.now() - started),
   };
   return {
     index,
     status: reason ? { ...counts, state: 'partial', reason } : { ...counts, state: 'complete' },
   };
+}
+
+// Rough sizes of what V8 holds: an object with its fields, and a string's header. Only the
+// order of magnitude matters, so a dense file can't slip under a cap meant for real code.
+const OBJECT_BYTES = 64;
+const STRING_BYTES = 24;
+const text = (s: string) => STRING_BYTES + 2 * s.length;
+
+/** About how much memory a file's definitions, imports and exports hold. */
+export function symbolBytes(file: FileSymbols): number {
+  let bytes = 0;
+  for (const d of file.definitions) bytes += OBJECT_BYTES + text(d.name);
+  for (const i of file.imports) bytes += OBJECT_BYTES + text(i.local) + text(i.imported);
+  for (const e of file.exports) bytes += OBJECT_BYTES + text(e.name);
+  for (const spec of file.exportsAll) bytes += text(spec);
+  return bytes;
+}
+
+/** About how much memory a file's uses hold: an entry per name, and a number per line. */
+export function useBytes(file: FileSymbols): number {
+  let bytes = 0;
+  for (const use of file.uses) bytes += OBJECT_BYTES + text(use.name) + 8 * use.lines.length;
+  return bytes;
 }
 
 /**
@@ -215,12 +262,14 @@ class ParserWorker {
         worker.off('message', onMessage);
         worker.off('exit', onExit);
         worker.off('error', onError);
-        if (broken) {
+        // Logged however the file was stopped: the parser may cancel itself just in time, or be
+        // stopped here after its grace period. Which one wins depends on load, not on the file.
+        if (symbols === null) {
           console.error(
             `Docent skipped ${JSON.stringify(path)}: the parser failed or ran too long.`,
           );
-          this.#stop(worker);
         }
+        if (broken) this.#stop(worker);
         resolve(symbols);
       };
       const onMessage = (reply: ParseReply) => done(reply.symbols, false);

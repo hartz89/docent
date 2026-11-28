@@ -43,8 +43,18 @@ export async function launch(
     output,
     dataDir,
     stop: async () => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      const exited = once(child, 'exit');
       child.kill();
-      await once(child, 'exit');
+      // A server that won't stop is a bug worth its own message, not a 30 s test timeout.
+      const stopped = await Promise.race([
+        exited.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000).unref()),
+      ]);
+      if (stopped) return;
+      child.kill('SIGKILL');
+      await exited;
+      throw new Error(`${entry} was still running 5 s after SIGTERM, so it was killed.`);
     },
   };
 }

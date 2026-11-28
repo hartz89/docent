@@ -4,11 +4,13 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile as readFileText, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, sep } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Job, MicroUsd } from '@docent/core';
 import type { AgentReply, AgentRequest, AgentRunner } from './agent.ts';
 import {
   fileFromText,
   isSafeRepoPath,
+  openEach,
   type PrInfo,
   type PrSource,
   type RepoTree,
@@ -45,6 +47,8 @@ export function fixtureSource(dir: string, record: ReviewRecorder = printReview)
       const file = fileAt(dir, side, path);
       return isSafeRepoPath(path) && existsSync(file) ? readFileText(file, 'utf8') : null;
     };
+    const open = async (side: 'old' | 'new', path: string) =>
+      fileFromText(await readFile(side, path));
     return {
       pr,
       diffText: await readFileText(join(dir, 'diff.patch'), 'utf8'),
@@ -54,7 +58,8 @@ export function fixtureSource(dir: string, record: ReviewRecorder = printReview)
       headInBaseRepo: false,
       dir: join(dir, 'files', 'head'),
       readFile,
-      open: async (side, path) => fileFromText(await readFile(side, path)),
+      open,
+      openAll: openEach(open),
       // The recorded tree, or none: older fixtures didn't record one.
       tree: async () => {
         const file = join(dir, 'tree.json');
@@ -149,7 +154,8 @@ async function recordedHeadFiles(root: string): Promise<HeadFiles> {
 /**
  * Replays the recorded replies for each job in order, repeating the last one. With `paceMs`, a
  * structured reply is written out 40 characters at a time, that many milliseconds apart, the way
- * a live guide streams it, so the screen can be seen filling in.
+ * a live guide streams it, so the screen can be seen filling in. Like the SDK, it stops when the
+ * request's signal aborts.
  */
 export function fixtureRunner(dir: string, options: { paceMs?: number } = {}): AgentRunner {
   let replies: RecordedReplies | undefined;
@@ -166,7 +172,7 @@ export function fixtureRunner(dir: string, options: { paceMs?: number } = {}): A
     if (options.paceMs && reply.structured !== undefined && request.onOutput) {
       const json = JSON.stringify(reply.structured);
       for (let at = 40; at < json.length + 40; at += 40) {
-        await new Promise((resolve) => setTimeout(resolve, options.paceMs));
+        await sleep(options.paceMs, undefined, request.signal ? { signal: request.signal } : {});
         request.onOutput(json.slice(0, Math.min(at, json.length)));
       }
     }
@@ -201,6 +207,14 @@ export function recording(
           const file = await workspace.open(side, path);
           if (file.kind === 'text') await save(fileAt(dir, side, path), file.text);
           return file;
+        },
+        // Skip proofs read through here, so a replay's proofs see the same files.
+        openAll: async (side, paths) => {
+          const files = await workspace.openAll(side, paths);
+          for (const [path, file] of files) {
+            if (file.kind === 'text') await save(fileAt(dir, side, path), file.text);
+          }
+          return files;
         },
         tree: async () => {
           const tree = await workspace.tree();

@@ -91,6 +91,15 @@ export function createApp({
       },
     )
     .get('/api/review', (c) => (review ? c.json(review.snapshot(), 200) : c.json(noReview, 404)))
+    // The reviewer's "Try again" on a failed tour. Only a failed tour restarts, so a second
+    // click, or one while the tour is still being written, pays for nothing.
+    .post('/api/review/retry', (c) => {
+      if (!review) return c.json(noReview, 404);
+      if (!review.retry()) {
+        return c.json({ error: "The tour hasn't failed, so there's nothing to try again." }, 409);
+      }
+      return c.json({ tour: review.snapshot().tour }, 202);
+    })
     // Tour progress as server-sent events: the current state first, then every change.
     .get('/api/review/events', (c) => {
       if (!review) return c.json(noReview, 404);
@@ -195,6 +204,28 @@ export function createApp({
               : { path: from };
         try {
           const found = await review.definitions(symbol, at);
+          if (!found) return c.json(stillLoading, 503);
+          return c.json({ symbol, ...found }, 200);
+        } catch {
+          return c.json(indexFailed, 500);
+        }
+      },
+    )
+    // Find references: every line at the PR's head that uses a name, by file, changed files first.
+    .get(
+      '/api/references',
+      validator('query', (query, c) => {
+        const { symbol } = query;
+        if (typeof symbol !== 'string' || !SYMBOL.test(symbol)) {
+          return c.json({ error: 'Send a symbol: one identifier, up to 200 characters' }, 400);
+        }
+        return { symbol };
+      }),
+      async (c) => {
+        if (!review) return c.json(noReview, 404);
+        const { symbol } = c.req.valid('query');
+        try {
+          const found = await review.references(symbol);
           if (!found) return c.json(stillLoading, 503);
           return c.json({ symbol, ...found }, 200);
         } catch {

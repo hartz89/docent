@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createAdaptorServer } from '@hono/node-server';
+import { getRequestListener } from '@hono/node-server';
 import { createApp } from './app.ts';
 import type { Review } from './review.ts';
 import type { RunLog } from './run-log.ts';
@@ -21,11 +22,15 @@ export type {
   Step,
   TourState,
 } from './review.ts';
-export type { AnchorView, NoteView, StopView, TourOutcome, TourView } from './tour.ts';
+export type { AnchorView, NoteView, RefView, StopView, TourOutcome, TourView } from './tour.ts';
 
 // Resolves from both src/ and dist/, which sit at the same depth.
 const packageJson = new URL('../package.json', import.meta.url);
-export const { version } = JSON.parse(readFileSync(packageJson, 'utf8')) as { version: string };
+export const { version, name: packageName } = JSON.parse(readFileSync(packageJson, 'utf8')) as {
+  version: string;
+  /** What npm knows Docent as. The packed package's copy names the published package. */
+  name: string;
+};
 
 export type StartOptions = {
   /** Folder holding the built web app. Leave it out in dev, where Vite serves the app. */
@@ -54,9 +59,12 @@ export async function startServer({ webRoot, review, log }: StartOptions): Promi
   // The app needs the origin, and the origin needs the port, which we only
   // know after listening. Requests can't arrive before `app` is set below.
   let app: ReturnType<typeof createApp> | undefined;
-  const server = createAdaptorServer({
-    fetch: (request) => app?.fetch(request) ?? new Response('Starting', { status: 503 }),
-  });
+  // Plain HTTP/1.1, which can drop its open connections when it stops (see `close`).
+  const server = createServer(
+    getRequestListener(
+      (request) => app?.fetch(request) ?? new Response('Starting', { status: 503 }),
+    ),
+  );
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
 
@@ -74,6 +82,13 @@ export async function startServer({ webRoot, review, log }: StartOptions): Promi
   return {
     origin,
     token,
-    close: () => new Promise((resolve, reject) => server.close((e) => (e ? reject(e) : resolve()))),
+    close: () =>
+      new Promise((resolve, reject) => {
+        server.close((e) => (e ? reject(e) : resolve()));
+        // `close` waits for every connection to end, and some never do on their own: a browser
+        // following the tour holds its progress stream open until the tour is written. On a slow
+        // machine that can outlast the shutdown, so the process hung. Stopping means stopping.
+        server.closeAllConnections();
+      }),
   };
 }

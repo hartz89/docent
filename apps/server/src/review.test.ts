@@ -1,6 +1,7 @@
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type CostRecord, commitSha, type Job, type MicroUsd, sessionId } from '@docent/core';
 import { hc } from 'hono/client';
@@ -15,7 +16,7 @@ import {
   type SessionLocator,
 } from './author-session.ts';
 import { fixtureRunner, recording } from './fixture.ts';
-import { fileFromText, GitHubRefusal, type PrSource, type ReviewPost } from './github.ts';
+import { fileFromText, GitHubRefusal, openEach, type PrSource, type ReviewPost } from './github.ts';
 import { KEEP_DAYS, KEEP_FILES, MAX_FILE_BYTES, MAX_QUESTIONS } from './questions.ts';
 import { Review, type ReviewOptions, type TourState, tourCacheName } from './review.ts';
 import { RunLog } from './run-log.ts';
@@ -96,6 +97,9 @@ const sourceFor =
         return (side === 'new' ? head : base)[path] ?? null;
       },
       open: async (side, path) => fileFromText((side === 'new' ? head : base)[path] ?? null),
+      openAll: openEach(async (side, path) =>
+        fileFromText((side === 'new' ? head : base)[path] ?? null),
+      ),
       tree: async () => ({
         entries: Object.keys(head).map((path) => ({ path, kind: 'file' as const })),
         truncated: false,
@@ -396,6 +400,57 @@ describe('GET /api/review', () => {
     ]);
   });
 
+  test('a second repair numbers stops as the first left them, and no stop shows twice', async () => {
+    // The first repair adds a stop but leaves stop 2 broken. The second rewords stop 3 (the
+    // added one) and fixes stop 2 under a new title, by the numbers the first repair left.
+    const extra = {
+      kind: 'edge',
+      title: 'The old wildcard',
+      body: 'It is gone.',
+      citations: [cite('old', 2)],
+    };
+    const fixed = { ...goodTour.stops[1], flags: [], replaces: 2 };
+    const { runner, requests } = scripted(
+      gappyTour,
+      repairOf(extra),
+      repairOf({ ...extra, title: 'The wildcard, gone', replaces: 3 }, fixed),
+    );
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(requests[2]?.prompt).toContain(
+      "The tour's stops now, by number:\n1. intent: Why\n2. core_change: x\n3. edge: The old wildcard\n4. verdict_prompt: Your call",
+    );
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.stops.map((s) => [s.id, s.title])).toEqual([
+      ['stop-1', 'Why'],
+      ['stop-2', 'The origin is reflected'],
+      ['stop-3', 'The wildcard, gone'],
+      ['stop-4', 'Your call'],
+    ]);
+  });
+
+  test('a repair that replaces one stop twice is sent back', async () => {
+    const fixed = { ...goodTour.stops[1], flags: [], replaces: 2 };
+    const { runner, requests } = scripted(
+      gappyTour,
+      repairOf(fixed, { ...fixed, title: 'Again' }),
+      repairOf(fixed),
+    );
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(requests[2]?.prompt).toContain('The repair replaces stop 2 twice.');
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.stops.map((s) => s.title)).toEqual([
+      'Why',
+      'The origin is reflected',
+      'Your call',
+    ]);
+  });
+
   test('stops after two retries and shows what is still wrong', async () => {
     const { runner, requests } = scripted(gappyTour, repairOf(), repairOf(), goodTour);
     const { api } = await open(runner);
@@ -454,6 +509,235 @@ describe('GET /api/review', () => {
     expect(second.requests).toHaveLength(1);
   });
 
+  test('two Docents opening the same PR pay for one tour, and both get it', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    // One model, shared, held until the second Docent is seen waiting.
+    const model = scripted(goodTour, goodTour);
+    const { promise: release, resolve } = Promise.withResolvers<void>();
+    const runner: AgentRunner = async (request) => {
+      await release;
+      return model.runner(request);
+    };
+    const reviews = [0, 1].map(
+      () =>
+        new Review({
+          source: sourceFor(fakeGitHub()),
+          runner,
+          locator: noAuthor,
+          model: 'm',
+          cacheDir,
+        }),
+    );
+    const waits: string[] = [];
+    for (const review of reviews) {
+      review.subscribe((tour) => {
+        if (tour.state === 'working' && tour.detail?.includes('another Docent')) {
+          waits.push(tour.detail);
+        }
+      });
+    }
+
+    await vi.waitFor(() => expect(waits.length).toBeGreaterThan(0));
+    resolve();
+    await Promise.all(reviews.map((r) => r.done));
+
+    expect(model.requests.filter((r) => r.job === 'tour')).toHaveLength(1);
+    const tours = reviews.map((r) => ready(r.snapshot().tour));
+    expect(tours.map((t) => t.tour)).toEqual([tours[0]?.tour, tours[0]?.tour]);
+    expect(tours.map((t) => t.cached).sort()).toEqual([false, true]);
+    expect(waits[0]).toBe(
+      'A tour for this PR is being written by another Docent, about 2 min left',
+    );
+  });
+
+  test.each([
+    // A process that has exited, so its pid is gone.
+    ['died', () => ({ pid: spawnSync(process.execPath, ['-e', '']).pid, host: hostname() }), 0],
+    // Alive as far as anyone can tell, but its heartbeat stopped a minute ago.
+    ['hung on another machine', () => ({ pid: process.pid, host: 'elsewhere' }), 60],
+  ])(
+    'a lock left by a Docent that %s is broken, and the tour is written',
+    async (_, holder, ageS) => {
+      const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+      await open(scripted(goodTour).runner, cacheDir);
+      const [tourFile] = await readdir(join(cacheDir, 'tours', 'acme__web'));
+      const cached = join(cacheDir, 'tours', 'acme__web', tourFile ?? '');
+      await rm(cached);
+      const lock = `${cached}.lock`;
+      await writeFile(lock, JSON.stringify({ ...holder(), startedAt: Date.now(), token: 'old' }));
+      const then = new Date(Date.now() - ageS * 1000);
+      await utimes(lock, then, then);
+      const second = scripted(goodTour);
+
+      const { review } = await open(second.runner, cacheDir);
+
+      expect(second.requests).toHaveLength(1);
+      expect(ready(review.snapshot().tour).cached).toBe(false);
+      expect(existsSync(lock)).toBe(false);
+    },
+  );
+
+  test('when the Docent writing the tour fails, the one waiting writes it', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    const { promise: release, resolve } = Promise.withResolvers<void>();
+    // The first Docent's model fails once released; the second's works.
+    const failing: AgentRunner = async () => {
+      await release;
+      throw new Error('model unavailable');
+    };
+    const second = scripted(goodTour);
+    const first = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: failing,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await vi.waitFor(async () =>
+      expect(await readdir(join(cacheDir, 'tours', 'acme__web'))).toHaveLength(1),
+    );
+    const waiter = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: second.runner,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await vi.waitFor(() =>
+      expect(waiter.snapshot().tour).toMatchObject({ detail: expect.stringContaining('another') }),
+    );
+    resolve();
+    await Promise.all([first.done, waiter.done]);
+
+    expect(first.snapshot().tour.state).toBe('failed');
+    expect(second.requests).toHaveLength(1);
+    expect(ready(waiter.snapshot().tour).cached).toBe(false);
+  });
+
+  test('closing mid-repair stops the guide, lets go of the lock, and caches nothing', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    const tours = join(cacheDir, 'tours', 'acme__web');
+    const requests: AgentRequest[] = [];
+    const aborted = vi.fn();
+    // The first attempt needs a repair. The repair runs until it's stopped, as the SDK does.
+    const runner: AgentRunner = async (request) => {
+      requests.push(request);
+      if (requests.length === 1) return scripted(gappyTour).runner(request);
+      const signal = request.signal;
+      if (!signal) throw new Error('The repair got no abort signal.');
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+      aborted();
+      throw new AgentError('The agent stopped without an answer (aborted)', cost('tour', 200));
+    };
+    const review = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+
+    await review.close();
+
+    expect(aborted).toHaveBeenCalledOnce();
+    expect(requests.every((r) => r.signal === requests[0]?.signal)).toBe(true);
+    // No lock left behind, and no half-repaired tour for the next Docent to load.
+    expect(await readdir(tours)).toEqual([]);
+    await review.done;
+    expect(review.snapshot().tour).toMatchObject({ state: 'failed' });
+    expect(requests).toHaveLength(2);
+  });
+
+  test('when the Docent writing the tour is closed, the one waiting writes it', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    const started = Promise.withResolvers<void>();
+    const stopped = vi.fn();
+    const writing: AgentRunner = async (request) => {
+      started.resolve();
+      await new Promise((resolve) =>
+        request.signal?.addEventListener('abort', resolve, { once: true }),
+      );
+      stopped();
+      throw new Error('aborted');
+    };
+    const first = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: writing,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await started.promise;
+    const second = scripted(goodTour);
+    const waiter = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: second.runner,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await vi.waitFor(() =>
+      expect(waiter.snapshot().tour).toMatchObject({ detail: expect.stringContaining('another') }),
+    );
+
+    await first.close();
+    await waiter.done;
+
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(second.requests).toHaveLength(1);
+    expect(ready(waiter.snapshot().tour).cached).toBe(false);
+  });
+
+  test('a Docent closed while the PR still loads never starts the guide', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    const model = scripted(goodTour);
+    const review = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: model.runner,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+
+    await review.close();
+    await review.done;
+
+    expect(model.requests).toHaveLength(0);
+    expect(review.snapshot().tour).toMatchObject({ state: 'failed' });
+    expect(await readdir(join(cacheDir, 'tours', 'acme__web'))).toEqual([]);
+  });
+
+  test('a Docent closed while it waits on another stops waiting, and writes nothing', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    await open(scripted(goodTour).runner, cacheDir);
+    const [tourFile] = await readdir(join(cacheDir, 'tours', 'acme__web'));
+    const cached = join(cacheDir, 'tours', 'acme__web', tourFile ?? '');
+    await rm(cached);
+    // A live holder: this very process, with a fresh heartbeat.
+    const lock = `${cached}.lock`;
+    const holder = { pid: process.pid, host: hostname(), startedAt: Date.now(), token: 'live' };
+    await writeFile(lock, JSON.stringify(holder));
+    const second = scripted(goodTour);
+    const review = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: second.runner,
+      locator: noAuthor,
+      model: 'claude-test',
+      cacheDir,
+    });
+    await vi.waitFor(() =>
+      expect(review.snapshot().tour).toMatchObject({ detail: expect.stringContaining('another') }),
+    );
+
+    await review.close();
+    await review.done;
+
+    expect(second.requests).toHaveLength(0);
+    expect(review.snapshot().tour).toMatchObject({ state: 'failed' });
+    expect(JSON.parse(await readFile(lock, 'utf8'))).toEqual(holder);
+  });
+
   test('keeps the last good tour when a retry fails, and records what the failure cost', async () => {
     const { runner, requests } = scripted(gappyTour, 'not a tour', BUDGET);
     const { api } = await open(runner);
@@ -478,6 +762,138 @@ describe('GET /api/review', () => {
     const { app } = await open(scripted(goodTour).runner);
 
     expect((await app.request(`${origin}/api/review`)).status).toBe(401);
+  });
+});
+
+describe('POST /api/review/retry', () => {
+  test('Try again writes a failed tour once, through the cache, and a second click pays for nothing', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    // The first try fails; the second is held until the second click has been refused.
+    const model = scripted(undefined, goodTour);
+    const { promise: release, resolve } = Promise.withResolvers<void>();
+    const runner: AgentRunner = async (request) => {
+      if (model.requests.length > 0) await release;
+      return model.runner(request);
+    };
+    const reads = vi.fn();
+    const github = fakeGitHub();
+    const source: PrSource = async (onStep) => {
+      reads();
+      return sourceFor(github)(onStep);
+    };
+    const review = new Review({ source, runner, locator: noAuthor, model: 'm', cacheDir });
+    await review.done;
+    expect(review.snapshot().tour).toMatchObject({ state: 'failed' });
+    const app = createApp({ origin, token, version: '0.0.0', review });
+    const api = hc<AppType>(origin, {
+      fetch: app.request,
+      headers: { Authorization: `Bearer ${token}` },
+    }).api;
+
+    const first = await api.review.retry.$post();
+    const second = await api.review.retry.$post();
+    resolve();
+
+    expect(first.status).toBe(202);
+    expect(await first.json()).toMatchObject({ tour: { state: 'working' } });
+    expect(second.status).toBe(409);
+    await vi.waitFor(() => expect(review.snapshot().tour.state).toBe('ready'));
+    expect(model.requests.filter((r) => r.job === 'tour')).toHaveLength(2);
+    // The same PR, read once: the retry is for the head the screen already shows.
+    expect(reads).toHaveBeenCalledOnce();
+    const tours = join(cacheDir, 'tours', 'acme__web');
+    expect((await readdir(tours)).filter((f) => f.endsWith('.lock'))).toEqual([]);
+    expect(await readdir(tours)).toHaveLength(1);
+    await review.close();
+  });
+
+  test('a PR that failed to load is read again', async () => {
+    let fails = true;
+    const source: PrSource = async (onStep) => {
+      if (fails) throw new Error('GitHub is unreachable');
+      return sourceFor(fakeGitHub())(onStep);
+    };
+    const review = new Review({
+      source,
+      runner: scripted(goodTour).runner,
+      locator: noAuthor,
+      model: 'm',
+    });
+    await review.done;
+    fails = false;
+
+    expect(review.retry()).toBe(true);
+
+    await vi.waitFor(() => expect(review.snapshot().tour.state).toBe('ready'));
+    expect(review.snapshot().pr?.number).toBe(7);
+  });
+
+  test('refuses a tour that has not failed, or a closed review', async () => {
+    const model = scripted(goodTour);
+    const { review, api } = await open(model.runner);
+
+    const res = await api.review.retry.$post();
+
+    expect(res.status).toBe(409);
+    expect(model.requests).toHaveLength(1);
+
+    const failing = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner: scripted().runner,
+      locator: noAuthor,
+      model: 'm',
+    });
+    await failing.done;
+    await failing.close();
+    expect(failing.retry()).toBe(false);
+    expect(review.retry()).toBe(false);
+  });
+
+  test('closing stops a retry the way it stops the first try', async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), 'docent-test-'));
+    const started = Promise.withResolvers<void>();
+    const stopped = vi.fn();
+    let calls = 0;
+    const runner: AgentRunner = async (request) => {
+      calls++;
+      if (calls === 1) throw new Error('model unavailable');
+      started.resolve();
+      await new Promise((resolve) =>
+        request.signal?.addEventListener('abort', resolve, { once: true }),
+      );
+      stopped();
+      throw new Error('aborted');
+    };
+    const review = new Review({
+      source: sourceFor(fakeGitHub()),
+      runner,
+      locator: noAuthor,
+      model: 'm',
+      cacheDir,
+    });
+    await review.done;
+    review.retry();
+    await started.promise;
+
+    await review.close();
+
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(review.snapshot().tour).toMatchObject({ state: 'failed' });
+    // No lock left behind for the next Docent to wait on.
+    expect(await readdir(join(cacheDir, 'tours', 'acme__web'))).toEqual([]);
+  });
+
+  test('needs the token, from our own page', async () => {
+    const model = scripted();
+    const { app } = await open(model.runner);
+    const retry = (headers: Record<string, string>) =>
+      app.request(`${origin}/api/review/retry`, { method: 'POST', headers });
+
+    expect((await retry({})).status).toBe(401);
+    expect(
+      (await retry({ Authorization: `Bearer ${token}`, Origin: 'https://evil.example' })).status,
+    ).toBe(403);
+    expect(model.requests).toHaveLength(1);
   });
 });
 
@@ -733,6 +1149,31 @@ describe('the tour, while it is written', () => {
       'The origin is reflected',
       'Over to you',
     ]);
+  });
+
+  test('a tour that is only a verdict is sent back, and the repair adds the change it skipped', async () => {
+    // The first answer has nothing on the route, though src/cors.ts changes behavior.
+    const verdictOnly = { stops: [goodTour.stops[0], goodTour.stops[2]] };
+    const { runner, requests } = scripted(verdictOnly, repairOf({ ...goodTour.stops[1] }));
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(requests[1]?.prompt).toContain('The tour has no core_change or edge stop');
+    expect(requests[1]?.prompt).toContain('sending back only what changes');
+    expect(tour.problems).toEqual([]);
+    expect(tour.tour.stops.map((s) => s.kind)).toEqual(['intent', 'core_change', 'verdict_prompt']);
+  });
+
+  test('a verdict-only tour the guide never fixes reaches the reviewer with the problem on it', async () => {
+    const verdictOnly = { stops: [goodTour.stops[2]] };
+    const { runner } = scripted(verdictOnly, repairOf(), repairOf());
+    const { api } = await open(runner);
+
+    const tour = ready((await snapshot(api)).tour);
+
+    expect(tour.attempts).toBe(3);
+    expect(tour.problems).toEqual([expect.stringContaining('no core_change or edge stop')]);
   });
 
   test('order problems get a whole new tour, since a repair can only replace or add stops', async () => {
@@ -1309,32 +1750,40 @@ describe('POST /api/questions', () => {
   test('the deadline starts when a question leaves the line, not when it joins', async () => {
     const guide = scripted(goodTour);
     const forks: AgentRequest[] = [];
-    // The first fork takes 100 ms; the second waits until it's aborted.
+    // When the second fork started, and when it was aborted. Measured, not slept for, so a slow
+    // machine can't decide the result.
+    let started = 0;
+    let aborted = 0;
+    // The first fork takes 200 ms; the second waits until it's aborted.
     const runner: AgentRunner = async (request) => {
       if (!request.fork) return guide.runner(request);
       const reply = { structured: undefined, denials: [], cost: cost('question', 2500) };
       if (request.keepIn !== undefined) return { ...reply, sessionId: 'primed', text: 'Ready.' };
       forks.push(request);
-      if (forks.length === 1) await new Promise((resolve) => setTimeout(resolve, 100));
-      else
+      if (forks.length === 1) await new Promise((resolve) => setTimeout(resolve, 200));
+      else {
+        started = performance.now();
         await new Promise((_, reject) =>
-          request.signal?.addEventListener('abort', () => reject(new Error('aborted'))),
+          request.signal?.addEventListener('abort', () => {
+            aborted = performance.now();
+            reject(new Error('aborted'));
+          }),
         );
+      }
       return { ...reply, sessionId: 'fork', text: 'Because.' };
     };
     const { api } = await open(runner, undefined, 'claude-test', authorFound, {
-      questionTimeoutMs: 150,
+      questionTimeoutMs: 300,
     });
 
     void ask(api, 'First?');
     const second = ask(api, 'Second?');
-    await vi.waitFor(() => expect(forks).toHaveLength(2));
-    // 170 ms after joining the line, but only about 70 ms after leaving it.
-    await new Promise((resolve) => setTimeout(resolve, 70));
-    expect(forks[1]?.signal?.aborted).toBe(false);
 
     expect(await (await second).json()).toMatchObject({ answer: { source: 'guide' } });
     expect(forks[1]?.signal?.aborted).toBe(true);
+    // Timed from joining the line, the abort would land about 100 ms after the fork started.
+    // Timed from leaving it, a full 300 ms, however slow the machine.
+    expect(aborted - started).toBeGreaterThanOrEqual(290);
   });
 
   test('a fork that takes too long is abandoned, and the guide answers', async () => {

@@ -11,7 +11,7 @@
     "verify": "tsc -b && biome check && node scripts/check-agents-md.ts && node scripts/check-context-footprint.ts && node scripts/check-deps.ts && vitest run",
     "test:e2e": "pnpm build && playwright test",
     "dev": "pnpm --filter @docent/web dev",
-    "docent": "pnpm -s build && node apps/server/dist/cli.js",
+    "docent": "tsc -b && pnpm -s --filter @docent/web build --logLevel warn && node apps/server/dist/cli.js",
     "fix": "biome check --write",
     "check:context": "node scripts/check-context-loading.ts",
     "bench:harness": "node scripts/harness-bench.ts",
@@ -19,10 +19,12 @@
     "build": "tsc -b && pnpm --filter @docent/web build",
     "prepare": "lefthook install",
     "pack:cli": "pnpm build && node scripts/pack.ts",
-    "eval:tours": "node packages/evals/src/run-tours.ts"
+    "eval:tours": "node packages/evals/src/run-tours.ts",
+    "eval:updates": "node packages/evals/src/run-updates.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.5",
+    "@docent/core": "workspace:*",
     "@playwright/test": "1.65.0",
     "@types/node": "24.19.2",
     "fast-check": "4.10.2",

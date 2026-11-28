@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { type CostRecord, type Job, type MicroUsd, microUsd } from '@docent/core';
+import { claudeCode } from './claude-code.ts';
 
 export type AgentRequest = {
   job: Job;
@@ -106,6 +107,9 @@ const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
  * folder when it ends.
  * `src/agent.test.ts` pins these options; `src/agent.live.test.ts` proves them against a hostile
  * checkout with a real session, and proves a fork leaves the author's transcript unchanged.
+ * Claude Code enforces them, and it's the reviewer's own (`claude-code.ts`), at whatever version
+ * they've updated to, no older than the SDK's own. So the live test proves the version it ran
+ * on, and the run log records which one each review used.
  */
 export function readOnlyOptions(
   request: Pick<
@@ -137,7 +141,9 @@ export function readOnlyOptions(
 }
 
 /**
- * Runs Claude Code headlessly through the Agent SDK, read-only (see `readOnlyOptions`). A kept
+ * Runs the reviewer's own Claude Code (see `claude-code.ts`) headlessly through the Agent SDK,
+ * read-only (see `readOnlyOptions`). Which binary runs changes nothing about the options it gets,
+ * and one older than the SDK expects is refused before it starts. A kept
  * fork gets an id chosen here, before it starts, so its transcript leaves Claude Code's projects
  * folder whatever happens: moved into `keepIn` when the fork succeeds, deleted when it doesn't.
  * The id is never the forked session's, so the original can't be deleted.
@@ -167,8 +173,9 @@ export const sdkRunner: AgentRunner = async (request) => {
 
 /** One SDK query; a fork kept by `sdkRunner` passes the id it chose. */
 async function run(request: AgentRequest, keptId?: string): Promise<AgentReply> {
-  // An abort listener never fires for a signal that's already aborted, so check first: an
-  // expired deadline must never start a call with no time limit.
+  const claude = await claudeCode();
+  // An abort listener never fires for a signal that's already aborted, so check first, after
+  // the last await: an expired deadline must never start a call with no time limit.
   request.signal?.throwIfAborted();
   const started = Date.now();
   const abortController = new AbortController();
@@ -223,6 +230,7 @@ async function run(request: AgentRequest, keptId?: string): Promise<AgentReply> 
       options: {
         ...readOnlyOptions(request),
         ...(keptId ? { sessionId: keptId } : {}),
+        pathToClaudeCodeExecutable: claude.path,
         abortController,
       },
     })) {

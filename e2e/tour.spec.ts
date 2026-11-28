@@ -28,6 +28,24 @@ test('the CLI opens a recorded PR, and the reviewer walks the tour by keyboard',
       await expect(page.locator('.narration-title')).toHaveText(titles[0] ?? '');
     });
 
+    await test.step('the first Tab skips to the guide, and / comes back to the question box', async () => {
+      const box = page.getByLabel('Your question');
+      await page.keyboard.press('Tab');
+      const skip = page.getByRole('button', { name: 'Skip to the guide' });
+      await expect(skip).toBeFocused();
+      await expect(skip).toBeInViewport();
+      await page.keyboard.press('Enter');
+      await expect(box).toBeFocused();
+
+      // Leave the box, as a reviewer reading the code would; / brings them back.
+      await page.locator('.narration-title').click();
+      await expect(box).not.toBeFocused();
+      await page.keyboard.press('/');
+      await expect(box).toBeFocused();
+      await expect(box).toHaveValue('');
+      await page.locator('.narration-title').click();
+    });
+
     await test.step('→ moves to the second stop', async () => {
       await page.keyboard.press('ArrowRight');
       await expect(page.getByText(`Stop 2 of ${titles.length}`)).toBeVisible();
@@ -196,9 +214,17 @@ test('while the guide writes, the reviewer reads the PR, then the first stop bef
     await test.step('the PR and honest progress show right away', async () => {
       await page.goto(docent.url);
       await expect(page.getByRole('heading', { level: 1 })).toContainText('cors');
-      await expect(page.locator('.overview .description')).toContainText(
-        'Access-Control-Allow-Origin',
+      const description = page.locator('.overview .description');
+      await expect(description).toContainText('Access-Control-Allow-Origin');
+      // The description reads as written, not as raw Markdown: headings, code and lists.
+      await expect(description.locator('.md-heading').first()).toHaveText('Summary');
+      await expect(description.locator('.md-code').first()).toContainText(
+        "cors({ origin: '*', credentials: true })",
       );
+      await expect(description).not.toContainText('## ');
+      await expect(description).not.toContainText('```');
+      // The verdict waits for the whole tour.
+      await expect(page.locator('.verdict-button')).toBeDisabled();
       await expect(page.locator('.upcoming-stop')).toContainText(
         // Stop 1 may already be in by now; the row says what comes next either way.
         /Planning the route|Writing stop \d+/,
@@ -236,7 +262,26 @@ test('while the guide writes, the reviewer reads the PR, then the first stop bef
       await expect(page.locator('.narration-title')).toHaveText(titles[0] ?? '');
       await expect(page.getByRole('button', { name: 'Ask the guide' })).toBeVisible();
     });
+
+    await test.step('once the tour is checked, the verdict is one click away', async () => {
+      await page.getByRole('button', { name: 'Go to verdict' }).click();
+      await expect(page.locator('.narration-title')).toHaveText(titles.at(-1) ?? '');
+      await expect(page.getByRole('radio', { name: /Comment/ })).toBeFocused();
+    });
   } finally {
+    await docent.stop();
+  }
+});
+
+test('quitting while the guide writes stops Docent at once', async ({ page }) => {
+  // A slow replay stands in for a slow machine: the browser is still following the tour's
+  // progress when Docent is stopped. Stopping used to wait for that stream to end.
+  const docent = await launch('cli.js', ['review', '--fixture', fixture, '--replay-pace', '200']);
+  try {
+    await page.goto(docent.url);
+    await expect(page.locator('.upcoming-stop')).toBeVisible();
+  } finally {
+    // Throws if the server is still running 5 s after SIGTERM.
     await docent.stop();
   }
 });

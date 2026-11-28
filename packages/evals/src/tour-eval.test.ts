@@ -120,6 +120,88 @@ describe('the tour eval', () => {
     expect(markdown).toContain('| First sentence states the behavior change (judge) | 60% |');
   });
 
+  test('times the wait for the route and stop 1, and checks the route against the stops', async () => {
+    // The recorded tour streams out with its route first, the way prompt v5 writes it.
+    const recordedTour = fixtureRunner(RECORDED);
+    const runner: AgentRunner = async (request) => {
+      if (request.job === 'eval_judge') {
+        return { sessionId: 'j', text: '', structured: judgment, cost: cost(20_000), denials: [] };
+      }
+      const reply = await recordedTour(request);
+      const { stops } = reply.structured as { stops: { title: string }[] };
+      const structured = { route: stops.map((s) => s.title), stops };
+      const json = JSON.stringify(structured);
+      for (let at = 40; at < json.length + 40; at += 40) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        request.onOutput?.(json.slice(0, at));
+      }
+      return { ...reply, structured };
+    };
+    const result = await runFixture({
+      manifest,
+      workspace: await fixtureSource(RECORDED)(() => {}),
+      prompt: 5,
+      runner,
+      model: 'claude-test',
+      judgeModel: 'claude-judge',
+      judgeCwd: '/nowhere',
+    });
+
+    if (result.status !== 'ok') throw new Error(result.error);
+    const { firstRouteMs, firstStopMs, tourMs } = result.speed;
+    expect(firstRouteMs).not.toBeNull();
+    expect(firstStopMs).not.toBeNull();
+    expect(firstRouteMs ?? 0).toBeLessThanOrEqual(firstStopMs ?? 0);
+    expect(firstStopMs ?? 0).toBeLessThanOrEqual(tourMs);
+    expect(result.route).toEqual({ planned: 6, written: 6, sameTitles: 6, matches: true });
+
+    const markdown = renderMarkdown({
+      date: '2026-11-14',
+      model: 'claude-test',
+      judgeModel: 'claude-judge',
+      judgeRubric: 1,
+      runs: [result],
+      prompts: [5],
+    });
+    expect(markdown).toContain('| Planned routes that matched the stops | 1/1 |');
+    expect(markdown).toMatch(/\| Median time to the route shown \| \d+\.\ds \|/);
+    expect(markdown).toContain('| Retried tours that passed in the end | 0/0 |');
+  });
+
+  test('a tour that is only a verdict never scores as passing, however many retries it gets', async () => {
+    const recordedTour = fixtureRunner(RECORDED);
+    const runner: AgentRunner = async (request) => {
+      if (request.job === 'eval_judge') {
+        const findings = [{ finding: 1, explained: false, stop: null, why: 'Nothing cites it.' }];
+        return {
+          sessionId: 'j',
+          text: '',
+          structured: { stops: [], findings },
+          cost: cost(20_000),
+          denials: [],
+        };
+      }
+      const reply = await recordedTour(request);
+      const { stops } = reply.structured as { stops: { kind: string }[] };
+      return { ...reply, structured: { stops: stops.filter((s) => s.kind === 'verdict_prompt') } };
+    };
+    const result = await run(runner);
+
+    if (result.status !== 'ok') throw new Error(result.error);
+    expect(result.stopCount).toBe(1);
+    expect(result.problemsLeft).toBeGreaterThan(0);
+    expect(totals([result], 2).repaired).toEqual({ passed: 0, retried: 1 });
+    const markdown = renderMarkdown({
+      date: '2026-11-08',
+      model: 'm',
+      judgeModel: 'j',
+      judgeRubric: 1,
+      runs: [result],
+      prompts: [2],
+    });
+    expect(markdown).toContain('3 attempts, **1 checker problem left**');
+  });
+
   test('a judge that skips a stop fails the run, and its paid call still counts', async () => {
     const { runner } = scripted({ ...judgment, stops: judgment.stops.slice(1) });
     const result = await run(runner);

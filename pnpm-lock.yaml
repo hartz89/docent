@@ -11,6 +11,9 @@ importers:
       '@biomejs/biome':
         specifier: 2.6.5
         version: 2.6.5
+      '@docent/core':
+        specifier: workspace:*
+        version: link:packages/core
       '@playwright/test':
         specifier: 1.65.0
         version: 1.65.0
@@ -47,6 +50,10 @@ importers:
       hono:
         specifier: 4.13.16
         version: 4.13.16
+      web-tree-sitter:
+        specifier: 0.27.1
+        version: 0.27.1
+    devDependencies:
       tree-sitter-go:
         specifier: 0.25.0
         version: 0.25.0
@@ -59,9 +66,6 @@ importers:
       tree-sitter-typescript:
         specifier: 0.23.2
         version: 0.23.2
-      web-tree-sitter:
-        specifier: 0.27.1
-        version: 0.27.1
 
   apps/web:
     dependencies:
