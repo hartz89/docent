@@ -436,3 +436,64 @@ describe('GET /api/references', () => {
     expect((await app.request(`${origin}/api/references?symbol=helper`)).status).toBe(401);
   });
 });
+
+describe('GET /api/map', () => {
+  const changes = [
+    'diff --git a/src/lib.ts b/src/lib.ts',
+    '--- a/src/lib.ts',
+    '+++ b/src/lib.ts',
+    '@@ -1 +1 @@',
+    '-export function helper() { }',
+    '+export function helper() {}',
+    'diff --git a/docs/notes.md b/docs/notes.md',
+    '--- a/docs/notes.md',
+    '+++ b/docs/notes.md',
+    '@@ -1 +1 @@',
+    '-old',
+    '+new',
+    '',
+  ].join('\n');
+
+  test('what the PR changed, and what uses it through its imports, from the head commit', async () => {
+    const { api } = await serve({}, undefined, undefined, changes);
+    const res = await api.map.$get();
+    if (res.status !== 200) throw new Error(`answered ${res.status}`);
+    const map = await res.json();
+    expect(map.changed).toEqual([
+      {
+        path: 'src/lib.ts',
+        nodes: [
+          { id: 'src/lib.ts:1', path: 'src/lib.ts', line: 1, kind: 'function', name: 'helper' },
+        ],
+      },
+    ]);
+    // Python's helper is spelled the same, but nothing imports it from there: not a caller.
+    expect(map.callers).toEqual([
+      {
+        path: 'src/app.ts',
+        nodes: [
+          { id: 'src/app.ts:4', path: 'src/app.ts', line: 4, kind: 'function', name: 'main' },
+        ],
+      },
+    ]);
+    expect(map.edges).toEqual([{ from: 'src/app.ts:4', to: 'src/lib.ts:1', uses: 1 }]);
+    expect(map).toMatchObject({
+      otherFiles: ['docs/notes.md'],
+      hidden: { changed: 0, callers: 0, otherFiles: 0 },
+      truncated: false,
+      index: { state: 'complete' },
+    });
+  });
+
+  test('a failed index answers 500; no token 401', async () => {
+    const failing = await serve({}, async () => {
+      throw new Error('git is gone');
+    });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failed = await failing.api.map.$get();
+    logged.mockRestore();
+    expect(failed.status).toBe(500);
+    const { app } = await serve();
+    expect((await app.request(`${origin}/api/map`)).status).toBe(401);
+  });
+});

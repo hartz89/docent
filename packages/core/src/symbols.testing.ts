@@ -28,8 +28,8 @@ export function testGrammars(): Promise<Grammars> {
   return loaded;
 }
 
-/** An index of the given files (path → text), parsing the ones in a known language. */
-export async function indexOf(files: Record<string, string>) {
+/** The real index of the given files (path → text), parsing the ones in a known language. */
+export async function symbolIndexOf(files: Record<string, string>): Promise<SymbolIndex> {
   const grammars = await testGrammars();
   const symbols = new Map<string, FileSymbols>();
   for (const [path, text] of Object.entries(files)) {
@@ -39,11 +39,16 @@ export async function indexOf(files: Record<string, string>) {
     if (parsed) symbols.set(path, parsed);
   }
   const tsconfig = files['tsconfig.json'];
-  const index = new SymbolIndex(
+  return new SymbolIndex(
     new Set(Object.keys(files)),
     symbols,
     tsconfig ? tsconfigPaths(tsconfig) : [],
   );
+}
+
+/** An index of the given files, with lookups that return just the candidates. */
+export async function indexOf(files: Record<string, string>) {
+  const index = await symbolIndexOf(files);
   return {
     definitions: (symbol: string, from?: { path: string; line?: number }) =>
       index.definitions(symbol, from).candidates,

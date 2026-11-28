@@ -233,6 +233,18 @@ export function createApp({
         }
       },
     )
+    // The code map: what the PR changed, and what uses it, grouped by file and capped.
+    .get('/api/map', async (c) => {
+      if (!review) return c.json(noReview, 404);
+      try {
+        const map = await review.codeMap();
+        if (!map) return c.json(stillLoading, 503);
+        return c.json(map, 200);
+      } catch (error) {
+        log.error('code map', error);
+        return c.json({ error: "Docent couldn't draw the code map." }, 500);
+      }
+    })
     // Jump to an import: the repo file an import specifier names, if it names one.
     .get(
       '/api/import',

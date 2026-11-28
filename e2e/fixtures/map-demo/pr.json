@@ -1,0 +1,12 @@
+{
+  "url": "https://github.com/acme/shop/pull/72",
+  "repo": "acme/shop",
+  "number": 72,
+  "title": "Discounts need a minimum total",
+  "body": "Adds `minimumCents` to `Discount`. `applyDiscount` leaves totals under it alone.",
+  "author": "someone",
+  "base": "1f0e8c2a9b7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f",
+  "head": "7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b",
+  "baseRef": "main",
+  "headRef": "discount-minimum"
+}

@@ -1,0 +1,49 @@
+{
+ "entries": [
+  {
+   "path": "docs/pricing.md",
+   "kind": "file"
+  },
+  {
+   "path": "src/api/orders.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/cart.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/checkout.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/legacy/discount.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/legacy/v1.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/pricing.test.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/pricing.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/promo.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/receipt.ts",
+   "kind": "file"
+  },
+  {
+   "path": "src/types.ts",
+   "kind": "file"
+  }
+ ],
+ "truncated": false
+}

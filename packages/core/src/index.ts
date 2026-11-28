@@ -2,6 +2,7 @@
 export * from './anchor.ts';
 export * from './basics.ts';
 export * from './batch.ts';
+export * from './code-map.ts';
 export * from './cost.ts';
 export * from './coverage.ts';
 export * from './detect.ts';
