@@ -42,7 +42,7 @@ describe('definitions', () => {
     const slow = 'export function f() { return [1].map((x) => x); }\n'.repeat(5000);
     expect(extractSymbols(grammar, slow, Date.now() - 1)).toBeNull();
     expect(extractSymbols(grammar, 'function g() {}')?.definitions).toEqual([
-      { name: 'g', kind: 'function', line: 1, topLevel: true },
+      { name: 'g', kind: 'function', line: 1, endLine: 1, topLevel: true },
     ]);
   });
 

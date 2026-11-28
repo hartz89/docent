@@ -69,8 +69,11 @@ test('a phrase naming another file shows that file while hovered, then gives the
   try {
     await page.goto(docent.url);
     await expect(page.locator('.narration-title')).toBeVisible();
-    // The map stop cites index.ts; its "`index.test.ts`" names lines 87–93 of the tests.
+    // The map stop cites index.ts; its "`index.test.ts`" names lines 87–93 of the tests. It opens
+    // on the code map, so its citation is opened first.
     await page.keyboard.press('ArrowRight');
+    await expect(page.locator('.map-title')).toBeVisible();
+    await page.getByRole('button', { name: /^index\.ts 104/ }).click();
     await expect(page.locator('.code-path')).toHaveAttribute('title', FILE);
     await page.getByRole('button', { name: /^index\.test\.ts/ }).hover();
     await expect(page.locator('.code-path')).toHaveAttribute('title', TEST_FILE);

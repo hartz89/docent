@@ -1,0 +1,132 @@
+{
+  "tour": [
+    {
+      "sessionId": "00000000-0000-4000-8000-000000000072",
+      "text": "{\"stops\": [{\"kind\": \"intent\", \"title\": \"Discounts get a minimum total\", \"body\": \"A discount now carries the smallest total it applies to. Below that, the customer pays the full price.\", \"flags\": [], \"citations\": []}, {\"kind\": \"map\", \"title\": \"Every discounted total passes the new check\", \"body\": \"Checkout and new orders now skip the discount on small totals. `Discount` gains a `minimumCents` field, and `applyDiscount` checks it before taking anything off, so every caller of `applyDiscount` picks up the rule. `totalOf` is rewritten with `reduce`; it gives the same totals.\", \"flags\": [], \"citations\": [{\"path\": \"src/pricing.ts\", \"side\": \"new\", \"startLine\": 7, \"endLine\": 14}], \"references\": []}, {\"kind\": \"core_change\", \"title\": \"Small totals keep their full price\", \"body\": \"`applyDiscount` returns the total untouched when it is under `discount.minimumCents`. The welcome promo sets its minimum to 2000 cents.\", \"flags\": [], \"citations\": [{\"path\": \"src/pricing.ts\", \"side\": \"new\", \"startLine\": 7, \"endLine\": 10}, {\"path\": \"src/types.ts\", \"side\": \"new\", \"startLine\": 3, \"endLine\": 8}, {\"path\": \"src/promo.ts\", \"side\": \"new\", \"startLine\": 3, \"endLine\": 3}, {\"path\": \"src/promo.ts\", \"side\": \"old\", \"startLine\": 3, \"endLine\": 3}]}, {\"kind\": \"core_change\", \"title\": \"`totalOf` sums with reduce\", \"body\": \"The loop becomes one `reduce` over the items, starting from 0, so an empty cart still totals 0.\", \"flags\": [], \"citations\": [{\"path\": \"src/pricing.ts\", \"side\": \"new\", \"startLine\": 12, \"endLine\": 14}, {\"path\": \"src/pricing.ts\", \"side\": \"old\", \"startLine\": 11, \"endLine\": 15}]}, {\"kind\": \"edge\", \"title\": \"A test for a total under the minimum\", \"body\": \"The test discount gets a 500-cent minimum, and a new assertion checks that 400 cents stays 400.\", \"flags\": [], \"citations\": [{\"path\": \"src/pricing.test.ts\", \"side\": \"new\", \"startLine\": 1, \"endLine\": 6}, {\"path\": \"src/pricing.test.ts\", \"side\": \"old\", \"startLine\": 3, \"endLine\": 3}]}, {\"kind\": \"verdict_prompt\", \"title\": \"Your verdict\", \"body\": \"Discounts now stop below a minimum total, for every caller. Is that the behavior you want?\", \"flags\": [], \"citations\": []}], \"notes\": [{\"path\": \"docs/pricing.md\", \"note\": \"Docs for the new minimum\"}]}",
+      "structured": {
+        "stops": [
+          {
+            "kind": "intent",
+            "title": "Discounts get a minimum total",
+            "body": "A discount now carries the smallest total it applies to. Below that, the customer pays the full price.",
+            "flags": [],
+            "citations": []
+          },
+          {
+            "kind": "map",
+            "title": "Every discounted total passes the new check",
+            "body": "Checkout and new orders now skip the discount on small totals. `Discount` gains a `minimumCents` field, and `applyDiscount` checks it before taking anything off, so every caller of `applyDiscount` picks up the rule. `totalOf` is rewritten with `reduce`; it gives the same totals.",
+            "flags": [],
+            "citations": [
+              {
+                "path": "src/pricing.ts",
+                "side": "new",
+                "startLine": 7,
+                "endLine": 14
+              }
+            ],
+            "references": []
+          },
+          {
+            "kind": "core_change",
+            "title": "Small totals keep their full price",
+            "body": "`applyDiscount` returns the total untouched when it is under `discount.minimumCents`. The welcome promo sets its minimum to 2000 cents.",
+            "flags": [],
+            "citations": [
+              {
+                "path": "src/pricing.ts",
+                "side": "new",
+                "startLine": 7,
+                "endLine": 10
+              },
+              {
+                "path": "src/types.ts",
+                "side": "new",
+                "startLine": 3,
+                "endLine": 8
+              },
+              {
+                "path": "src/promo.ts",
+                "side": "new",
+                "startLine": 3,
+                "endLine": 3
+              },
+              {
+                "path": "src/promo.ts",
+                "side": "old",
+                "startLine": 3,
+                "endLine": 3
+              }
+            ]
+          },
+          {
+            "kind": "core_change",
+            "title": "`totalOf` sums with reduce",
+            "body": "The loop becomes one `reduce` over the items, starting from 0, so an empty cart still totals 0.",
+            "flags": [],
+            "citations": [
+              {
+                "path": "src/pricing.ts",
+                "side": "new",
+                "startLine": 12,
+                "endLine": 14
+              },
+              {
+                "path": "src/pricing.ts",
+                "side": "old",
+                "startLine": 11,
+                "endLine": 15
+              }
+            ]
+          },
+          {
+            "kind": "edge",
+            "title": "A test for a total under the minimum",
+            "body": "The test discount gets a 500-cent minimum, and a new assertion checks that 400 cents stays 400.",
+            "flags": [],
+            "citations": [
+              {
+                "path": "src/pricing.test.ts",
+                "side": "new",
+                "startLine": 1,
+                "endLine": 6
+              },
+              {
+                "path": "src/pricing.test.ts",
+                "side": "old",
+                "startLine": 3,
+                "endLine": 3
+              }
+            ]
+          },
+          {
+            "kind": "verdict_prompt",
+            "title": "Your verdict",
+            "body": "Discounts now stop below a minimum total, for every caller. Is that the behavior you want?",
+            "flags": [],
+            "citations": []
+          }
+        ],
+        "notes": [
+          {
+            "path": "docs/pricing.md",
+            "note": "Docs for the new minimum"
+          }
+        ]
+      },
+      "cost": {
+        "job": "tour",
+        "model": "claude-opus-5-5",
+        "tokens": {
+          "input": 4,
+          "output": 1200,
+          "cacheRead": 5000,
+          "cacheWrite": 3000
+        },
+        "costMicroUsd": 64000,
+        "latencyMs": 9000
+      },
+      "denials": []
+    }
+  ]
+}

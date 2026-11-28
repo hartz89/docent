@@ -46,16 +46,24 @@ export const DEFINITION_KINDS = [
 export type DefinitionKind = (typeof DEFINITION_KINDS)[number];
 
 /**
- * A named definition. `line` is the 1-based line of its name. `topLevel` is false inside a class,
- * function or block, where it can't be what a module exports.
+ * A named definition. `line` is the 1-based line of its name, and `endLine` the last line of the
+ * definition it names. `topLevel` is false inside a class, function or block, where it can't be
+ * what a module exports.
  */
-export type Definition = { name: string; kind: DefinitionKind; line: number; topLevel: boolean };
+export type Definition = {
+  name: string;
+  kind: DefinitionKind;
+  line: number;
+  endLine: number;
+  topLevel: boolean;
+};
 
 /**
  * A name an import statement brings into the file. `imported` is the export it names:
- * `'default'` for a default import, `'*'` for the whole module (`import * as ns`).
+ * `'default'` for a default import, `'*'` for the whole module (`import * as ns`). `line` is the
+ * line the local name is on.
  */
-export type ImportBinding = { local: string; spec: string; imported: string };
+export type ImportBinding = { local: string; spec: string; imported: string; line: number };
 
 /**
  * One name a file exports. A `local` export points at a name in the file itself, or at nothing
@@ -266,12 +274,14 @@ export function extractSymbols(
       }
       if (!kind || !name || !node) continue;
       const line = name.startPosition.row + 1;
+      const endLine = Math.max(line, node.endPosition.row + 1);
       const key = `${line}:${name.text}`;
       const known = seen.get(key);
+      if (known) known.endLine = Math.max(known.endLine, endLine);
       if (known && known.kind !== 'constant') continue;
       if (known) known.kind = kind;
       else {
-        const definition = { name: name.text, kind, line, topLevel: isTopLevel(node) };
+        const definition = { name: name.text, kind, line, endLine, topLevel: isTopLevel(node) };
         seen.set(key, definition);
         symbols.definitions.push(definition);
       }
@@ -375,16 +385,25 @@ function readModuleStatements(root: TreeSitter.Node, symbols: FileSymbols): void
       const clause = statement.namedChildren.find((c) => c?.type === 'import_clause');
       for (const part of clause?.namedChildren ?? []) {
         if (part?.type === 'identifier') {
-          symbols.imports.push({ local: part.text, spec, imported: 'default' });
+          symbols.imports.push({ local: part.text, spec, imported: 'default', line: lineOf(part) });
         } else if (part?.type === 'namespace_import') {
           const local = part.namedChildren.find((c) => c?.type === 'identifier');
-          if (local) symbols.imports.push({ local: local.text, spec, imported: '*' });
+          if (local) {
+            symbols.imports.push({ local: local.text, spec, imported: '*', line: lineOf(local) });
+          }
         } else if (part?.type === 'named_imports') {
           for (const specifier of part.namedChildren) {
             if (specifier?.type !== 'import_specifier') continue;
-            const imported = specifier.childForFieldName('name')?.text;
-            const local = specifier.childForFieldName('alias')?.text ?? imported;
-            if (imported && local) symbols.imports.push({ local, spec, imported });
+            const name = specifier.childForFieldName('name');
+            const local = specifier.childForFieldName('alias') ?? name;
+            if (name && local) {
+              symbols.imports.push({
+                local: local.text,
+                spec,
+                imported: name.text,
+                line: lineOf(local),
+              });
+            }
           }
         }
       }
@@ -430,6 +449,8 @@ function readModuleStatements(root: TreeSitter.Node, symbols: FileSymbols): void
     }
   }
 }
+
+const lineOf = (node: TreeSitter.Node) => node.startPosition.row + 1;
 
 /** The names a declaration introduces: one, or each simple variable of a `const a = …, b = …`. */
 function declaredNames(declaration: TreeSitter.Node): string[] {

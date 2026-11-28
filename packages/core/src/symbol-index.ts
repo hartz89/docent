@@ -104,6 +104,11 @@ export class SymbolIndex {
     return this.#files.size;
   }
 
+  /** What one indexed file defines, imports, exports and uses; undefined if it wasn't indexed. */
+  symbolsOf(path: string): FileSymbols | undefined {
+    return this.#files.get(path);
+  }
+
   /**
    * N4: the repo file an import specifier names, or null. Only relative specifiers and the root
    * tsconfig's `paths` resolve; a package name or anything else is left unresolved.

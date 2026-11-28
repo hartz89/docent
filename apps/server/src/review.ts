@@ -8,8 +8,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   type Candidate,
+  type CodeMap,
   type CommitSha,
   type CostRecord,
+  codeMap,
   type Diff,
   type Proof,
   parseUnifiedDiff,
@@ -271,6 +273,8 @@ export class Review {
   #checks = new Map<string, Promise<CheckOutcome>>();
   /** The symbol index, built on first use. A review is bound to one head, so this is per head. */
   #symbols: Promise<BuiltIndex> | null = null;
+  /** The code map, for the index it was drawn from. */
+  #map: { built: BuiltIndex; map: CodeMap } | null = null;
   /** What questions to the author's session were estimated to cost, when they were. */
   #forkEstimate: ForkEstimate | null = null;
   /** Questions in the order they arrived, so they reach the author's session in that order. */
@@ -371,6 +375,18 @@ export class Review {
       };
     });
     return { files, total: found.total, truncated: found.truncated, index: built.status };
+  }
+
+  /**
+   * The code map of the PR (M1–M4): what it changed and what uses that, from the index of its
+   * head. Worked out once per index. Null until the PR has been read.
+   */
+  async codeMap(): Promise<(CodeMap & { index: IndexStatus }) | null> {
+    const diff = this.#diff;
+    const built = await this.#symbolIndex();
+    if (!diff || !built) return null;
+    if (this.#map?.built !== built) this.#map = { built, map: codeMap(built.index, diff) };
+    return { ...this.#map.map, index: built.status };
   }
 
   /** The repo file an import specifier names, or a null path when it doesn't resolve. */

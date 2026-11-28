@@ -1,0 +1,54 @@
+diff --git a/docs/pricing.md b/docs/pricing.md
+--- a/docs/pricing.md
++++ b/docs/pricing.md
+@@ -1,3 +1,3 @@
+ # Pricing
+ 
+-Discounts take a percentage off the total.
++Discounts take a percentage off the total, once it reaches the discount's minimum.
+diff --git a/src/pricing.test.ts b/src/pricing.test.ts
+--- a/src/pricing.test.ts
++++ b/src/pricing.test.ts
+@@ -1,5 +1,6 @@
+ import { applyDiscount, totalOf } from './pricing.ts';
+ 
+-const tenOff = { code: 'TEN', percent: 10 };
++const tenOff = { code: 'TEN', percent: 10, minimumCents: 500 };
+ console.assert(applyDiscount(1000, tenOff) === 900);
++console.assert(applyDiscount(400, tenOff) === 400);
+ console.assert(totalOf([{ cents: 250, quantity: 2 }]) === 500);
+diff --git a/src/pricing.ts b/src/pricing.ts
+--- a/src/pricing.ts
++++ b/src/pricing.ts
+@@ -5,11 +5,10 @@
+ }
+ 
+ export function applyDiscount(total: Money, discount: Discount): Money {
++  if (total < discount.minimumCents) return total;
+   return roundCents(total * (1 - discount.percent / 100));
+ }
+ 
+ export function totalOf(items: readonly { cents: Money; quantity: number }[]): Money {
+-  let sum = 0;
+-  for (const item of items) sum += item.cents * item.quantity;
+-  return sum;
++  return items.reduce((sum, item) => sum + item.cents * item.quantity, 0);
+ }
+diff --git a/src/promo.ts b/src/promo.ts
+--- a/src/promo.ts
++++ b/src/promo.ts
+@@ -1,3 +1,3 @@
+ import type { Discount } from './types.ts';
+ 
+-export const WELCOME: Discount = { code: 'WELCOME', percent: 10 };
++export const WELCOME: Discount = { code: 'WELCOME', percent: 10, minimumCents: 2000 };
+diff --git a/src/types.ts b/src/types.ts
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -3,4 +3,6 @@
+ export type Discount = {
+   code: string;
+   percent: number;
++  /** The smallest total, in cents, the discount applies to. */
++  minimumCents: number;
+ };

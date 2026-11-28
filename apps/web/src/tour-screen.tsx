@@ -23,6 +23,7 @@ import {
   useState,
 } from 'react';
 import { api } from './api.ts';
+import { CodeMapView, type OpenNode } from './code-map.tsx';
 import { CodeView } from './code-view.tsx';
 import { FileTree, type Place } from './file-tree.tsx';
 import { follow } from './follow.ts';
@@ -113,6 +114,8 @@ export function TourScreen({ snapshot, tour }: Props) {
   // A reviewer who opened the review while the tour was still being written is reading the PR's
   // description. Stops arriving don't take the code column away from it; moving does.
   const [overviewFirst, setOverviewFirst] = useState(tour.state !== 'ready');
+  // A map stop opens on the code map. Its citations, or a node of the map, open code instead.
+  const [mapFirst, setMapFirst] = useState(true);
   // Each stop's questions and answers, kept here so they survive moving between stops. The server
   // keeps the answered ones too, so a reload or a relaunch reads them back.
   const [threads, setThreads] = useState<Record<string, Exchange[]>>({});
@@ -273,6 +276,7 @@ export function TourScreen({ snapshot, tour }: Props) {
       setIndex(Math.max(0, Math.min(stops.length - 1, next)));
       setAnchorIndex(0);
       setOverviewFirst(false);
+      setMapFirst(true);
       setTrail(emptyTrail());
       setPeek(null);
     },
@@ -414,8 +418,23 @@ export function TourScreen({ snapshot, tour }: Props) {
   if (!snapshot.pr) return null;
 
   const anchor = stop?.anchors[anchorIndex] ?? null;
+  const mapShown = stop?.kind === 'map' && mapFirst && !overviewFirst;
   const shown: Viewing | null =
-    viewing ?? (anchor && !overviewFirst ? { path: anchor.path, side: anchor.side } : null);
+    viewing ??
+    (anchor && !overviewFirst && !mapShown ? { path: anchor.path, side: anchor.side } : null);
+  // A node of the map opens where it's defined, as a jump to its definition does.
+  const openNode: OpenNode = (node) => {
+    explore({
+      path: node.path,
+      side: 'new',
+      focus: { path: node.path, side: 'new', startLine: node.line, endLine: node.line },
+      label:
+        node.kind === 'file'
+          ? `line ${node.line} · from the map`
+          : `line ${node.line} · definition of ${node.name}`,
+    });
+    if (stacked) codeColumn.current?.scrollIntoView({ block: 'start' });
+  };
   const cited =
     shown && stop ? stop.anchors.filter((a) => a.path === shown.path && a.side === shown.side) : [];
   // A peek at another file shows that file until the phrase lets go; one in this file only marks
@@ -617,6 +636,8 @@ export function TourScreen({ snapshot, tour }: Props) {
                 }
               />
             </>
+          ) : mapShown ? (
+            <CodeMapView onOpen={openNode} />
           ) : (
             <Overview snapshot={snapshot} diff={diff} onOpen={explore} />
           )}
@@ -646,12 +667,25 @@ export function TourScreen({ snapshot, tour }: Props) {
                   label: `lines ${cite.startLine}–${cite.endLine} · cited by the guide's note`,
                 })
               }
-              activeAnchor={viewing || overviewFirst ? -1 : anchorIndex}
+              activeAnchor={viewing || overviewFirst || mapShown ? -1 : anchorIndex}
               onAnchor={(i) => {
                 setOverviewFirst(false);
+                setMapFirst(false);
                 setAnchorIndex(i);
                 toTour();
               }}
+              map={
+                stop.kind === 'map'
+                  ? {
+                      shown: mapShown && !viewing,
+                      onShow: () => {
+                        setOverviewFirst(false);
+                        setMapFirst(true);
+                        toTour();
+                      },
+                    }
+                  : null
+              }
               refHandlers={refHandlers}
               isLast={index === stops.length - 1}
               onNext={() => go(index + 1)}
@@ -1359,6 +1393,7 @@ function Narration({
   onOpenCite,
   activeAnchor,
   onAnchor,
+  map,
   refHandlers,
   isLast,
   onNext,
@@ -1379,6 +1414,8 @@ function Narration({
   onOpenCite: (cite: AnchorView) => void;
   activeAnchor: number;
   onAnchor: (index: number) => void;
+  /** On a map stop: whether the code map is on screen, and the way back to it. */
+  map: { shown: boolean; onShow: () => void } | null;
   refHandlers: RefHandlers;
   isLast: boolean;
   onNext: () => void;
@@ -1421,8 +1458,19 @@ function Narration({
         <h2 className="narration-title">{inline(stop.title)}</h2>
         <div className="narration-text">{prose(stop.body, stop.refs, refHandlers)}</div>
 
-        {stop.anchors.length > 0 && (
+        {(stop.anchors.length > 0 || map) && (
           <div className="chips">
+            {map && (
+              <button
+                type="button"
+                className="chip"
+                aria-pressed={map.shown}
+                onClick={map.onShow}
+                title="What this change touches, and what uses it"
+              >
+                Code map
+              </button>
+            )}
             {stop.anchors.map((anchor, i) => (
               <button
                 type="button"
