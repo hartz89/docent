@@ -29,8 +29,21 @@ export type PrInfo = {
 export const REVIEW_EVENTS = ['APPROVE', 'REQUEST_CHANGES', 'COMMENT'] as const;
 export type ReviewEvent = (typeof REVIEW_EVENTS)[number];
 
+/** A comment on a line of the diff, in GitHub's terms: RIGHT is head, LEFT is base. */
+export type ReviewLineComment = {
+  path: string;
+  line: number;
+  side: 'LEFT' | 'RIGHT';
+  body: string;
+};
+
 /** One review to post. The PR it goes on is fixed by the workspace, never by the caller. */
-export type ReviewPost = { commitId: CommitSha; event: ReviewEvent; body: string };
+export type ReviewPost = {
+  commitId: CommitSha;
+  event: ReviewEvent;
+  body: string;
+  comments: ReviewLineComment[];
+};
 
 /** A PR opened for review: its metadata, its diff, and a way to read its files. */
 export type Workspace = {
@@ -50,8 +63,12 @@ export type Workspace = {
   openAll: (side: 'old' | 'new', paths: readonly string[]) => Promise<Map<string, RepoFile>>;
   /** Every file in the repo at head, for browsing. */
   tree: () => Promise<RepoTree>;
-  /** The PR's head commit right now, which moves when the author pushes. */
-  currentHead: () => Promise<CommitSha>;
+  /**
+   * The PR's head commit, base branch and merge base right now: the head moves when the author
+   * pushes, the base branch when they retarget the PR, and the merge base when the base branch is
+   * rebased under the same name.
+   */
+  current: () => Promise<{ head: CommitSha; baseRef: string; base: CommitSha }>;
   /** Posts one review on this PR as the reviewer, and returns its link on GitHub. */
   postReview: (review: ReviewPost) => Promise<{ url: string }>;
   /** The files at head, for the symbol index: read from git's objects, never the working tree. */
@@ -210,13 +227,33 @@ export function githubSource(url: string, cacheDir: string): PrSource {
       headInBaseRepo: !view.isCrossRepository,
       dir,
       ...commitReader(dir, pr.base, pr.head),
-      currentHead: async () =>
-        commitSha((await ghForReview(['api', ...onGitHub, pull, '--jq', '.head.sha'])).trim()),
-      postReview: async ({ commitId, event, body }) => {
+      current: async () => {
+        const out = await ghForReview([
+          'api',
+          ...onGitHub,
+          pull,
+          '--jq',
+          '[.head.sha, .base.ref, .base.sha]',
+        ]);
+        const [head, baseRef, baseTip] = JSON.parse(out) as [string, string, string];
+        // The merge base, as when the PR was opened: the base branch can be rebased under the same
+        // name, which moves what base-side line numbers mean.
+        const base = (
+          await ghForReview([
+            'api',
+            ...onGitHub,
+            `repos/${repo}/compare/${baseTip}...${head}`,
+            '--jq',
+            '.merge_base_commit.sha',
+          ])
+        ).trim();
+        return { head: commitSha(head), baseRef, base: commitSha(base) };
+      },
+      postReview: async ({ commitId, event, body, comments }) => {
         // The review goes in as JSON on stdin, so the reviewer's text is never an argument.
         const out = await ghForReview(
           ['api', ...onGitHub, '--method', 'POST', `${pull}/reviews`, '--input', '-'],
-          JSON.stringify({ commit_id: commitId, event, body }),
+          JSON.stringify({ commit_id: commitId, event, body, comments }),
         );
         // gh exited 0, so the review is posted. Never fail from here, or a retry would post twice.
         let url: unknown;

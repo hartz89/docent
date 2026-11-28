@@ -109,7 +109,7 @@ async function openAt(
     headInBaseRepo: true,
     dir,
     ...commitReader(dir, base, head),
-    currentHead: async () => head,
+    current: async () => ({ head, baseRef: pr.baseRef, base }),
     postReview: async () => {
       throw new Error('An eval never posts a review.');
     },

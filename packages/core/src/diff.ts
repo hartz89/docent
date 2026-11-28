@@ -121,3 +121,30 @@ export function changedLines(diff: Diff): ChangedLine[] {
   }
   return result;
 }
+
+/**
+ * Where a line of a file shows in the diff, the way GitHub places a review comment on it:
+ * removed lines on the old side, added and unchanged (context) lines on the new side, by the
+ * file's path at head. Null when the line is outside every hunk, so a comment there can't sit
+ * on the diff.
+ */
+export function diffPosition(diff: Diff, ref: LineRef): LineRef | null {
+  for (const file of diff.files) {
+    if ((ref.side === 'new' ? file.path : file.oldPath) !== ref.path) continue;
+    for (const hunk of file.hunks) {
+      for (const line of hunk.lines) {
+        if (ref.side === 'new') {
+          if (line.kind !== 'removed' && line.newLine === ref.line) {
+            return { path: file.path, side: 'new', line: line.newLine };
+          }
+        } else if (line.kind !== 'added' && line.oldLine === ref.line) {
+          // GitHub puts comments on unchanged lines on the right, at their head line number.
+          return line.kind === 'removed'
+            ? { path: file.path, side: 'old', line: line.oldLine }
+            : { path: file.path, side: 'new', line: line.newLine };
+        }
+      }
+    }
+  }
+  return null;
+}

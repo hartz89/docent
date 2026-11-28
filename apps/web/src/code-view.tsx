@@ -1,8 +1,11 @@
+import { lineCount } from '@docent/core';
 import { useQuery } from '@tanstack/react-query';
 import {
   type CSSProperties,
+  Fragment,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -40,6 +43,12 @@ type Props = {
   onStep: ((delta: 1 | -1) => boolean) | undefined;
   /** Opens the place a jump to definition, an import or a reference found. */
   onJump: (to: JumpTo) => void;
+  /** Opens a comment on a line: a "+" shows in the gutter on hover. Absent once comments close. */
+  onComment?: ((line: number) => void) | undefined;
+  /** What sits under a line, like GitHub: the reviewer's drafts and the open composer. */
+  below?: ((line: number) => ReactNode) | undefined;
+  /** The line a comment is being written on. */
+  commentLine?: number | null | undefined;
 };
 
 /** The modifier key for a jump, as this platform's keyboards print it. */
@@ -47,6 +56,33 @@ const MOD_LABEL = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
 
 /** Room left around a citation when ↑ ↓ reveal its edges. */
 const REVEAL_PADDING = 48;
+
+/** A file's text, and its lines as colored tokens: fetched once, shared by every view of it. */
+export function useFile(path: string, side: 'old' | 'new') {
+  const text = useQuery(fileTextQuery(path, side));
+  const highlighted = useQuery({
+    queryKey: ['highlight', side, path],
+    queryFn: async () => {
+      const source = text.data ?? '';
+      // Only the file's real lines: a final newline doesn't add an empty one to comment on.
+      return (await highlight(path, source)).slice(0, lineCount(source));
+    },
+    enabled: text.data !== undefined,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  // The cached array itself, so effects keyed on it run once per file, not once per render.
+  return { text, lines: highlighted.data };
+}
+
+/** One line's tokens, colored for both themes. */
+export function LineTokens({ tokens }: { tokens: readonly Token[] }) {
+  return tokens.map((token, t) => (
+    // biome-ignore lint/suspicious/noArrayIndexKey: tokens are positional.
+    <span key={t} style={tokenStyle(token)}>
+      {token.text}
+    </span>
+  ));
+}
 
 /** A read-only view of one file, with the PR's changes and the stop's citations marked. */
 export function CodeView({
@@ -59,15 +95,11 @@ export function CodeView({
   offRoute,
   onStep,
   onJump,
+  onComment,
+  below,
+  commentLine,
 }: Props) {
-  const text = useQuery(fileTextQuery(path, side));
-  const highlighted = useQuery({
-    queryKey: ['highlight', side, path],
-    queryFn: () => highlight(path, text.data ?? ''),
-    enabled: text.data !== undefined,
-    staleTime: Number.POSITIVE_INFINITY,
-  });
-  const lines = highlighted.data;
+  const { text, lines } = useFile(path, side);
 
   const scroller = useRef<HTMLElement>(null);
   const focusStart = focus?.startLine ?? null;
@@ -241,6 +273,8 @@ export function CodeView({
   const onKeyDown = (event: ReactKeyboardEvent) => {
     if (event.key !== 'Enter' && event.key !== 'F12') return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
+    // Enter in a comment under a line is the reviewer's typing, never a jump.
+    if ((event.target as HTMLElement).closest('textarea, input, button')) return;
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return;
     const range = selection.getRangeAt(0);
@@ -291,23 +325,34 @@ export function CodeView({
                 isCited(line) ? 'cited' : '',
                 isNamed(line) ? 'named' : '',
                 isChanged && offRoute.has(line) ? 'off-route' : '',
+                commentLine === line ? 'commenting' : '',
               ]
                 .filter(Boolean)
                 .join(' ');
               return (
                 // biome-ignore lint/suspicious/noArrayIndexKey: lines are positional by nature.
-                <div key={index} className={classes} data-line={line}>
-                  <span className="line-number">{line}</span>
-                  <span className="line-mark">{isChanged ? changeMark : ''}</span>
-                  <span className="line-text">
-                    {tokens.map((token, t) => (
-                      // biome-ignore lint/suspicious/noArrayIndexKey: tokens are positional too.
-                      <span key={t} style={tokenStyle(token)}>
-                        {token.text}
-                      </span>
-                    ))}
-                  </span>
-                </div>
+                <Fragment key={index}>
+                  <div className={classes} data-line={line}>
+                    {onComment && (
+                      <button
+                        type="button"
+                        className="add-comment"
+                        aria-label={`Comment on line ${line}`}
+                        // Out of the tab order: a file has a button per line. Click to comment.
+                        tabIndex={-1}
+                        onClick={() => onComment(line)}
+                      >
+                        +
+                      </button>
+                    )}
+                    <span className="line-number">{line}</span>
+                    <span className="line-mark">{isChanged ? changeMark : ''}</span>
+                    <span className="line-text">
+                      <LineTokens tokens={tokens} />
+                    </span>
+                  </div>
+                  {below?.(line)}
+                </Fragment>
               );
             })}
           </div>

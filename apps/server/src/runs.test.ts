@@ -52,7 +52,7 @@ test('`docent runs show latest` reads a run top to bottom', async () => {
        +4m00s  question at stop 3 "The server serves any PR from a link": answered by the guide, $0.3410, 3m 16s
        +4m10s  web app error (api) POST /api/questions → 502: The author's session couldn't answer
        +4m11s  error in server (GET /api/file): EMFILE: too many open files
-       +5m00s  review posted: REQUEST_CHANGES, 0 line comment(s), https://github.com/hartz89/docent/pull/52#pullrequestreview-123
+       +5m00s  review posted: REQUEST_CHANGES, 3 comment(s) (2 on lines, 1 in the body), https://github.com/hartz89/docent/pull/52#pullrequestreview-123
       +12m04s  run ended: stopped (SIGINT)
 
     Questions

@@ -22,6 +22,7 @@ export type {
   Step,
   TourState,
 } from './review.ts';
+export type { DraftComment } from './review-comments.ts';
 export type { AnchorView, NoteView, RefView, StopView, TourOutcome, TourView } from './tour.ts';
 
 // Resolves from both src/ and dist/, which sit at the same depth.

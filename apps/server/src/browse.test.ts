@@ -93,7 +93,7 @@ beforeAll(async () => {
       headInBaseRepo: true,
       dir: repo,
       ...commitReader(repo, base, head),
-      currentHead: async () => head,
+      current: async () => ({ head, baseRef: 'main', base }),
       postReview: async () => {
         throw new Error('not in this test');
       },

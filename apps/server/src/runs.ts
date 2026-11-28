@@ -351,7 +351,7 @@ function describe(e: RunEvent): string[] {
     case 'review.submit':
       return e.outcome === 'posted'
         ? [
-            `review posted: ${clean(str(e.event))}, ${num(e.comments)} line comment(s), ${clean(str(e.url))}`,
+            `review posted: ${clean(str(e.event))}, ${num(e.comments)} comment(s) (${num(e.onLines)} on lines, ${num(e.inBody)} in the body), ${clean(str(e.url))}`,
           ]
         : [`review not posted (${clean(str(e.reason))}): ${clean(str(e.message))}`];
     case 'error':
