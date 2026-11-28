@@ -1255,6 +1255,8 @@ function withAuthor(
     check?: unknown;
     /** Keeps the answer check waiting until this settles. */
     checkGate?: Promise<void>;
+    /** Keeps the primer waiting until this settles, like a slow copy of a large session. */
+    primerGate?: Promise<void>;
   } = {},
 ) {
   const guide = scripted(goodTour);
@@ -1279,6 +1281,8 @@ function withAuthor(
     if (!request.fork) return guide.runner(request);
     if (request.keepIn !== undefined) {
       primers.push(request);
+      request.signal?.throwIfAborted();
+      await options.primerGate;
       if (options.failPrimer && primers.length === 1) {
         const subtype =
           options.failPrimer === 'budget' ? 'error_max_budget_usd' : 'error_during_execution';
@@ -1298,6 +1302,9 @@ function withAuthor(
       };
     }
     forks.push(request);
+    // As the real runner does: an abort listener never fires for a signal that's already
+    // aborted, so a deadline that passed before the fork started must be checked first.
+    request.signal?.throwIfAborted();
     if (options.hold) {
       await new Promise<void>((resolve, reject) => {
         releases.push(resolve);
@@ -1772,6 +1779,31 @@ describe('POST /api/questions', () => {
     expect(await res.json()).toMatchObject({
       answer: { source: 'guide', whyNotAuthor: "The author's session took longer than 1 second" },
     });
+    expect(author.forks[0]?.signal?.aborted).toBe(true);
+  });
+
+  test('a deadline that passes while the session is primed still hands the question to the guide', async () => {
+    let primed = () => {};
+    const primerGate = new Promise<void>((resolve) => {
+      primed = resolve;
+    });
+    const author = withAuthor({ hold: true, primerGate });
+    const { api } = await open(author.runner, undefined, 'claude-test', authorFound, {
+      questionTimeoutMs: 30,
+    });
+
+    const res = ask(api);
+    await vi.waitFor(() => expect(author.primers).toHaveLength(1));
+    // Set after the deadline's timer, and longer, so it fires after the deadline has passed.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(author.primers[0]?.signal?.aborted).toBe(true);
+    primed();
+
+    expect(await (await res).json()).toMatchObject({
+      answer: { source: 'guide', whyNotAuthor: "The author's session took longer than 1 second" },
+    });
+    // It got as far as the fork, with the deadline already gone.
+    expect(author.forks).toHaveLength(1);
     expect(author.forks[0]?.signal?.aborted).toBe(true);
   });
 
