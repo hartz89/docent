@@ -146,7 +146,7 @@ async function repo() {
           headInBaseRepo: true,
           dir,
           ...commitReader(dir, baseSha, head),
-          current: async () => ({ head, baseRef: 'main' }),
+          current: async () => ({ head, baseRef: 'main', base: baseSha }),
           postReview: async () => {
             throw new Error('not in this test');
           },

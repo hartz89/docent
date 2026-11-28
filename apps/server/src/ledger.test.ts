@@ -87,7 +87,7 @@ async function repoOf(
       headInBaseRepo: true,
       dir: repo,
       ...commitReader(repo, base, head),
-      current: async () => ({ head, baseRef: 'main' }),
+      current: async () => ({ head, baseRef: 'main', base }),
       postReview: async () => {
         throw new Error('not in this test');
       },

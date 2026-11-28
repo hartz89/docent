@@ -49,6 +49,7 @@ diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
 `;
 
 const prHead = commitSha('h'.repeat(40));
+const prBase = commitSha('b'.repeat(40));
 
 /**
  * GitHub's side of the PR: where its head is now, and the reviews posted to it. `slowRead`, when
@@ -58,6 +59,7 @@ function fakeGitHub() {
   return {
     head: prHead,
     baseRef: 'main',
+    base: prBase,
     posted: [] as ReviewPost[],
     refusal: null as string | null,
     slowRead: null as Promise<void> | null,
@@ -77,7 +79,7 @@ const sourceFor =
         title: 'Reflect the request origin',
         body: 'Reflects the origin instead of the wildcard.',
         author: 'someone',
-        base: commitSha('b'.repeat(40)),
+        base: prBase,
         // Where the PR's head is when the review opens.
         head: github.head,
         baseRef: 'main',
@@ -103,7 +105,7 @@ const sourceFor =
         entries: Object.keys(head).map((path) => ({ path, kind: 'file' as const })),
         truncated: false,
       }),
-      current: async () => ({ head: github.head, baseRef: github.baseRef }),
+      current: async () => ({ head: github.head, baseRef: github.baseRef, base: github.base }),
       postReview: async (review) => {
         if (github.refusal) throw new GitHubRefusal(github.refusal);
         github.posted.push(review);
@@ -2148,6 +2150,16 @@ describe('POST /api/review/submit', () => {
     github.baseRef = 'release';
 
     const res = await post(app, { event: 'APPROVE' });
+
+    expect(res.status).toBe(409);
+    expect(github.posted).toEqual([]);
+  });
+
+  test('refuses when the base branch was rebased under the same name, since base lines moved', async () => {
+    const { github, app } = await openWithGitHub();
+    github.base = commitSha('r'.repeat(40));
+
+    const res = await post(app, { event: 'COMMENT', body: 'x' });
 
     expect(res.status).toBe(409);
     expect(github.posted).toEqual([]);

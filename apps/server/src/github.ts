@@ -64,10 +64,11 @@ export type Workspace = {
   /** Every file in the repo at head, for browsing. */
   tree: () => Promise<RepoTree>;
   /**
-   * The PR's head commit and base branch right now: the head moves when the author pushes, and
-   * the base when they retarget the PR.
+   * The PR's head commit, base branch and merge base right now: the head moves when the author
+   * pushes, the base branch when they retarget the PR, and the merge base when the base branch is
+   * rebased under the same name.
    */
-  current: () => Promise<{ head: CommitSha; baseRef: string }>;
+  current: () => Promise<{ head: CommitSha; baseRef: string; base: CommitSha }>;
   /** Posts one review on this PR as the reviewer, and returns its link on GitHub. */
   postReview: (review: ReviewPost) => Promise<{ url: string }>;
   /** The files at head, for the symbol index: read from git's objects, never the working tree. */
@@ -227,9 +228,26 @@ export function githubSource(url: string, cacheDir: string): PrSource {
       dir,
       ...commitReader(dir, pr.base, pr.head),
       current: async () => {
-        const out = await ghForReview(['api', ...onGitHub, pull, '--jq', '[.head.sha, .base.ref]']);
-        const [head, baseRef] = JSON.parse(out) as [string, string];
-        return { head: commitSha(head), baseRef };
+        const out = await ghForReview([
+          'api',
+          ...onGitHub,
+          pull,
+          '--jq',
+          '[.head.sha, .base.ref, .base.sha]',
+        ]);
+        const [head, baseRef, baseTip] = JSON.parse(out) as [string, string, string];
+        // The merge base, as when the PR was opened: the base branch can be rebased under the same
+        // name, which moves what base-side line numbers mean.
+        const base = (
+          await ghForReview([
+            'api',
+            ...onGitHub,
+            `repos/${repo}/compare/${baseTip}...${head}`,
+            '--jq',
+            '.merge_base_commit.sha',
+          ])
+        ).trim();
+        return { head: commitSha(head), baseRef, base: commitSha(base) };
       },
       postReview: async ({ commitId, event, body, comments }) => {
         // The review goes in as JSON on stdin, so the reviewer's text is never an argument.

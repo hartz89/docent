@@ -872,6 +872,13 @@ Question: ${question}`,
           `The PR now targets ${now.baseRef}, not ${workspace.pr.baseRef}. Reopen it in Docent to review it again.`,
         );
       }
+      // Same branch, rebased: the diff is now against another commit.
+      if (now.base !== workspace.pr.base) {
+        throw new SubmitRefused(
+          'stale',
+          `The PR's merge base with ${now.baseRef} has moved since this tour, so its diff has changed. Reopen it in Docent to review it again.`,
+        );
+      }
       const { url } = await workspace.postReview({
         commitId: head,
         event: verdict.event,

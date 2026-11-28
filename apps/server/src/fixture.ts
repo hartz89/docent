@@ -62,7 +62,7 @@ export function fixtureSource(dir: string, record: ReviewRecorder = printReview)
           ? (JSON.parse(await readFileText(file, 'utf8')) as RepoTree)
           : { entries: [], truncated: false };
       },
-      current: async () => ({ head: pr.head, baseRef: pr.baseRef }),
+      current: async () => ({ head: pr.head, baseRef: pr.baseRef, base: pr.base }),
       postReview: async (review) => {
         record(review);
         return { url: `${pr.url}#pullrequestreview-0` };

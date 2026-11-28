@@ -157,7 +157,7 @@ async function openPushes(fixture: AdversarialFixture, pushes: readonly Push[]) 
     headInBaseRepo: true,
     dir,
     ...commitReader(dir, base, head),
-    current: async () => ({ head, baseRef: 'main' }),
+    current: async () => ({ head, baseRef: 'main', base }),
     postReview: async () => {
       throw new Error('An eval never posts a review.');
     },
