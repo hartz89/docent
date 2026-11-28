@@ -281,8 +281,8 @@ function MapFooter({ map, onOpen }: { map: MapData; onOpen: OpenNode }) {
   const left: string[] = [];
   if (map.hidden.changed > 0) left.push(`${map.hidden.changed} more changed`);
   if (map.hidden.callers > 0) left.push(`${map.hidden.callers} more callers`);
-  const partial = map.index.state === 'partial' || map.truncated;
-  if (left.length === 0 && map.otherFiles.length === 0 && !partial) return null;
+  const partial = map.index.state === 'partial';
+  if (left.length === 0 && map.otherFiles.length === 0 && !partial && !map.truncated) return null;
   return (
     <div className="map-footer">
       {left.length > 0 && <p>Not shown, to keep the map readable: {left.join(' and ')}.</p>}
@@ -305,6 +305,9 @@ function MapFooter({ map, onOpen }: { map: MapData; onOpen: OpenNode }) {
         </p>
       )}
       {partial && <p>Some callers may be missing: Docent read only part of the repo.</p>}
+      {!partial && map.truncated && (
+        <p>Some callers may be missing: a name used in many files was followed in only some.</p>
+      )}
     </div>
   );
 }

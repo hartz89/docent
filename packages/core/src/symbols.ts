@@ -418,10 +418,12 @@ function readModuleStatements(root: TreeSitter.Node, symbols: FileSymbols): void
         const local = specifier.childForFieldName('name')?.text;
         if (!local) continue;
         const name = specifier.childForFieldName('alias')?.text ?? local;
+        // A clause can wrap over lines; each name keeps its own.
+        const at = lineOf(specifier);
         symbols.exports.push(
           spec === null
-            ? { kind: 'local', name, line, local }
-            : { kind: 'from', name, line, spec, imported: local },
+            ? { kind: 'local', name, line: at, local }
+            : { kind: 'from', name, line: at, spec, imported: local },
         );
       }
       continue;

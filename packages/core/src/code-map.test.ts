@@ -97,6 +97,24 @@ describe('the changed side', () => {
       },
     ]);
   });
+
+  test('M1: a deleted file is listed, and a type and a const of one name stay apart', async () => {
+    const shapes = (n: number) =>
+      [
+        'export type User = { id: number };', // 1
+        'export function helper() {', // 2
+        `  return ${n};`, // 3
+        '}', // 4
+        'export const User = { make: () => ({ id: 1 }) };', // 5
+      ].join('\n');
+    const map = await mapOf(
+      { 'src/old.ts': 'export const gone = 1;\n', 'src/user.ts': shapes(1) },
+      { 'src/old.ts': '', 'src/user.ts': shapes(2) },
+    );
+    // Only helper changed: the type and the const around it are separate definitions.
+    expect(picture(map).changed).toEqual(['src/user.ts › helper']);
+    expect(map.otherFiles).toEqual(['src/old.ts']);
+  });
 });
 
 describe('the callers', () => {
@@ -163,6 +181,13 @@ describe('the callers', () => {
       edges: ['src/walk.ts › twice → src/walk.ts › walk'],
     });
     expect(map.edges[0]?.uses).toBe(1);
+  });
+
+  test('M2: a wrapped export clause naming the definition is not a use', async () => {
+    const lib = (n: number) =>
+      ['function helper() {', `  return ${n};`, '}', 'export {', '  helper,', '};'].join('\n');
+    const map = await mapOf({ 'src/lib.ts': lib(1) }, { 'src/lib.ts': lib(2) });
+    expect(picture(map)).toEqual({ changed: ['src/lib.ts › helper'], callers: [], edges: [] });
   });
 
   test('M3: a changed definition that uses another stays on the changed side', async () => {

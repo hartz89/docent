@@ -1,4 +1,4 @@
-// The code map (M1–M5): what a change touches, and who uses it, read from the symbol index alone.
+// The code map (M1–M4): what a change touches, and who uses it, read from the symbol index alone.
 // Search-based like the rest of navigation, so it's deterministic and never runs project code.
 import type { Diff, DiffFile } from './diff.ts';
 import type { SymbolIndex } from './symbol-index.ts';
@@ -65,9 +65,9 @@ export function codeMap(index: SymbolIndex, diff: Diff, limits: MapLimits = MAP_
   const otherAll: string[] = [];
   for (const file of diff.files) {
     const touch = touchesOf(file);
-    if (touch.first === null) continue;
     const symbols = index.symbolsOf(file.path);
-    if (!symbols) {
+    // Deleted, renamed or binary files have nothing at head to place: they're listed.
+    if (!symbols || touch.first === null) {
       otherAll.push(file.path);
       continue;
     }
@@ -168,22 +168,26 @@ function touchesOf(file: DiffFile): { first: number | null; inside: (span: Span)
   };
 }
 
-/** A file's top-level definitions, by line, with overloads of one name folded into one span. */
+/**
+ * A file's top-level definitions, by line. Overloads, one after another with the same name and
+ * kind, fold into one span; a `type User` and a `const User` stay apart.
+ */
 function spansOf(symbols: FileSymbols): Span[] {
-  const byName = new Map<string, Span>();
-  for (const d of symbols.definitions) {
-    if (!d.topLevel) continue;
-    const known = byName.get(d.name);
-    if (known) known.endLine = Math.max(known.endLine, d.endLine);
-    else byName.set(d.name, { name: d.name, kind: d.kind, line: d.line, endLine: d.endLine });
+  const spans: Span[] = [];
+  const tops = symbols.definitions.filter((d) => d.topLevel).sort((a, b) => a.line - b.line);
+  for (const d of tops) {
+    const last = spans.at(-1);
+    if (last && last.name === d.name && last.kind === d.kind) {
+      last.endLine = Math.max(last.endLine, d.endLine);
+    } else spans.push({ name: d.name, kind: d.kind, line: d.line, endLine: d.endLine });
   }
-  return [...byName.values()].sort((a, b) => a.line - b.line);
+  return spans;
 }
 
 /** The last line of a changed definition, overloads included. */
 function endOf(index: SymbolIndex, target: MapNode & { name: string }): number {
   const symbols = index.symbolsOf(target.path);
-  const span = symbols ? spansOf(symbols).find((s) => s.name === target.name) : undefined;
+  const span = symbols ? spansOf(symbols).find((s) => s.line === target.line) : undefined;
   return span?.endLine ?? target.line;
 }
 
