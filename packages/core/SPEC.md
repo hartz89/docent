@@ -42,6 +42,9 @@ A tour is the docent's walk through the diff: ordered stops that cite the code t
 - **T3.** `core_change` and `edge` stops cite at least one anchor. (type) The other kinds may cite none.
 - **T4.** Stops appear in kind order: intent, map, core change, edge, verdict prompt. A kind may repeat or be absent, except that the tour ends with exactly one `verdict_prompt`.
 - **T5.** A stop's flags mark what it surfaces beyond the change itself: `mismatch` (the handoff or description disagrees with the code) and `danger` (an obvious, dangerous problem). Any kind may carry flags, and flags play no part in which lines it explains. (type)
+- **T6.** A stop's body is text plus reference spans: a list of parts, each plain text or a **reference**, a phrase of the text with one anchor to the code it names. The text is the parts joined, so a reference can't overlap another or fall outside the text. A body with no references is plain text. (type)
+- **T7.** Placing references in a text never changes the text. Each reference, in the order given, takes the first occurrence of its exact phrase that no earlier one took. A phrase that is blank, spans lines, would split a `` `code` `` span, or has no free occurrence is left unplaced and reported, never guessed at.
+- **T8.** References heal like anchors: re-anchoring a body re-anchors each reference by A4–A6. A reference whose code is gone stays in the text, flagged out of date, and never points at the wrong lines.
 
 ## Explained lines
 
@@ -51,6 +54,7 @@ Which changed lines a tour's stops explain. These are the lines on the route (L2
 - **C2.** `intent`, `map` and `verdict_prompt` stops explain nothing. A map or intent stop may cite any lines, but citing them doesn't count, so a broad map can't put lines on the route.
 - **C3.** Stale citations count for nothing. Anchors that are out of date or at any other commit explain nothing. So a stale tour shows up as lines not on the route, not as a false route.
 - **C4.** Several stops may explain the same line. Each of them is listed.
+- **C5.** A body's references explain nothing. Only a stop's anchors put lines on the route, so a phrase pointing at code is a reading aid, never a citation.
 
 ## Proven skip
 
@@ -116,3 +120,4 @@ Jump to definition and imports, search-based, the way GitHub's code view does it
 - **N3.** An imported name is followed to its definition through default, named and namespace imports, `export { a as b }`, `export … from`, `export *` and `export default`. A namespace import leads to the module file. A cycle stops, and so does a chain of more than 16 steps.
 - **N4.** An import specifier resolves to a file in the repo only when it's relative, or matches the root `tsconfig.json`'s `paths`. It tries TypeScript's extensions, `.js` naming a `.ts` file, and `index` files. Anything else, like a package name or a path out of the repo, is unresolved, never guessed.
 - **N5.** Each place (path and line) appears once in a list of candidates, at its best rank.
+- **N6.** References to a symbol are every line, in every indexed file, where a name of that spelling appears as an identifier, never in a comment or a string. They come grouped by file, each line once. The files the caller puts first (the PR's changed files) come before the rest, each group by path, so a limit cuts the others first, and says that more exist.

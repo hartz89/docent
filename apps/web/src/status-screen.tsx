@@ -1,9 +1,19 @@
 import type { TourState } from '@docent/server';
+import { type ReactNode, useState } from 'react';
 
 type Working = Extract<TourState, { state: 'working' }>;
 
-/** Before the PR is read, or when the tour couldn't be written: a card on its own. */
-export function StatusScreen({ tour }: { tour: TourState }) {
+/**
+ * Before the PR is read, or when the tour couldn't be written: a card on its own. A failed tour
+ * offers Try again, which `onRetry` handles; it resolves once the page is following the new try.
+ */
+export function StatusScreen({
+  tour,
+  onRetry,
+}: {
+  tour: TourState;
+  onRetry?: () => Promise<void>;
+}) {
   if (tour.state === 'failed') {
     return (
       <main className="status-screen">
@@ -11,10 +21,8 @@ export function StatusScreen({ tour }: { tour: TourState }) {
           <h2>The tour couldn't be written</h2>
           <p className="lede">Docent stopped before the guide finished. Here's what went wrong:</p>
           <pre className="error-reason">{tour.reason}</pre>
-          <p className="error-hint">
-            Check that <code>gh auth status</code> and <code>claude</code> both work in a terminal,
-            then run the command again. Nothing was written to the repository.
-          </p>
+          <p className="error-hint">{hintFor(tour.reason)}</p>
+          {onRetry && <RetryButton onRetry={onRetry} />}
         </section>
       </main>
     );
@@ -25,6 +33,63 @@ export function StatusScreen({ tour }: { tour: TourState }) {
         <TourProgress tour={tour.state === 'working' ? tour : null} />
       </section>
     </main>
+  );
+}
+
+/** What to do about a failed tour, by what's known of why it failed. */
+function hintFor(reason: string): ReactNode {
+  if (/rate.?limit|usage limit|\b429\b|overloaded/i.test(reason)) {
+    return 'This looks like a usage limit. Wait a few minutes, then try again.';
+  }
+  if (/progress stream|server answered|failed to fetch|network/i.test(reason)) {
+    return "Docent's server may have stopped. If its terminal still shows it running, try again.";
+  }
+  const checks = (
+    <>
+      check that <code>gh auth status</code> and <code>claude</code> both work in a terminal
+    </>
+  );
+  // Not "author": a failure that mentions the author's session isn't a login problem.
+  if (
+    /\bauth(?:entication|enticated|orization|orized)?\b|not logged in|log ?in\b|credential|\b401\b/i.test(
+      reason,
+    )
+  ) {
+    return <>First {checks}, then try again.</>;
+  }
+  return (
+    <>
+      Often it's a passing hiccup, so try again. If it fails the same way, {checks}. Nothing was
+      written to the repository.
+    </>
+  );
+}
+
+function RetryButton({ onRetry }: { onRetry: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="status-actions">
+      <button
+        type="button"
+        className="primary-button"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          setError(null);
+          // Back to Try again once the page has caught up: if the tour failed again, or the
+          // server can't be reached, this card stays, and the button must work again.
+          onRetry()
+            .catch((failed: unknown) => {
+              setError(failed instanceof Error ? failed.message : String(failed));
+            })
+            .finally(() => setBusy(false));
+        }}
+      >
+        {busy ? 'Starting again…' : 'Try again'}
+      </button>
+      {error && <p className="status-error">Couldn't start again: {error}</p>}
+    </div>
   );
 }
 

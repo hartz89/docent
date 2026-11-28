@@ -36,6 +36,36 @@ describe('StopScanner', () => {
     );
   });
 
+  test('collects the route ahead of the stops, however the text is cut', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.string(), { maxLength: 8 }),
+        fc.array(stop, { maxLength: 4 }),
+        fc.array(fc.nat({ max: 2000 }), { maxLength: 30 }),
+        (route, stops, cuts) => {
+          const scanner = new StopScanner();
+          const json = JSON.stringify({ route, stops });
+          const ends = [...cuts.filter((c) => c < json.length).sort((a, b) => a - b), json.length];
+          const found = ends.flatMap((at) => scanner.push(json.slice(0, at)) ?? []);
+          expect(scanner.route).toEqual(route);
+          expect(found).toEqual(stops);
+        },
+      ),
+    );
+  });
+
+  test('a route title counts once its string closes, before the route ends', () => {
+    const scanner = new StopScanner();
+    const route = JSON.stringify(['Why it changes', 'The "fix"']);
+    scanner.push(`{"route": ${route.slice(0, 10)}`);
+    expect(scanner.route).toEqual([]);
+    scanner.push(`{"route": ${route.slice(0, -1)}`);
+    expect(scanner.route).toEqual(['Why it changes', 'The "fix"']);
+    // Strings in a stop, even under a "route" key, are not the route.
+    scanner.push(`{"route": ${route}, "stops": [{"route": ["no"], "title": "x"}`);
+    expect(scanner.route).toEqual(['Why it changes', 'The "fix"']);
+  });
+
   test('a stop is handed back only once its object closes', () => {
     const scanner = new StopScanner();
     expect(scanner.push('{"stops": [{"kind": "intent", "title": "a }')).toEqual([]);

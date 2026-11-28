@@ -66,6 +66,12 @@ export type Export =
   | { kind: 'local'; name: string; line: number; local: string | null }
   | { kind: 'from'; name: string; line: number; spec: string; imported: string };
 
+/**
+ * Every line where one name is used as an identifier in a file: called, read, typed, imported or
+ * defined. Never in a comment or a string. `lines` ascend, each once.
+ */
+export type Use = { name: string; lines: number[] };
+
 export type FileSymbols = {
   language: SourceLanguage;
   definitions: Definition[];
@@ -73,13 +79,19 @@ export type FileSymbols = {
   exports: Export[];
   /** Specifiers of `export * from '…'`. */
   exportsAll: string[];
+  /** Where each name is used, for find references. */
+  uses: Use[];
 };
 
-/** One language, ready to parse: a parser set to its grammar, and its tag query. */
+/**
+ * One language, ready to parse: a parser set to its grammar, its tag query, and the node types
+ * that are names in it.
+ */
 export type Grammar = {
   language: SourceLanguage;
   parser: TreeSitter.Parser;
   tags: TreeSitter.Query;
+  names: ReadonlySet<number>;
 };
 export type Grammars = ReadonlyMap<SourceLanguage, Grammar>;
 
@@ -112,9 +124,9 @@ const GO_EXTRAS = `
 (source_file (var_declaration (var_spec name: (identifier) @name) @definition.constant))
 `;
 
-const GRAMMAR_FILES: Record<
-  SourceLanguage,
-  { wasm: GrammarFile; tags: GrammarFile[]; extras: string }
+/** Every file the grammars are loaded from. The npm package carries just these (scripts/pack.ts). */
+export const GRAMMAR_FILES: Readonly<
+  Record<SourceLanguage, { wasm: GrammarFile; tags: GrammarFile[]; extras: string }>
 > = {
   typescript: {
     wasm: { packages: ['tree-sitter-typescript'], path: 'tree-sitter-typescript.wasm' },
@@ -145,6 +157,24 @@ const GRAMMAR_FILES: Record<
 
 /** Each of a file's definitions, imports and exports is kept up to this many. */
 export const MAX_ENTRIES = 5_000;
+/** A file's uses are kept up to this many lines in all, summed over its names. */
+export const MAX_USE_LINES = 50_000;
+/** A longer name is never looked up (the API's limit), so its uses aren't kept. */
+const LONGEST_NAME = 200;
+
+/**
+ * The node types that are a name, in any of the grammars. A grammar may alias one type to
+ * another, so each is matched by its name, through every id it has.
+ */
+const NAME_TYPES = new Set([
+  'identifier',
+  'type_identifier',
+  'property_identifier',
+  'shorthand_property_identifier',
+  'shorthand_property_identifier_pattern',
+  'field_identifier',
+  'package_identifier',
+]);
 
 /** Reads one file of a grammar package: the WASM grammar as bytes, a query as text. */
 export type GrammarReader = {
@@ -178,10 +208,15 @@ export async function loadGrammars(
     const tags = (await Promise.all(files.tags.map(read.text))).map(withoutDocComments);
     const parser = new treeSitter.Parser();
     parser.setLanguage(grammar);
+    const names = new Set<number>();
+    for (let id = 0; id < grammar.nodeTypeCount; id++) {
+      if (NAME_TYPES.has(grammar.nodeTypeForId(id) ?? '')) names.add(id);
+    }
     grammars.set(language, {
       language,
       parser,
       tags: new treeSitter.Query(grammar, [...tags, files.extras].join('\n')),
+      names,
     });
   }
   return grammars;
@@ -211,6 +246,7 @@ export function extractSymbols(
       imports: [],
       exports: [],
       exportsAll: [],
+      uses: [],
     };
     const matches = grammar.tags.matches(tree.rootNode, { progressCallback: overdue });
     if (overdue()) return null;
@@ -250,11 +286,55 @@ export function extractSymbols(
     symbols.imports.length = Math.min(symbols.imports.length, MAX_ENTRIES);
     symbols.exports.length = Math.min(symbols.exports.length, MAX_ENTRIES);
     symbols.exportsAll = [...new Set(symbols.exportsAll)].slice(0, MAX_ENTRIES);
+    const uses = readUses(tree, grammar.names, overdue);
+    if (uses === null) return null;
+    symbols.uses = uses;
     return symbols;
   } finally {
     tree.delete();
   }
 }
+
+/**
+ * Every name in the tree, with the lines it's on. Comments and strings hold no name nodes, so
+ * they're left out. Null when it runs past the deadline. Past `MAX_USE_LINES`, the rest of the
+ * file's uses are dropped, as its other entries are past their cap.
+ */
+function readUses(
+  tree: TreeSitter.Tree,
+  names: ReadonlySet<number>,
+  overdue: () => boolean,
+): Use[] | null {
+  const byName = new Map<string, number[]>();
+  let kept = 0;
+  let steps = 0;
+  const cursor = tree.walk();
+  try {
+    for (;;) {
+      // The clock is read every few thousand nodes: often enough for a deadline, cheap enough.
+      if (++steps % 4096 === 0 && overdue()) return null;
+      if (names.has(cursor.nodeTypeId)) {
+        // A name is a leaf, so there's nothing below it to visit.
+        const name = cursor.nodeText;
+        const line = cursor.startPosition.row + 1;
+        const lines = byName.get(name);
+        // Nodes come in source order, so a repeat on the same line is the last one kept.
+        if (name.length <= LONGEST_NAME && lines?.at(-1) !== line) {
+          if (lines) lines.push(line);
+          else byName.set(name, [line]);
+          if (++kept === MAX_USE_LINES) break;
+        }
+      } else if (cursor.gotoFirstChild()) continue;
+      while (!cursor.gotoNextSibling()) if (!cursor.gotoParent()) return usesOf(byName);
+    }
+    return usesOf(byName);
+  } finally {
+    cursor.delete();
+  }
+}
+
+const usesOf = (byName: Map<string, number[]>): Use[] =>
+  [...byName].map(([name, lines]) => ({ name, lines }));
 
 /** Statements that wrap a module-level definition without nesting it in a scope. */
 const MODULE_LEVEL = new Set([

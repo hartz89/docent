@@ -11,7 +11,6 @@ import { beforeAll, describe, expect, test } from 'vitest';
 import { type AppType, createApp } from './app.ts';
 import { fixedSession } from './author-session.ts';
 import { commitReader, MAX_FILE_BYTES } from './github.ts';
-import { gitHeadFiles } from './head-files.ts';
 import { Review } from './review.ts';
 
 const run = promisify(execFile);
@@ -94,7 +93,6 @@ beforeAll(async () => {
       headInBaseRepo: true,
       dir: repo,
       ...commitReader(repo, base, head),
-      headFiles: () => gitHeadFiles(repo, head),
       current: async () => ({ head, baseRef: 'main' }),
       postReview: async () => {
         throw new Error('not in this test');

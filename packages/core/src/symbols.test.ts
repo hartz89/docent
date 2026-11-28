@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { indexOf, testGrammars } from './symbols.testing.ts';
-import { extractSymbols } from './symbols.ts';
+import { extractSymbols, MAX_USE_LINES } from './symbols.ts';
 
 const at = (path: string, line: number) => expect.objectContaining({ path, line });
 
@@ -335,5 +335,56 @@ describe('resolving imports', () => {
     expect(resolve('../../secret')).toBeNull();
     expect(resolve('/etc/passwd')).toBeNull();
     expect(resolve('../secret')).toBe('secret.ts');
+  });
+});
+
+describe('references', () => {
+  test('N6: every line a name is used on, by file, never in comments or strings, first files first', async () => {
+    const index = await indexOf({
+      'src/retry.ts': [
+        '// retry is documented here', // 1
+        "export function retry(n: number) { return n > 0 ? retry(n - 1) : 'retry'; }", // 2
+      ].join('\n'),
+      'src/app.ts': [
+        "import { retry } from './retry';", // 1
+        'const client = { retry };', // 2
+        'client.retry(3); retry(1);', // 3
+      ].join('\n'),
+      'lib/other.py': 'def retry():\n    return retry\n',
+      'src/unrelated.ts': 'export const other = 1;',
+    });
+    const lines = (found: { files: { path: string; lines: number[] }[] }) =>
+      found.files.map(({ path, lines }) => `${path}:${lines.join(',')}`);
+
+    const all = index.references('retry');
+    expect(lines(all)).toEqual(['lib/other.py:1,2', 'src/app.ts:1,2,3', 'src/retry.ts:2']);
+    expect(all).toMatchObject({ total: 6, truncated: false });
+
+    const changedFirst = index.references('retry', (path) => path.startsWith('src/'));
+    expect(lines(changedFirst)).toEqual(['src/app.ts:1,2,3', 'src/retry.ts:2', 'lib/other.py:1,2']);
+
+    // A limit keeps the first files whole, cuts the last one short, and says so.
+    const limited = index.references('retry', (path) => path.startsWith('src/'), 4);
+    expect(lines(limited)).toEqual(['src/app.ts:1,2,3', 'src/retry.ts:2']);
+    expect(limited).toMatchObject({ total: 6, truncated: true });
+
+    expect(index.references('nowhere')).toEqual({ files: [], total: 0, truncated: false });
+  });
+
+  test('N6: TypeScript types, JSX tags and Go fields count as uses', async () => {
+    const index = await indexOf({
+      'a.tsx': 'type Props = {};\nconst A = (p: Props) => <Props />;\n',
+      'b.go': 'package b\ntype T struct{ Name string }\nfunc f(t T) string { return t.Name }\n',
+    });
+    expect(index.references('Props').files).toEqual([{ path: 'a.tsx', lines: [1, 2] }]);
+    expect(index.references('Name').files).toEqual([{ path: 'b.go', lines: [2, 3] }]);
+  });
+
+  test('N6: a file built to be dense keeps a capped number of use lines', async () => {
+    const grammar = (await testGrammars()).get('javascript');
+    if (!grammar) throw new Error('no JavaScript grammar');
+    const dense = Array.from({ length: 60_000 }, (_, i) => `v${i % 500};`).join('\n');
+    const uses = extractSymbols(grammar, dense)?.uses ?? [];
+    expect(uses.reduce((sum, use) => sum + use.lines.length, 0)).toBe(MAX_USE_LINES);
   });
 });

@@ -358,7 +358,7 @@ function ReviewItem({
   onKeep: () => void;
 }) {
   const file = useFile(draft.path, draft.side);
-  const tokens = file.data?.[draft.line - 1];
+  const tokens = file.lines?.[draft.line - 1];
   const where = whereLabel(draft);
   return (
     <article className={`review-item${stale ? ' stale' : ''}`}>
@@ -410,7 +410,7 @@ function ReviewItem({
           <span className="line-text">
             {tokens ? (
               <LineTokens tokens={tokens} />
-            ) : file.isPending ? null : (
+            ) : !file.lines && !file.text.isError ? null : (
               <span className="snippet-missing">This line isn't in the file any more</span>
             )}
           </span>

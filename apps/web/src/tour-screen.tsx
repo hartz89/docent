@@ -9,6 +9,7 @@ import type {
   PrInfo,
   ProofLabel,
   QuestionView,
+  RefView,
   ReviewSnapshot,
   StopView,
 } from '@docent/server';
@@ -35,6 +36,17 @@ import {
   whereLabel,
 } from './comments.tsx';
 import { FileTree, type Place } from './file-tree.tsx';
+import { follow } from './follow.ts';
+import {
+  back,
+  canGoBack,
+  canGoForward,
+  current,
+  emptyTrail,
+  forward,
+  type Trail,
+  visit,
+} from './jump.ts';
 import { Markdown } from './markdown.tsx';
 import type { Ready, Working } from './review-page.tsx';
 import {
@@ -67,6 +79,18 @@ type Viewing = {
 /** Opens a file on one side (by default head, or base if the PR deleted it), at a line if given. */
 type OpenFile = (path: string, side?: 'old' | 'new', at?: number) => void;
 
+const sameView = (a: Viewing, b: Viewing) =>
+  a.path === b.path &&
+  a.side === b.side &&
+  a.focus?.startLine === b.focus?.startLine &&
+  a.focus?.endLine === b.focus?.endLine &&
+  a.at === b.at;
+
+/** Alt+← and Alt+→ move through explored files, as an editor's back and forward do. */
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+const BACK_KEYS = isMac ? '⌥←' : 'Alt+←';
+const FORWARD_KEYS = isMac ? '⌥→' : 'Alt+→';
+
 const KIND_LABELS: Record<StopView['kind'], string> = {
   intent: 'Intent',
   map: 'Map',
@@ -81,10 +105,24 @@ export function TourScreen({ snapshot, tour }: Props) {
   const writing = ready ? null : (tour as Working);
   const [index, setIndex] = useState(0);
   const [anchorIndex, setAnchorIndex] = useState(0);
-  // A file opened from the ledger, the overview or the file tree, in place of the stop's citation.
-  const [viewing, setViewing] = useState<Viewing | null>(null);
   // At the verdict stop the middle pane lists the batch, until a citation is chosen.
   const [verdictCode, setVerdictCode] = useState(false);
+  // Files opened from the ledger, the overview, the file tree, a phrase of the stop or a jump to
+  // definition, in place of the stop's citation. Back and forward move along the trail; the stop
+  // is always its start.
+  const [trail, setTrail] = useState<Trail<Viewing>>(emptyTrail);
+  const viewing = current(trail);
+  // The lines a phrase of the stop points at, while it's hovered or focused. Shown over whatever
+  // the code column shows, and gone when the phrase lets go.
+  const [peek, setPeek] = useState<CurrentRef | null>(null);
+  // Any move along the trail ends a peek, so the place moved to is what shows, even while a
+  // phrase keeps keyboard focus.
+  const move = useCallback((step: (t: Trail<Viewing>) => Trail<Viewing>) => {
+    setPeek(null);
+    setTrail(step);
+  }, []);
+  const explore = useCallback((view: Viewing) => move((t) => visit(t, view, sameView)), [move]);
+  const toTour = useCallback(() => move(emptyTrail), [move]);
   // The left pane shows the route or the whole repo's files.
   const [pane, setPane] = useState<'route' | 'files'>('route');
   const goToFile = useRef<HTMLInputElement>(null);
@@ -161,7 +199,15 @@ export function TourScreen({ snapshot, tour }: Props) {
         ...all,
         [stopId]: [
           ...(all[stopId] ?? []),
-          { id, question, answer: null, error: null, correction: null, earlier: null },
+          {
+            id,
+            question,
+            answer: null,
+            error: null,
+            correction: null,
+            earlier: null,
+            askedAt: Date.now(),
+          },
         ],
       }));
       let checkId: string | null = null;
@@ -178,6 +224,17 @@ export function TourScreen({ snapshot, tour }: Props) {
       if (checkId) await followCheck(stopId, id, checkId);
     },
     [settle, followCheck],
+  );
+  // Asking again drops the failed exchange and asks the same question as a new one.
+  const retry = useCallback(
+    (stopId: string, id: string, question: string) => {
+      setThreads((all) => ({
+        ...all,
+        [stopId]: (all[stopId] ?? []).filter((e) => e.id !== id),
+      }));
+      void ask(stopId, question);
+    },
+    [ask],
   );
 
   // Under 1200px wide the route leaves its column for a drawer; under 800px the layout stacks,
@@ -201,30 +258,28 @@ export function TourScreen({ snapshot, tour }: Props) {
 
   const stop = stops[index];
   // When the finished tour replaces the streamed stops, a repair may have added a stop before
-  // this one. Follow the stop the reviewer was reading, by its title, not its number.
-  const reading = useRef<{ stops: readonly StopView[]; title: string | null } | null>(null);
+  // this one, or retitled it. Follow the stop the reviewer was reading (see `follow`).
+  const reading = useRef<{ stops: readonly StopView[]; index: number } | null>(null);
   // A layout effect, so the wrong stop never shows for a frame.
   useLayoutEffect(() => {
     const was = reading.current;
-    const title = stops[index]?.title ?? null;
-    // Only a new list of stops re-selects; the reviewer moving changes the title on purpose.
-    if (was && was.stops !== stops && was.title !== null && title !== was.title) {
-      const moved = stops.findIndex((s) => s.title === was.title);
-      // A whole new tour may have dropped that stop: stay as close as the new route allows.
-      const next = moved !== -1 ? moved : Math.min(index, Math.max(0, stops.length - 1));
+    // Only a new list of stops re-selects; the reviewer moving changes the stop on purpose.
+    if (was && was.stops !== stops) {
+      const next = follow(was.stops, was.index, stops);
       if (next !== index) {
-        reading.current = { stops, title: stops[next]?.title ?? null };
+        reading.current = { stops, index: next };
         setIndex(next);
         return;
       }
     }
-    reading.current = { stops, title };
+    reading.current = { stops, index };
   }, [stops, index]);
   // The guide outlives each stop, so it would keep the last stop's scroll position. A stop seen
   // for the first time opens at the top; a revisited stop opens where it was left. The guide
   // scrolls in its own column, or, in the stacked phone layout, the columns scroll together.
   const guide = useRef<HTMLElement>(null);
   const columns = useRef<HTMLDivElement>(null);
+  const codeColumn = useRef<HTMLElement>(null);
   const scrollByStop = useRef(new Map<string, [number, number]>());
   const go = useCallback(
     (next: number) => {
@@ -234,7 +289,8 @@ export function TourScreen({ snapshot, tour }: Props) {
       setIndex(Math.max(0, Math.min(stops.length - 1, next)));
       setAnchorIndex(0);
       setOverviewFirst(false);
-      setViewing(null);
+      setTrail(emptyTrail());
+      setPeek(null);
       setVerdictCode(false);
     },
     [stop, stops.length],
@@ -261,13 +317,24 @@ export function TourScreen({ snapshot, tour }: Props) {
     columns.current.scrollTop = columnsTop;
   }, [stopId]);
 
+  // The skip link and / go straight to the question box, past the route and the code. A stop
+  // with no question box, like the verdict, starts at its first control instead.
+  const toGuide = useCallback(() => {
+    const column = guide.current;
+    const target = column?.querySelector<HTMLElement>('textarea, .verdict-choices input');
+    (target ?? column)?.focus();
+  }, []);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       // In the route drawer, keys belong to the drawer.
       if (target?.closest('input, textarea, select, [contenteditable="true"], dialog')) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (event.key === 'ArrowRight') {
+      if (event.key === '/') {
+        event.preventDefault();
+        toGuide();
+      } else if (event.key === 'ArrowRight') {
         event.preventDefault();
         go(index + 1);
       } else if (event.key === 'ArrowLeft') {
@@ -277,7 +344,27 @@ export function TourScreen({ snapshot, tour }: Props) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [go, index]);
+  }, [go, index, toGuide]);
+
+  // Esc leaves explored files for the tour; Alt+← and Alt+→ go back and forward among them.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], dialog')) return;
+      if (event.key === 'Escape' && !event.altKey && trail.at >= 0) {
+        event.preventDefault();
+        toTour();
+      } else if (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        // Always kept from the browser: elsewhere than macOS, Alt+← is its own Back, and one
+        // press too many would leave the review.
+        event.preventDefault();
+        move(event.key === 'ArrowLeft' ? back : forward);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [trail, toTour, move]);
 
   // ⌘P (Ctrl+P elsewhere) jumps to "Go to file", as in an editor.
   useEffect(() => {
@@ -371,7 +458,7 @@ export function TourScreen({ snapshot, tour }: Props) {
       setVerdictCode(true);
     } else {
       go(written >= 0 && written !== verdictIndex ? written : index);
-      setViewing({ path: draft.path, side: draft.side, at: draft.line });
+      explore({ path: draft.path, side: draft.side, at: draft.line });
     }
   };
   /** Opens a comment on a line, unless one with text is already open: that one keeps its words. */
@@ -394,6 +481,28 @@ export function TourScreen({ snapshot, tour }: Props) {
     />
   );
 
+  // A phrase pointing at code shows its lines while hovered or focused. A click or tap opens them
+  // in the code column, with the way back to the stop; on a phone, that also scrolls down to it.
+  const refHandlers = useMemo(
+    (): RefHandlers => ({
+      onPeek: setPeek,
+      onPin: ({ path, side, startLine, endLine }) => {
+        explore({
+          path,
+          side,
+          focus: { path, side, startLine, endLine },
+          label: `${linesLabel({ startLine, endLine })} · named in the text`,
+        });
+        if (!stacked) return;
+        const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        codeColumn.current?.scrollIntoView({
+          block: 'start',
+          behavior: smooth ? 'smooth' : 'auto',
+        });
+      },
+    }),
+    [stacked, explore],
+  );
   if (!snapshot.pr) return null;
 
   const anchor = stop?.anchors[anchorIndex] ?? null;
@@ -401,10 +510,16 @@ export function TourScreen({ snapshot, tour }: Props) {
     viewing ?? (anchor && !overviewFirst ? { path: anchor.path, side: anchor.side } : null);
   const cited =
     shown && stop ? stop.anchors.filter((a) => a.path === shown.path && a.side === shown.side) : [];
+  // A peek at another file shows that file until the phrase lets go; one in this file only marks
+  // its lines, so the view doesn't jump back when it ends.
+  const peekElsewhere =
+    peek !== null && (shown === null || peek.path !== shown.path || peek.side !== shown.side);
+  const showing = peekElsewhere ? { path: peek.path, side: peek.side } : shown;
   const isVerdict = stop?.kind === 'verdict_prompt';
-  // Any line on screen takes a comment, in a file the tour cites or one opened from the tree.
-  // A comment is written at a stop, so none before the first stop arrives.
-  const commenting = !posted && shown !== null && stop !== undefined;
+  // Any line on screen takes a comment, in a file the tour cites or one opened from the tree,
+  // the ledger or a jump. Not during a passing peek, and none before the first stop arrives,
+  // since a comment is written at a stop.
+  const commenting = !posted && shown !== null && !peekElsewhere && stop !== undefined;
   const onThisFile = (d: { path: string; side: string }) =>
     shown !== null && d.path === shown.path && d.side === shown.side;
   const below = (line: number) => {
@@ -452,7 +567,7 @@ export function TourScreen({ snapshot, tour }: Props) {
           aria-controls="pane-route"
           onClick={() => setPane('route')}
         >
-          Route <span className="pane-count">{stops.length} stops</span>
+          Route <span className="pane-count">{plural(stops.length, 'stop')}</span>
         </button>
         <button
           type="button"
@@ -475,7 +590,7 @@ export function TourScreen({ snapshot, tour }: Props) {
           }}
           commentsByStop={countBy(drafts.current, (d) => d.stopId)}
           onOpenFile={(path, side, at) => {
-            setViewing({ path, side: side ?? sideFor(diff, path), ...(at ? { at } : {}) });
+            explore({ path, side: side ?? sideFor(diff, path), ...(at ? { at } : {}) });
             closeRoute();
           }}
           tour={ready}
@@ -488,7 +603,7 @@ export function TourScreen({ snapshot, tour }: Props) {
           places={places}
           selected={shown?.side === 'new' ? shown.path : null}
           onOpen={(path) => {
-            setViewing({ path, side: 'new' });
+            explore({ path, side: 'new' });
             closeRoute();
           }}
           filterRef={goToFile}
@@ -499,6 +614,10 @@ export function TourScreen({ snapshot, tour }: Props) {
 
   return (
     <div className="app">
+      {/* A button, not a link: it focuses the question box itself rather than moving the URL. */}
+      <button type="button" className="skip-link" onClick={toGuide}>
+        Skip to the guide
+      </button>
       <TopBar
         snapshot={snapshot}
         diff={diff}
@@ -516,6 +635,17 @@ export function TourScreen({ snapshot, tour }: Props) {
           );
         }}
         drawer={drawer ? { open: routeOpen, onOpen: openRoute } : null}
+        onVerdict={
+          ready && stops.at(-1)?.kind === 'verdict_prompt'
+            ? () => {
+                go(stops.length - 1);
+                // Once the verdict stop has rendered, start the reviewer on its choices.
+                requestAnimationFrame(() =>
+                  document.querySelector<HTMLInputElement>('.verdict-choices input')?.focus(),
+                );
+              }
+            : null
+        }
       />
       <div className="columns" ref={columns}>
         {drawer ? (
@@ -527,8 +657,8 @@ export function TourScreen({ snapshot, tour }: Props) {
             {leftPane}
           </nav>
         )}
-        <section className="column code-column" aria-label="Code">
-          {listsBatch ? (
+        <section className="column code-column" aria-label="Code" ref={codeColumn}>
+          {listsBatch && !peekElsewhere ? (
             <ReviewList
               current={drafts.current}
               stale={drafts.stale}
@@ -540,7 +670,7 @@ export function TourScreen({ snapshot, tour }: Props) {
               onKeep={(draft) => drafts.save({ ...draft, head: pr.head })}
               composer={composer}
             />
-          ) : shown ? (
+          ) : showing ? (
             <>
               <div className="code-header">
                 {backToReview && (
@@ -548,7 +678,7 @@ export function TourScreen({ snapshot, tour }: Props) {
                     type="button"
                     className="text-button back-to-review"
                     onClick={() => {
-                      setViewing(null);
+                      toTour();
                       setVerdictCode(false);
                     }}
                   >
@@ -556,25 +686,52 @@ export function TourScreen({ snapshot, tour }: Props) {
                   </button>
                 )}
                 {/* Truncates from the start, so the file name stays in view. */}
-                <span className="code-path" title={shown.path}>
-                  <bdi>{shown.path}</bdi>
+                <span className="code-path" title={showing.path}>
+                  <bdi>{showing.path}</bdi>
                 </span>
                 <span className="code-range">
-                  {viewing
-                    ? (viewing.label ??
-                      (diff.files.some((f) => f.path === shown.path)
-                        ? 'changed in this PR'
-                        : 'not changed by this PR · read-only'))
-                    : anchor
-                      ? `lines ${anchor.startLine}–${anchor.endLine} · cited by this stop`
-                      : ''}
+                  {peek
+                    ? `${linesLabel(peek)} · named in the text`
+                    : viewing
+                      ? (viewing.label ??
+                        (diff.files.some((f) => f.path === showing.path)
+                          ? 'changed in this PR'
+                          : 'not changed by this PR · read-only'))
+                      : anchor
+                        ? `lines ${anchor.startLine}–${anchor.endLine} · cited by this stop`
+                        : ''}
                 </span>
-                <span className="code-side">{shown.side === 'new' ? 'head' : 'base'}</span>
-                {viewing && !backToReview && (
+                <span className="code-side">{showing.side === 'new' ? 'head' : 'base'}</span>
+                {trail.entries.length > 0 && !peekElsewhere && (
+                  <span className="trail-nav">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="Back"
+                      title={`Back (${BACK_KEYS})`}
+                      disabled={!canGoBack(trail)}
+                      onClick={() => move(back)}
+                    >
+                      <span aria-hidden="true">‹</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="Forward"
+                      title={`Forward (${FORWARD_KEYS})`}
+                      disabled={!canGoForward(trail)}
+                      onClick={() => move(forward)}
+                    >
+                      <span aria-hidden="true">›</span>
+                    </button>
+                  </span>
+                )}
+                {viewing && !peekElsewhere && !backToReview && (
                   <button
                     type="button"
                     className="secondary-button back-to-stop"
-                    onClick={() => setViewing(null)}
+                    title="Back to the tour (Esc)"
+                    onClick={toTour}
                   >
                     <span aria-hidden="true">←</span>{' '}
                     {stop && !overviewFirst ? `Back to stop ${index + 1}` : 'Back to the overview'}
@@ -582,28 +739,59 @@ export function TourScreen({ snapshot, tour }: Props) {
                 )}
               </div>
               <CodeView
-                path={shown.path}
-                side={shown.side}
-                cited={viewing ? (viewing.focus ? [viewing.focus] : []) : cited}
-                focus={
-                  viewing
-                    ? (viewing.focus ??
-                      (viewing.at ? { startLine: viewing.at, endLine: viewing.at } : null))
-                    : anchor
+                path={showing.path}
+                side={showing.side}
+                cited={
+                  peekElsewhere
+                    ? (stop?.anchors.filter((a) => a.path === peek.path && a.side === peek.side) ??
+                      [])
+                    : viewing
+                      ? viewing.focus
+                        ? [viewing.focus]
+                        : []
+                      : cited
                 }
-                changed={changes.get(`${shown.side}:${shown.path}`) ?? new Set()}
-                offRoute={offRoute.get(`${shown.side}:${shown.path}`) ?? new Set()}
-                onStep={viewing ? undefined : stepAnchor}
+                focus={
+                  peekElsewhere
+                    ? peek
+                    : viewing
+                      ? (viewing.focus ??
+                        (viewing.at ? { startLine: viewing.at, endLine: viewing.at } : null))
+                      : anchor
+                }
+                named={peek}
+                changed={changes.get(`${showing.side}:${showing.path}`) ?? new Set()}
+                offRoute={offRoute.get(`${showing.side}:${showing.path}`) ?? new Set()}
+                onStep={viewing || peekElsewhere ? undefined : stepAnchor}
+                onJump={(to) =>
+                  explore({
+                    path: to.path,
+                    side: 'new',
+                    ...(to.line
+                      ? {
+                          focus: {
+                            path: to.path,
+                            side: 'new',
+                            startLine: to.line,
+                            endLine: to.line,
+                          },
+                        }
+                      : {}),
+                    label: to.line ? `line ${to.line} · ${to.label}` : to.label,
+                  })
+                }
                 onComment={commenting ? (line) => openComposer(shown, line) : undefined}
                 below={commenting ? below : undefined}
-                commentLine={composing && onThisFile(composing) ? composing.line : null}
+                commentLine={
+                  commenting && composing && onThisFile(composing) ? composing.line : null
+                }
               />
             </>
           ) : (
-            <Overview snapshot={snapshot} diff={diff} onOpen={setViewing} />
+            <Overview snapshot={snapshot} diff={diff} onOpen={explore} />
           )}
         </section>
-        <aside className="column" aria-label="The guide" ref={guide}>
+        <aside className="column" aria-label="The guide" ref={guide} tabIndex={-1}>
           {!stop ? (
             <div className="narration">
               <div className="narration-body fade-in">
@@ -619,8 +807,9 @@ export function TourScreen({ snapshot, tour }: Props) {
               threadsLoaded={threadsLoaded}
               head={snapshot.pr?.head ?? ''}
               onAsk={(question) => void ask(stop.id, question)}
+              onRetry={(exchange) => retry(stop.id, exchange.id, exchange.question)}
               onOpenCite={(cite) =>
-                setViewing({
+                explore({
                   path: cite.path,
                   side: cite.side,
                   focus: cite,
@@ -631,9 +820,10 @@ export function TourScreen({ snapshot, tour }: Props) {
               onAnchor={(i) => {
                 setOverviewFirst(false);
                 setAnchorIndex(i);
-                setViewing(null);
+                toTour();
                 setVerdictCode(true);
               }}
+              refHandlers={refHandlers}
               isLast={index === stops.length - 1}
               onNext={() => go(index + 1)}
               hasComments={hasDrafts || posted !== null}
@@ -653,7 +843,9 @@ export function TourScreen({ snapshot, tour }: Props) {
               waiting={
                 writing?.attempt === 1 &&
                 writing.steps.find((s) => s.status === 'active')?.id === 'writing'
-                  ? 'Writing the next stop…'
+                  ? writing.updating
+                    ? 'Updating for the new commits…'
+                    : 'Writing the next stop…'
                   : 'Checking the whole tour…'
               }
               verdict={
@@ -756,6 +948,7 @@ function TopBar({
   pending,
   onOpenBatch,
   drawer,
+  onVerdict,
 }: {
   snapshot: ReviewSnapshot;
   diff: Diff;
@@ -770,6 +963,8 @@ function TopBar({
   onOpenBatch: () => void;
   /** How to open the route when it's a drawer; null when it has its own column. */
   drawer: { open: boolean; onOpen: () => void } | null;
+  /** Goes to the verdict stop; null until the whole tour is written and checked. */
+  onVerdict: (() => void) | null;
 }) {
   const pr = snapshot.pr;
   const lines = diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
@@ -858,12 +1053,21 @@ function TopBar({
           <span aria-hidden="true">✓</span>{' '}
           <span className="verdict-button-label">{postedLabel(posted)}</span>
         </a>
+      ) : onVerdict ? (
+        <button
+          type="button"
+          className="verdict-button ready"
+          title="Go to the verdict, the last stop"
+          onClick={onVerdict}
+        >
+          <FlagIcon /> <span className="verdict-button-label">Go to verdict</span>
+        </button>
       ) : (
         <button
           type="button"
           className="verdict-button"
           disabled
-          title="Comes at the end of the tour"
+          title="Opens once the whole tour is written and checked"
         >
           <FlagIcon /> <span className="verdict-button-label">Verdict at the end</span>
         </button>
@@ -947,6 +1151,7 @@ function Route({
   return (
     <div className="route">
       {tour && <LedgerSummary ledger={tour.ledger} />}
+      <UpdateNote stops={stops} tour={tour} writing={writing} />
       <h2 className="section-label">On the route</h2>
       <ol className="stops">
         {stops.map((stop, i) => {
@@ -970,6 +1175,11 @@ function Route({
                         · {flag}
                       </span>
                     ))}
+                    {stop.updated && (
+                      <span className="stop-new" title="New since your last visit">
+                        · new
+                      </span>
+                    )}
                   </span>
                   <span className="stop-title">{inline(stop.title)}</span>
                 </span>
@@ -1219,6 +1429,42 @@ function FilePath({ path }: { path: string }) {
   );
 }
 
+/**
+ * When the tour updates an earlier one for new commits: what was kept and what's new. While the
+ * guide updates it, the stops shown are the kept ones.
+ */
+function UpdateNote({
+  stops,
+  tour,
+  writing,
+}: {
+  stops: readonly StopView[];
+  tour: Ready | null;
+  writing: Working | null;
+}) {
+  if (writing?.updating) {
+    return (
+      <p className="update-note" aria-live="polite">
+        New commits since the last tour. These stops cite code that hasn't changed; the guide is
+        writing about what did.
+      </p>
+    );
+  }
+  const update = tour?.update;
+  if (!update) return null;
+  const fresh = stops.filter((s) => s.updated).length;
+  const parts = [
+    `${fresh} new`,
+    `${stops.length - fresh} kept`,
+    ...(update.dropped ? [`${update.dropped} removed`] : []),
+  ];
+  return (
+    <p className="update-note">
+      Updated for the commits since <code>{update.from.slice(0, 7)}</code>: {parts.join(', ')}.
+    </p>
+  );
+}
+
 /** The route's next row while the guide writes: says what's happening, never how long it'll take. */
 function UpcomingStop({ stops, writing }: { stops: readonly StopView[]; writing: Working }) {
   const step = writing.steps.find((s) => s.status === 'active')?.id;
@@ -1226,11 +1472,13 @@ function UpcomingStop({ stops, writing }: { stops: readonly StopView[]; writing:
   const label =
     writing.attempt > 1
       ? 'Fixing what the checker found'
-      : step === 'checking' || verdictIn
-        ? 'Checking the whole tour'
-        : step === 'writing'
-          ? `Writing stop ${Math.max(writing.writing, stops.length + 1)}`
-          : 'Planning the route';
+      : writing.updating && step !== 'checking'
+        ? 'Updating for the new commits'
+        : step === 'checking' || verdictIn
+          ? 'Checking the whole tour'
+          : step === 'writing'
+            ? `Writing stop ${Math.max(writing.writing, stops.length + 1)}`
+            : 'Planning the route';
   return (
     <li className="upcoming-stop" aria-live="polite">
       <span className="upcoming-dot" aria-hidden="true" />
@@ -1254,7 +1502,13 @@ function Overview({
   return (
     <div className="overview fade-in">
       <h3>What the PR says</h3>
-      <p className="description">{snapshot.pr?.body.trim() || 'No description.'}</p>
+      {snapshot.pr?.body.trim() ? (
+        <div className="description">
+          <Markdown text={snapshot.pr.body} />
+        </div>
+      ) : (
+        <p className="description empty">The PR has no description.</p>
+      )}
       <h3>Files in this change</h3>
       <ul className="file-list">
         {diff.files.map((file) => {
@@ -1291,6 +1545,8 @@ type Exchange = {
   correction: CorrectionView | null;
   /** Set for a question asked at another head commit, or at a stop this tour doesn't have. */
   earlier: QuestionView['earlier'];
+  /** When it was asked on this page, so the wait counts from then; null for a stored question. */
+  askedAt: number | null;
 };
 
 const fromStored = (q: QuestionView): Exchange => ({
@@ -1300,6 +1556,7 @@ const fromStored = (q: QuestionView): Exchange => ({
   error: null,
   correction: q.correction,
   earlier: q.earlier,
+  askedAt: null,
 });
 
 /** Where an earlier question was asked, when that isn't this commit and this stop. */
@@ -1328,9 +1585,11 @@ function Narration({
   threadsLoaded,
   head,
   onAsk,
+  onRetry,
   onOpenCite,
   activeAnchor,
   onAnchor,
+  refHandlers,
   isLast,
   onNext,
   tray,
@@ -1347,9 +1606,12 @@ function Narration({
   /** The head commit this tour covers. */
   head: string;
   onAsk: (question: string) => void;
+  /** Asks a question that couldn't be answered again. */
+  onRetry: (exchange: Exchange) => void;
   onOpenCite: (cite: AnchorView) => void;
   activeAnchor: number;
   onAnchor: (index: number) => void;
+  refHandlers: RefHandlers;
   isLast: boolean;
   onNext: () => void;
   /** The pending batch, when it holds any comments. */
@@ -1364,6 +1626,7 @@ function Narration({
   verdict: ReactNode;
 }) {
   const [draft, setDraft] = useState('');
+  const questionBox = useRef<HTMLTextAreaElement>(null);
   const last = exchanges.at(-1);
   const pending = last !== undefined && last.answer === null && last.error === null;
   // A new question scrolls into view at the top, so its answer arrives below it and the
@@ -1387,9 +1650,12 @@ function Narration({
   return (
     <div className="narration">
       <div className="narration-body fade-in">
-        <div className="narration-kind">{KIND_LABELS[stop.kind]}</div>
+        <div className="narration-kind">
+          {KIND_LABELS[stop.kind]}
+          {stop.updated && <span className="new-badge">New since your last visit</span>}
+        </div>
         <h2 className="narration-title">{inline(stop.title)}</h2>
-        <div className="narration-text">{paragraphs(stop.body)}</div>
+        <div className="narration-text">{prose(stop.body, stop.refs, refHandlers)}</div>
 
         {stop.anchors.length > 0 && (
           <div className="chips">
@@ -1452,15 +1718,31 @@ function Narration({
                     )}
                   </>
                 ) : exchange.error ? (
-                  <div className="exchange-source" role="alert">
-                    Couldn't answer: {exchange.error}
+                  <div className="exchange-error" role="alert">
+                    <p className="exchange-error-label">Couldn't answer this one</p>
+                    <p>{exchange.error}</p>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={pending}
+                      onClick={() => {
+                        onRetry(exchange);
+                        // The button goes with the failed exchange; keep focus in the guide.
+                        requestAnimationFrame(() => questionBox.current?.focus());
+                      }}
+                    >
+                      Ask again
+                    </button>
                   </div>
                 ) : (
-                  <div className="exchange-source" aria-live="polite">
-                    {author?.found
-                      ? "The author's session is thinking it over…"
-                      : 'The guide is reading the code…'}
-                  </div>
+                  <Pending
+                    since={exchange.askedAt ?? Date.now()}
+                    label={
+                      author?.found
+                        ? "The author's session is thinking it over"
+                        : 'The guide is reading the code'
+                    }
+                  />
                 )}
               </div>
             ))}
@@ -1471,6 +1753,7 @@ function Narration({
               {exchanges.length > 0 ? 'Ask a follow-up' : 'Your question'}
             </label>
             <textarea
+              ref={questionBox}
               id={`question-${stop.id}`}
               value={draft}
               placeholder="Why is it built this way? What calls this?"
@@ -1483,8 +1766,8 @@ function Narration({
               }}
             />
             <div className="question-actions">
-              <span>
-                <kbd>⌘</kbd> <kbd>Enter</kbd> to ask
+              <span className="shortcut-hint">
+                <kbd>{IS_MAC ? '⌘' : 'Ctrl'}</kbd> <kbd>Enter</kbd> to ask · <kbd>/</kbd> jumps here
               </span>
               <button
                 type="button"
@@ -1516,6 +1799,40 @@ function Narration({
           ) : null}
         </div>
       </footer>
+    </div>
+  );
+}
+
+/** The modifier the question box's shortcut takes: ⌘ on a Mac, Ctrl elsewhere. */
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
+/**
+ * An answer on its way. Answers take from seconds to a minute, so it pulses and counts the
+ * seconds: honest about time passing, without guessing how long is left.
+ */
+function Pending({ label, since }: { label: string; since: number }) {
+  const elapsed = () => Math.floor((Date.now() - since) / 1000);
+  const [seconds, setSeconds] = useState(elapsed);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `elapsed` only reads `since`.
+  useEffect(() => {
+    setSeconds(elapsed());
+    const timer = setInterval(() => setSeconds(elapsed()), 1000);
+    return () => clearInterval(timer);
+  }, [since]);
+  return (
+    <div className="exchange-pending">
+      <span className="pending-dots" aria-hidden="true">
+        <span className="dot" />
+        <span className="dot" />
+        <span className="dot" />
+      </span>
+      {/* Announced once; the seconds aren't, so a screen reader isn't read a clock. */}
+      <span aria-live="polite">{label}…</span>
+      {seconds >= 3 && (
+        <span className="elapsed" aria-hidden="true">
+          {seconds} s
+        </span>
+      )}
     </div>
   );
 }
@@ -1554,15 +1871,98 @@ function Correction({
   );
 }
 
-/** Plain paragraphs, with `backticks` shown as code. The guide's text is never parsed as HTML. */
-function paragraphs(text: string): ReactNode {
-  return text
-    .split(/\n\s*\n/)
-    .filter((p) => p.trim())
-    .map((p, i) => (
-      // biome-ignore lint/suspicious/noArrayIndexKey: paragraphs are positional.
-      <p key={i}>{inline(p)}</p>
-    ));
+/** What a phrase pointing at code does when it's hovered or focused, and when it's clicked. */
+type RefHandlers = { onPeek: (ref: CurrentRef | null) => void; onPin: (ref: CurrentRef) => void };
+
+/**
+ * Plain paragraphs, with `backticks` shown as code and the stop's references as phrases that
+ * point at code. The guide's text is never parsed as HTML. A reference never spans a paragraph
+ * or splits a code span (core's T7), so each piece renders on its own.
+ */
+function prose(text: string, refs: readonly RefView[], handlers: RefHandlers): ReactNode {
+  const paragraphs: [number, number][] = [];
+  let start = 0;
+  for (const gap of text.matchAll(/\n\s*\n/g)) {
+    paragraphs.push([start, gap.index]);
+    start = gap.index + gap[0].length;
+  }
+  paragraphs.push([start, text.length]);
+  return paragraphs
+    .filter(([from, to]) => text.slice(from, to).trim())
+    .map(([from, to]) => {
+      const pieces: ReactNode[] = [];
+      let at = from;
+      for (const ref of refs) {
+        if (ref.start < at || ref.end > to) continue;
+        if (ref.start > at) pieces.push(inline(text.slice(at, ref.start)));
+        pieces.push(
+          <RefPhrase key={ref.start} target={ref} handlers={handlers}>
+            {inline(text.slice(ref.start, ref.end))}
+          </RefPhrase>,
+        );
+        at = ref.end;
+      }
+      if (at < to) pieces.push(inline(text.slice(at, to)));
+      return <p key={from}>{pieces}</p>;
+    });
+}
+
+type CurrentRef = Extract<RefView, { state: 'current' }>;
+
+/**
+ * A phrase that points at code. Hovering it with a mouse, or focusing it, shows its lines in the
+ * code view; clicking or tapping opens them there, with a way back to the stop. One whose code is
+ * gone is plain text with a note, never pointing at the wrong lines.
+ */
+function RefPhrase({
+  target: ref,
+  handlers: { onPeek, onPin },
+  children,
+}: {
+  target: RefView;
+  handlers: RefHandlers;
+  children: ReactNode;
+}) {
+  const file = ref.path.split('/').at(-1) ?? ref.path;
+  if (ref.state === 'out_of_date') {
+    return (
+      <span className="ref stale" title={`The code this named in ${file} has changed since.`}>
+        {children}
+        <span className="sr-only"> (the code this named in {file} has changed since)</span>
+      </span>
+    );
+  }
+  const where = `${file} ${linesLabel(ref)}${ref.side === 'old' ? ' (base)' : ''}`;
+  return (
+    // A span, not a <button>: a button can't wrap across lines, and a phrase in prose must.
+    // biome-ignore lint/a11y/useSemanticElements: see above; it takes the keys a button does.
+    <span
+      role="button"
+      tabIndex={0}
+      className="ref"
+      title={where}
+      onPointerEnter={(event) => {
+        if (event.pointerType === 'mouse') onPeek(ref);
+      }}
+      onPointerLeave={(event) => {
+        // Keyboard focus keeps the lines shown until it moves on.
+        if (event.pointerType === 'mouse' && !event.currentTarget.matches(':focus-visible')) {
+          onPeek(null);
+        }
+      }}
+      onFocus={() => onPeek(ref)}
+      onBlur={() => onPeek(null)}
+      onClick={() => onPin(ref)}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        onPin(ref);
+      }}
+    >
+      {children}
+      <span className="sr-only"> ({where})</span>
+    </span>
+  );
 }
 
 /** One line of the guide's text, with `backticks` shown as code. */
@@ -1582,6 +1982,11 @@ function countBy<T>(items: readonly T[], key: (item: T) => string): Map<string, 
   const counts = new Map<string, number>();
   for (const item of items) counts.set(key(item), (counts.get(key(item)) ?? 0) + 1);
   return counts;
+}
+
+/** "line 4" or "lines 4–9". */
+function linesLabel({ startLine, endLine }: { startLine: number; endLine: number }): string {
+  return startLine === endLine ? `line ${startLine}` : `lines ${startLine}–${endLine}`;
 }
 
 function chipLabel(anchor: AnchorView): string {

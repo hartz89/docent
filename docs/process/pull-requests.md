@@ -34,7 +34,7 @@ Tiers set how deep the agent review goes. They don't send a PR to the maintainer
 
 **GitHub enforces green CI, and nothing else.** The `main` ruleset needs a PR, CI's `check` job, and squash merges. It requires no approvals and no code owners.
 
-**The agent review is a practice.** It's posted on the PR before auto-merge is queued. GitHub doesn't check that today.
+**The agent review is posted before auto-merge is queued, and the runner checks it.** GitHub doesn't, but `as-agent` refuses the builder's `gh pr merge` unless the `reviewer` app has reviewed the PR's current head commit, with no unanswered request for changes, and pins the merge to that commit. A push after the merge is queued still isn't caught.
 
 **Reviews live on the PR.** Every review is posted to its PR as the `reviewer` app, before anything merges. That includes security reviews and reviews run inside a building agent. A review that's only reported back doesn't count. Post it as a comment, or as a request for changes when something blocks. Agents never approve. Posting the review is a separate step from queueing the merge, never folded into the same command. That way the review is on record, and the merge can point to it. A 2b PR whose security review found issues, which were then fixed, gets a follow-up review saying so, and merges like any other.
 

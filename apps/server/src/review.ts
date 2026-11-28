@@ -3,7 +3,7 @@
 // the author's session sit behind injected boundaries.
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -49,6 +49,7 @@ import { describeError, RunLog } from './run-log.ts';
 import { type BuiltIndex, buildIndex, type IndexLimits, type IndexStatus } from './symbols.ts';
 import { type Timings, timings } from './timings.ts';
 import {
+  fromCache,
   generateTour,
   type StopView,
   TOUR_PROMPT_VERSION,
@@ -56,7 +57,10 @@ import {
   TourError,
   type TourOutcome,
   type TourProgress,
+  type TourView,
 } from './tour.ts';
+import { cachedOnce, type LockHolder } from './tour-lock.ts';
+import { basisFor, planUpdate, type UpdatePlan } from './tour-update.ts';
 
 export type StepId = 'reading' | 'planning' | 'writing' | 'checking';
 export type Step = { id: StepId; label: string; status: 'done' | 'active' | 'pending' };
@@ -74,6 +78,8 @@ export type TourState =
       stops: StopView[];
       /** How many stops the guide has begun writing, shown or not. */
       writing: number;
+      /** The stops shown are an earlier tour's, kept, while the guide updates it for new commits. */
+      updating: boolean;
     }
   /** `ledger`: where every changed line stands, computed for this tour by core (L1–L4). */
   | ({ state: 'ready'; ledger: LedgerView } & TourOutcome)
@@ -209,6 +215,20 @@ export type QuestionView = Omit<AskedQuestion, 'stopTitle'> & {
 
 /** A jump returns at most this many candidates; `truncated` says when there were more. */
 export const MAX_CANDIDATES = 50;
+/** Find references returns at most this many lines; `truncated` says when there were more. */
+export const MAX_REFERENCES = 300;
+/** A reference's line of context is cut to this many characters. */
+const MAX_CONTEXT_CHARS = 240;
+/** Characters of a line kept before trimming, so leading indentation can't eat the context. */
+const MAX_LINE_SCAN = 4_096;
+
+/** The lines in one file that use a name, each with its text at head, for find references. */
+export type ReferenceFile = {
+  path: string;
+  /** Changed by this PR. These files come first. */
+  changed: boolean;
+  lines: { line: number; text: string }[];
+};
 const INDEX_RETRY_MS = 30_000;
 
 const DEFAULT_FORK_BUDGET_USD = 2;
@@ -220,6 +240,9 @@ const LABELS: Record<StepId, string> = {
   writing: 'Writing the stops',
   checking: 'Checking the whole tour',
 };
+
+/** A PR that has been read: what writing its tour starts from. */
+type Opened = { workspace: Workspace; diff: Diff };
 
 export class Review {
   #options: ReviewOptions;
@@ -240,6 +263,16 @@ export class Review {
   /** A primer still running, so closing can stop it and wait for its cleanup. */
   #priming: { stop: AbortController; done: Promise<unknown> } | null = null;
   #closed = false;
+  /** Stops the tour: the guide writing it, or the wait on another Docent writing it. */
+  #tourStop = new AbortController();
+  /** The tour being written or waited for, so closing can wait until its lock is let go. */
+  #touring: Promise<unknown> | null = null;
+  /** The PR, once read. A retry reuses it, so it writes the tour for the same head. */
+  #opened: Opened | null = null;
+  /** The skip proofs, found once per review. */
+  #proofs: Promise<Proof[]> | null = null;
+  /** The latest retry's run, so closing can wait for it too. */
+  #retrying: Promise<void> | null = null;
   /** Checks of author answers, by check id. Each settles, never rejects. */
   #checks = new Map<string, Promise<CheckOutcome>>();
   /** The symbol index, built on first use. A review is bound to one head, so this is per head. */
@@ -305,6 +338,45 @@ export class Review {
     const built = await this.#symbolIndex();
     if (!built) return null;
     return { ...built.index.definitions(symbol, from, MAX_CANDIDATES), index: built.status };
+  }
+
+  /**
+   * Every line at head that uses `symbol` as a name, grouped by file, the PR's changed files
+   * first. Each line comes with its text, so the reviewer sees it in context. Null until the PR
+   * has been read.
+   */
+  async references(symbol: string): Promise<{
+    files: ReferenceFile[];
+    total: number;
+    truncated: boolean;
+    index: IndexStatus;
+  } | null> {
+    const workspace = this.#workspace;
+    const built = await this.#symbolIndex();
+    if (!workspace || !built) return null;
+    const changed = new Set(this.#diff?.files.map((f) => f.path));
+    const found = built.index.references(symbol, (path) => changed.has(path), MAX_REFERENCES);
+    // The same blobs the index read, in one batch: never the working tree. A failed read still
+    // gives the places, just without their text.
+    const texts = await workspace
+      .openAll(
+        'new',
+        found.files.map((f) => f.path),
+      )
+      .catch(() => new Map<string, RepoFile>());
+    const files = found.files.map(({ path, lines }) => {
+      const file = texts.get(path);
+      const text = file?.kind === 'text' ? linesOf(file.text, lines) : new Map<number, string>();
+      return {
+        path,
+        changed: changed.has(path),
+        lines: lines.map((line) => ({
+          line,
+          text: (text.get(line) ?? '').trim().slice(0, MAX_CONTEXT_CHARS),
+        })),
+      };
+    });
+    return { files, total: found.total, truncated: found.truncated, index: built.status };
   }
 
   /** The repo file an import specifier names, or a null path when it doesn't resolve. */
@@ -671,13 +743,15 @@ Question: ${question}`,
 
   /**
    * Deletes the primed copy of the author's session. Call it when the review ends. A primer still
-   * running is stopped first, and its own cleanup awaited.
+   * running is stopped first, and its own cleanup awaited. So is the tour: the guide stops writing
+   * it, and its lock is let go, so another Docent waiting on this tour writes it instead.
    */
   async close(): Promise<void> {
     this.#closed = true;
+    this.#tourStop.abort();
     const priming = this.#priming;
     priming?.stop.abort();
-    await priming?.done;
+    await Promise.allSettled([priming?.done, this.#touring, this.#retrying]);
     const dir = await this.#primedDir?.catch(() => null);
     this.#primed = null;
     this.#primedDir = null;
@@ -829,98 +903,29 @@ Question: ${question}`,
     for (const listener of this.#listeners) listener(tour);
   }
 
+  /**
+   * Writes the tour again after it failed: the reviewer's "Try again". Only a failed tour can be
+   * retried, and a run sets the failed state as its very last step, so a retry never runs beside
+   * another run, and a second click while the first retry runs is refused. A PR that was read
+   * keeps its workspace, so the retry is for the same head; one whose reading failed is read
+   * again. The retry goes through the same tour lock and cache as the first try, and closing the
+   * review stops it the same way. Returns false, changing nothing, when there's nothing to retry.
+   */
+  retry(): boolean {
+    if (this.#closed || this.#tour.state !== 'failed') return false;
+    this.#log.event('tour.retry', { reread: this.#opened === null });
+    // Set before anything awaits, so a second retry sees a tour already working.
+    this.#set(working(this.#opened ? 'planning' : 'reading', 'Starting again', 1, []));
+    this.#retrying = this.#start();
+    return true;
+  }
+
   async #start(): Promise<void> {
     const started = Date.now();
-    const time = this.#timings;
-    // The source names each step as it starts; each one ends where the next begins.
-    let ended = (_note?: string) => {};
     try {
-      const workspace = await this.#options.source((detail) => {
-        ended();
-        ended = time.span(detail);
-        this.#set(working('reading', detail, 1, []));
-      });
-      ended();
-      ended = time.span('Parse the diff');
-      this.#workspace = workspace;
-      this.#diff = parseUnifiedDiff(workspace.diffText, workspace.pr.base, workspace.pr.head);
-      const lines = this.#diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
-      const changed = lines.filter((l) => l.kind !== 'context').length;
-      ended(`${this.#diff.files.length} files, ${changed} changed lines`);
-      if (this.#options.questionsDir) {
-        ended = time.span('Read earlier questions');
-        this.#questions = await QuestionStore.open({
-          dir: this.#options.questionsDir,
-          pr: workspace.pr,
-          onError: (where, error) => this.#log.error(where, error),
-        });
-        ended(`${this.#questions.list().length} kept`);
-      }
-      ended = time.span('Look up the cached tour');
-      const { pr } = workspace;
-      this.#log.event('pr', {
-        repo: pr.repo,
-        number: pr.number,
-        url: pr.url,
-        title: pr.title,
-        author: pr.author,
-        head: pr.head,
-        base: pr.base,
-        files: this.#diff.files.length,
-        ms: Date.now() - started,
-      });
-      // Settled before the tour is ready, so the screen knows who will answer questions.
-      const lookup = this.#findAuthor(workspace);
-      // Proofs need only the diff and git, so they're found while the guide writes.
-      const proofs = this.#prove(workspace, this.#diff);
-
-      const cacheFile = this.#options.cacheDir
-        ? join(
-            this.#options.cacheDir,
-            'tours',
-            workspace.pr.repo.replace('/', '__'),
-            tourCacheName(
-              workspace.pr,
-              this.#options.model,
-              TOUR_PROMPTS[TOUR_PROMPT_VERSION](workspace.pr, this.#diff),
-            ),
-          )
-        : null;
-      // The tour's own time starts here, after the PR is loaded.
-      const tourStarted = Date.now();
-      const hit = cacheFile !== null && existsSync(cacheFile);
-      this.#log.event('tour.cache', cacheFile ? { hit } : { hit: false, reason: 'cache off' });
-      if (cacheFile && hit) {
-        const outcome = JSON.parse(await readFile(cacheFile, 'utf8')) as TourOutcome;
-        await lookup;
-        ended('hit');
-        await this.#tourReady(
-          { ...outcome, timing: outcome.timing ?? [], cached: true },
-          await proofs,
-          tourStarted,
-        );
-        return;
-      }
-      ended('missed');
-
-      const outcome = await generateTour({
-        workspace,
-        diff: this.#diff,
-        runner: this.#options.runner,
-        model: this.#options.model,
-        // Progress only moves a tour that's still being written, never a ready or failed one.
-        onProgress: (progress) => {
-          if (this.#tour.state === 'working') this.#set(fromProgress(progress, this.#tour));
-        },
-        timings: time,
-        log: this.#log,
-      });
-      if (cacheFile) {
-        await mkdir(dirname(cacheFile), { recursive: true });
-        await writeFile(cacheFile, JSON.stringify(outcome, null, 2));
-      }
-      await lookup;
-      await this.#tourReady(outcome, await proofs, tourStarted);
+      // A retry after the PR was read writes the tour for the head it already has.
+      this.#opened ??= await this.#open(started);
+      await this.#writeTour(this.#opened);
     } catch (error) {
       const costs = error instanceof TourError ? error.costs : [];
       this.#log.event('tour.failed', {
@@ -928,12 +933,206 @@ Question: ${question}`,
         costMicroUsd: totalMicroUsd(costs),
         ms: Date.now() - started,
       });
+      // Always a run's last step: while the tour shows failed, no run is in flight.
       this.#set({
         state: 'failed',
         reason: error instanceof Error ? error.message : String(error),
         costs,
       });
     }
+  }
+
+  /** Where this PR's tour basis lives: one per PR, model and prompt version. Null without a cache. */
+  #basisFile(pr: PrInfo): string | null {
+    const dir = this.#options.cacheDir;
+    if (!dir) return null;
+    const model = this.#options.model.replace(/[^\w.-]/g, '_');
+    return join(
+      dir,
+      'tour-bases',
+      pr.repo.replace('/', '__'),
+      `pr-${pr.number}-${model}-p${TOUR_PROMPT_VERSION}.json`,
+    );
+  }
+
+  /**
+   * How to update the tour of an earlier head of this PR, or null to write a whole one. Never
+   * throws: a basis that can't be read or used means a whole tour, as before updates existed.
+   */
+  async #planUpdate(workspace: Workspace, diff: Diff): Promise<UpdatePlan | null> {
+    const file = this.#basisFile(workspace.pr);
+    if (!file || !existsSync(file)) return null;
+    const ended = this.#timings.span('Plan the update');
+    try {
+      const saved: unknown = JSON.parse(await readFile(file, 'utf8'));
+      const plan = await planUpdate(saved, workspace.pr, diff, workspace.readFile);
+      ended(plan ? `from ${plan.from.slice(0, 12)}` : 'a whole tour');
+      if (plan) {
+        this.#log.event('tour.update', {
+          from: plan.from,
+          kept: plan.stops.filter((s) => s.state === 'kept').length,
+          stale: plan.stops.filter((s) => s.state === 'stale').length,
+          movedLines: plan.moved.length,
+        });
+      }
+      return plan;
+    } catch (error) {
+      ended(`failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.#log.error('tour update', error);
+      return null;
+    }
+  }
+
+  /**
+   * Leaves this tour's basis for the next head's update. Best effort: without one, the next push
+   * writes a whole tour. Written aside and renamed in, so a reader never sees half of it.
+   */
+  async #saveBasis(workspace: Workspace, diff: Diff, tour: TourView): Promise<void> {
+    const file = this.#basisFile(workspace.pr);
+    if (!file) return;
+    try {
+      const saved = existsSync(file)
+        ? (JSON.parse(await readFile(file, 'utf8')) as { head?: unknown })
+        : null;
+      if (saved?.head === diff.head) return;
+      const basis = await basisFor(tour, diff, workspace.pr, workspace.readFile);
+      if (!basis) return;
+      await mkdir(dirname(file), { recursive: true });
+      const partial = `${file}.${randomUUID()}.partial`;
+      await writeFile(partial, JSON.stringify(basis));
+      await rename(partial, file);
+    } catch (error) {
+      this.#log.error('tour basis', error);
+    }
+  }
+
+  /** Reads the PR: its workspace, diff and earlier questions. Run once, unless it fails. */
+  async #open(started: number): Promise<Opened> {
+    const time = this.#timings;
+    // The source names each step as it starts; each one ends where the next begins.
+    let ended = (_note?: string) => {};
+    const workspace = await this.#options.source((detail) => {
+      ended();
+      ended = time.span(detail);
+      this.#set(working('reading', detail, 1, []));
+    });
+    ended();
+    ended = time.span('Parse the diff');
+    this.#workspace = workspace;
+    const diff = parseUnifiedDiff(workspace.diffText, workspace.pr.base, workspace.pr.head);
+    this.#diff = diff;
+    const lines = diff.files.flatMap((f) => f.hunks.flatMap((h) => h.lines));
+    const changed = lines.filter((l) => l.kind !== 'context').length;
+    ended(`${diff.files.length} files, ${changed} changed lines`);
+    if (this.#options.questionsDir) {
+      ended = time.span('Read earlier questions');
+      this.#questions = await QuestionStore.open({
+        dir: this.#options.questionsDir,
+        pr: workspace.pr,
+        onError: (where, error) => this.#log.error(where, error),
+      });
+      ended(`${this.#questions.list().length} kept`);
+    }
+    const { pr } = workspace;
+    this.#log.event('pr', {
+      repo: pr.repo,
+      number: pr.number,
+      url: pr.url,
+      title: pr.title,
+      author: pr.author,
+      head: pr.head,
+      base: pr.base,
+      files: diff.files.length,
+      ms: Date.now() - started,
+    });
+    return { workspace, diff };
+  }
+
+  /** Loads the tour from the cache, waits on another Docent writing it, or writes it. */
+  async #writeTour({ workspace, diff }: Opened): Promise<void> {
+    const time = this.#timings;
+    const ended = time.span('Look up the cached tour');
+    // Settled before the tour is ready, so the screen knows who will answer questions.
+    const lookup = this.#findAuthor(workspace);
+    // Proofs need only the diff and git, so they're found while the guide writes. Once per review.
+    this.#proofs ??= this.#prove(workspace, diff);
+    const proofs = this.#proofs;
+
+    const cacheFile = this.#options.cacheDir
+      ? join(
+          this.#options.cacheDir,
+          'tours',
+          workspace.pr.repo.replace('/', '__'),
+          tourCacheName(
+            workspace.pr,
+            this.#options.model,
+            TOUR_PROMPTS[TOUR_PROMPT_VERSION](workspace.pr, diff),
+          ),
+        )
+      : null;
+    // The tour's own time starts here, after the PR is loaded.
+    const tourStarted = Date.now();
+    const hit = cacheFile !== null && existsSync(cacheFile);
+    this.#log.event('tour.cache', cacheFile ? { hit } : { hit: false, reason: 'cache off' });
+    if (cacheFile && hit) {
+      const outcome = JSON.parse(await readFile(cacheFile, 'utf8')) as TourOutcome;
+      await lookup;
+      ended('hit');
+      await this.#tourReady(fromCache(outcome), await proofs, tourStarted);
+      await this.#saveBasis(workspace, diff, outcome.tour);
+      return;
+    }
+    ended('missed');
+
+    // Another Docent writing this same tour, like a `--prepare` warm-up, is waited for rather
+    // than paid for twice. The wait ends when its tour is read, or when this one writes it.
+    let waited = false;
+    let endWait = () => {};
+    const stopWaiting = () => {
+      endWait();
+      endWait = () => {};
+    };
+    const write = async () => {
+      stopWaiting();
+      return generateTour({
+        workspace,
+        diff,
+        runner: this.#options.runner,
+        model: this.#options.model,
+        proofs,
+        // An earlier tour of this PR, at an older head, is updated rather than written again.
+        update: await this.#planUpdate(workspace, diff),
+        // Progress only moves a tour that's still being written, never a ready or failed one.
+        onProgress: (progress) => {
+          if (this.#tour.state === 'working') this.#set(fromProgress(progress, this.#tour));
+        },
+        timings: time,
+        log: this.#log,
+        signal: this.#tourStop.signal,
+      });
+    };
+    const touring = cacheFile
+      ? cachedOnce(
+          cacheFile,
+          write,
+          (holder) => {
+            if (!waited) {
+              waited = true;
+              endWait = time.span('Wait for another Docent writing this tour');
+              this.#log.event('tour.wait', holder ? { pid: holder.pid, host: holder.host } : {});
+            }
+            this.#set(working('writing', writtenElsewhere(holder), 1, []));
+          },
+          this.#tourStop.signal,
+        )
+      : write().then((value) => ({ value, cached: false }));
+    this.#touring = touring;
+    const written = await touring;
+    stopWaiting();
+    const outcome: TourOutcome = written.cached ? fromCache(written.value) : written.value;
+    await lookup;
+    await this.#tourReady(outcome, await proofs, tourStarted);
+    await this.#saveBasis(workspace, diff, outcome.tour);
   }
 
   /**
@@ -970,9 +1169,17 @@ Question: ${question}`,
       stops: outcome.tour.stops.length,
       ledger: ledger.lines,
       attempts: outcome.attempts,
-      retries: outcome.attempts - 1,
+      // An update that needed no model call made no attempt at all.
+      retries: Math.max(0, outcome.attempts - 1),
       problems: outcome.problems,
       model: outcome.model,
+      ...(outcome.update
+        ? {
+            updatedFrom: outcome.update.from,
+            updatedStops: outcome.tour.stops.filter((s) => s.updated).length,
+            dropped: outcome.update.dropped,
+          }
+        : {}),
       // A cached tour cost nothing this run.
       costMicroUsd: outcome.cached ? 0 : totalMicroUsd(outcome.costs),
       ms: Date.now() - started,
@@ -1048,6 +1255,7 @@ function working(
   attempt: number,
   stops: StopView[],
   writing = 0,
+  updating = false,
 ): TourState {
   const order: StepId[] = ['reading', 'planning', 'writing', 'checking'];
   const at = order.indexOf(active);
@@ -1062,7 +1270,26 @@ function working(
     attempt,
     stops,
     writing,
+    updating,
   };
+}
+
+/** How a wait on another Docent's tour starts, so the CLI can say it once. */
+export const WRITTEN_ELSEWHERE = 'A tour for this PR is being written by another Docent';
+/** About how long a tour takes to write: 32 to 82 s in the v3 prompt's runs. */
+const TYPICAL_TOUR_MS = 90_000;
+
+/** The wait screen's line while another process writes this tour, with a rough time left. */
+export function writtenElsewhere(holder: LockHolder | null, now = Date.now()): string {
+  const left = holder ? TYPICAL_TOUR_MS - (now - holder.startedAt) : TYPICAL_TOUR_MS;
+  // Rounded up, so the line steps down only as whole minutes pass.
+  const when =
+    left <= 0
+      ? 'it should be ready soon'
+      : left < 60_000
+        ? 'less than a minute left'
+        : `about ${Math.ceil(left / 60_000)} min left`;
+  return `${WRITTEN_ELSEWHERE}, ${when}`;
 }
 
 function fromProgress(progress: TourProgress, previous: TourState): TourState {
@@ -1071,25 +1298,36 @@ function fromProgress(progress: TourProgress, previous: TourState): TourState {
   // Stops already shown stay shown until the finished tour replaces them.
   const stops = was?.stops ?? [];
   const writing = was?.writing ?? 0;
+  const updating = was?.updating ?? false;
   switch (progress.step) {
     case 'planning': {
       // A file read while the stops are being written doesn't send the steps backwards.
       const step =
         was?.steps.find((s) => s.status === 'active')?.id === 'writing' ? 'writing' : 'planning';
-      return working(step, progress.detail ?? was?.detail ?? null, attempt, stops, writing);
+      return working(
+        step,
+        progress.detail ?? was?.detail ?? null,
+        attempt,
+        stops,
+        writing,
+        updating,
+      );
     }
     case 'writing':
       return working(
         'writing',
-        progress.writing > progress.stops.length
-          ? `Writing stop ${progress.writing}`
-          : `${progress.stops.length} stop${progress.stops.length === 1 ? '' : 's'} written`,
+        progress.update
+          ? 'Updating the tour for the new commits'
+          : progress.writing > progress.stops.length
+            ? `Writing stop ${progress.writing}`
+            : `${progress.stops.length} stop${progress.stops.length === 1 ? '' : 's'} written`,
         attempt,
         progress.stops,
         progress.writing,
+        progress.update,
       );
     case 'checking':
-      return working('checking', null, progress.attempt, stops, writing);
+      return working('checking', null, progress.attempt, stops, writing, updating);
     case 'retrying':
       return working(
         'planning',
@@ -1097,6 +1335,7 @@ function fromProgress(progress: TourProgress, previous: TourState): TourState {
         progress.attempt + 1,
         stops,
         writing,
+        updating,
       );
   }
 }
@@ -1116,4 +1355,27 @@ export function tourCacheName(
   const safeModel = model.replace(/[^\w.-]/g, '_');
   const fingerprint = createHash('sha256').update(prompt).digest('hex').slice(0, 12);
   return `${pr.base.slice(0, 12)}-${pr.head}-${safeModel}-p${TOUR_PROMPT_VERSION}-${fingerprint}.json`;
+}
+
+/**
+ * The text of the given lines (ascending, 1-based), found by walking newlines only as far as
+ * the last one. Never splits the whole file: a file of nothing but newlines would otherwise
+ * make one lookup allocate a string per line.
+ */
+function linesOf(text: string, wanted: readonly number[]): Map<number, string> {
+  const found = new Map<number, string>();
+  let line = 1;
+  let start = 0;
+  for (const want of wanted) {
+    while (line < want && start <= text.length) {
+      const end = text.indexOf('\n', start);
+      start = end === -1 ? text.length + 1 : end + 1;
+      line++;
+    }
+    if (start > text.length) break;
+    const end = text.indexOf('\n', start);
+    const raw = text.slice(start, Math.min(end === -1 ? text.length : end, start + MAX_LINE_SCAN));
+    found.set(want, raw.endsWith('\r') ? raw.slice(0, -1) : raw);
+  }
+  return found;
 }

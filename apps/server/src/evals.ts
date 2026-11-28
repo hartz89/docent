@@ -17,10 +17,11 @@ export {
   type PrSource,
   type Workspace,
 } from './github.ts';
-export { gitHeadFiles } from './head-files.ts';
 export { type LedgerView, ledgerFor, placeLines, proveForReview } from './ledger.ts';
 export {
+  compareRoute,
   generateTour,
+  type RouteComparison,
   TOUR_PROMPT_VERSION,
   TOUR_PROMPTS,
   TourError,
@@ -28,3 +29,4 @@ export {
   type TourPromptVersion,
   type TourView,
 } from './tour.ts';
+export { basisFor, planUpdate, type TourBasis, type UpdatePlan } from './tour-update.ts';

@@ -62,6 +62,58 @@ test("with the author's session, the author answers", async ({ page }) => {
   }
 });
 
+test('a slow answer shows it is on its way; a failed one says so and can be asked again', async ({
+  page,
+}) => {
+  const docent = await launch('cli.js', ['review', '--fixture', fixture]);
+  try {
+    await page.goto(docent.url);
+    const guide = page.getByRole('complementary', { name: 'The guide' });
+    // The first ask fails after a pause; the second goes through.
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let asks = 0;
+    await page.route('**/api/questions', async (route) => {
+      if (route.request().method() !== 'POST' || ++asks > 1) return route.fallback();
+      await held;
+      await route.fulfill({
+        status: 502,
+        json: { error: 'The guide stopped early: Claude Code exited with code 1.' },
+      });
+    });
+
+    await test.step('while it waits, it says who is answering and counts the seconds', async () => {
+      await guide.getByLabel('Your question').fill('What does it return with no Origin header?');
+      await guide.getByRole('button', { name: 'Ask the guide' }).click();
+      const pending = guide.locator('.exchange-pending');
+      await expect(pending).toContainText('The guide is reading the code…');
+      await expect(pending.locator('.elapsed')).toHaveText(/^\d+ s$/, { timeout: 6_000 });
+    });
+
+    await test.step('a failure reads as one, with the reason', async () => {
+      release();
+      const alert = guide.getByRole('alert');
+      await expect(alert).toContainText("Couldn't answer this one");
+      await expect(alert).toContainText('Claude Code exited with code 1.');
+    });
+
+    await test.step('asking again replaces the failure with the answer', async () => {
+      await guide.getByRole('button', { name: 'Ask again' }).click();
+      // The button left with the failure; focus stays in the guide, on the question box.
+      await expect(guide.locator('textarea')).toBeFocused();
+      await expect(guide.locator('.exchange-answer')).toContainText('It returns null.');
+      await expect(guide.getByRole('alert')).toHaveCount(0);
+      await expect(guide.locator('.exchange-question')).toHaveText([
+        'What does it return with no Origin header?',
+      ]);
+    });
+  } finally {
+    await docent.stop();
+  }
+});
+
 // The fixture's second author answer and both answer checks are hand-written, not recorded: the
 // second answer is wrong about the code, and the second check says so. The first finds nothing.
 test("the guide stays quiet on a sound answer, and notes what the code does when it isn't", async ({

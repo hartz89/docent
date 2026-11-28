@@ -11,7 +11,7 @@ import type { Placement } from './ledger.ts';
 import type { Evidence, Proof } from './proof.ts';
 import { type Answer, type Exchange, type QuestionThread, threadId } from './question.ts';
 import { type Review, reviewId } from './review.ts';
-import { type Stop, stopId, type Tour } from './tour.ts';
+import { type BodyPart, type Stop, stopId, type Tour } from './tour.ts';
 
 const at = { commit: base, path: 'a', startLine: 1 };
 const context = { before: [], after: [] };
@@ -66,7 +66,7 @@ describe('illegal states do not typecheck', () => {
       // @ts-expect-error not a stop kind
       kind: 'summary',
       title: '',
-      body: '',
+      body: [],
       flags: [],
       anchors: [],
     };
@@ -79,10 +79,25 @@ describe('illegal states do not typecheck', () => {
       id: stopId('s'),
       kind: 'core_change',
       title: '',
-      body: '',
+      body: [],
       flags: [],
       anchors: [],
     };
+    typechecks();
+  });
+
+  test('T6: a body is parts, and every reference carries an anchor', () => {
+    const _s: Stop = {
+      id: stopId('s'),
+      kind: 'map',
+      title: '',
+      // @ts-expect-error a body is parts, not a bare string with spans beside it
+      body: 'text',
+      flags: [],
+      anchors: [],
+    };
+    // @ts-expect-error a reference with no anchor
+    const _p: BodyPart = { phrase: 'the helper' };
     typechecks();
   });
 
@@ -91,7 +106,7 @@ describe('illegal states do not typecheck', () => {
       id: stopId('s'),
       kind: 'map',
       title: '',
-      body: '',
+      body: [],
       // @ts-expect-error not a flag
       flags: ['nit'],
       anchors: [],
