@@ -254,6 +254,8 @@ export class Review {
   /** The kept, primed copy of the author's session that questions fork, once it exists. */
   #primed: string | null = null;
   #primedDir: Promise<string> | null = null;
+  /** The private copy of a subagent's transcript the locator wrote, deleted when the review ends. */
+  #subagentCopy: string | null = null;
   /** A primer still running, so closing can stop it and wait for its cleanup. */
   #priming: { stop: AbortController; done: Promise<unknown> } | null = null;
   #closed = false;
@@ -680,6 +682,7 @@ Question: ${question}`,
         }),
       )
       .then((author) => {
+        if (author.found && author.transcript) this.#subagentCopy = author.transcript;
         this.#author = this.#withinBudget(author);
         const found = this.#author;
         this.#log.event('author', {
@@ -747,7 +750,8 @@ Question: ${question}`,
   }
 
   /**
-   * Deletes the primed copy of the author's session. Call it when the review ends. A primer still
+   * Deletes the primed copy of the author's session, and a subagent's transcript copy if the
+   * locator wrote one. Call it when the review ends. A primer still
    * running is stopped first, and its own cleanup awaited. So is the tour: the guide stops writing
    * it, and its lock is let go, so another Docent waiting on this tour writes it instead.
    */
@@ -756,11 +760,14 @@ Question: ${question}`,
     this.#tourStop.abort();
     const priming = this.#priming;
     priming?.stop.abort();
-    await Promise.allSettled([priming?.done, this.#touring, this.#retrying]);
+    await Promise.allSettled([priming?.done, this.#touring, this.#retrying, this.#lookup]);
     const dir = await this.#primedDir?.catch(() => null);
     this.#primed = null;
     this.#primedDir = null;
     if (dir) await rm(dir, { recursive: true, force: true });
+    const copy = this.#subagentCopy;
+    this.#subagentCopy = null;
+    if (copy) await rm(copy, { force: true });
     // A question answered just now is on disk before the process goes.
     await this.#questions.settled();
   }

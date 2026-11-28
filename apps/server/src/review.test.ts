@@ -1712,6 +1712,26 @@ describe('POST /api/questions', () => {
     expect(existsSync(kept)).toBe(false);
   });
 
+  test("closing the review deletes a subagent's transcript copy", async () => {
+    const copy = join(await mkdtemp(join(tmpdir(), 'docent-subagent-')), 'copy.jsonl');
+    await writeFile(copy, '{}\n');
+    const author = withAuthor();
+    const subagent = fixedSession({
+      found: true,
+      id: sessionId('99999999-2222-4333-8444-555555555555'),
+      cwd: '/Users/someone/web',
+      via: "the hook's record of the subagent that wrote the code",
+      contextTokens: null,
+      transcript: copy,
+    });
+    const { review, api } = await open(author.runner, undefined, 'claude-test', subagent);
+    await ask(api);
+
+    await review.close();
+
+    expect(existsSync(copy)).toBe(false);
+  });
+
   test('a fork that runs over budget is not paid for again in this review', async () => {
     const author = withAuthor({ fail: 'budget' });
     const { api } = await open(author.runner, undefined, 'claude-test', authorFound);

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { expect, test } from 'vitest';
@@ -605,4 +605,31 @@ test('a forged record pointing at a transcript from another session or repo, or 
   ]);
 
   expect(await locate(pr())).toEqual(linkedOnly);
+});
+
+test('a link at the subagent path, or a linked session folder, leading outside Claude Code is refused', async () => {
+  // A transcript outside the projects folder that claims everything the PR needs.
+  const outside = await mkdtemp(join(tmpdir(), 'docent-planted-'));
+  await mkdir(join(outside, 'subagents'));
+  const planted = join(outside, 'subagents', `agent-${SUBAGENT}.jsonl`);
+  await writeFile(planted, `${subagent().join('\n')}\n`);
+
+  // The same transcript, really at that path, is found: only the link is refused below.
+  const real = await machine({ [COORDINATOR_PATH]: coordinator, [SUBAGENT_PATH]: subagent() }, [
+    recorded(SUBAGENT),
+  ]);
+  const found = await real.locate(pr());
+  expect(found).toMatchObject({ found: true, via: viaSubagent });
+  if (found.found && found.transcript) await rm(found.transcript);
+
+  // The transcript file itself is a link out.
+  const file = await machine({ [COORDINATOR_PATH]: coordinator }, [recorded(SUBAGENT)]);
+  await mkdir(dirname(join(file.projectsDir, SUBAGENT_PATH)), { recursive: true });
+  await symlink(planted, join(file.projectsDir, SUBAGENT_PATH));
+  expect(await file.locate(pr())).toEqual(linkedOnly);
+
+  // The session's folder is a link out, so the path looks right all the way down.
+  const folder = await machine({ [COORDINATOR_PATH]: coordinator }, [recorded(SUBAGENT)]);
+  await symlink(outside, join(folder.projectsDir, 'project', AUTHOR));
+  expect(await folder.locate(pr())).toEqual(linkedOnly);
 });
