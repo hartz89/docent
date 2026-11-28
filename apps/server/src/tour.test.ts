@@ -47,6 +47,10 @@ describe('tour prompt versions', () => {
     expect(sha(TOUR_PROMPTS[6](workspace.pr, diff))).toBe(
       '61b0dec0718ffaed4ae63dcb5750497703fcfdee6eb82129a7c7d9b794ed6a1b',
     );
+    // The author's handoff, on v4. The fixture has none, so this covers the "(none)" section.
+    expect(sha(TOUR_PROMPTS[7](workspace.pr, diff))).toBe(
+      '12bce81ab564511949e170e6f8819fde6745cb6e77599aad3c36f3c52ce793a9',
+    );
   });
 
   test('new tours use the current prompt, and an eval run can pick an older one', async () => {
@@ -70,8 +74,8 @@ describe('tour prompt versions', () => {
     // The v6 experiment asks for references in the prose, in a schema of its own.
     expect(requests[fourth]?.prompt).toContain('Point at code from the prose, sparingly');
     expect(requests[fourth]?.schema).toBe(referenceTourSchema);
-    expect(TOUR_PROMPT_VERSION).toBe(4);
-    expect(requests[0]?.prompt).toBe(TOUR_PROMPTS[4](workspace.pr, diff));
+    expect(TOUR_PROMPT_VERSION).toBe(7);
+    expect(requests[0]?.prompt).toBe(TOUR_PROMPTS[7](workspace.pr, diff));
     expect(requests[0]?.schema).toBe(tourSchema);
     expect(requests[second]?.prompt).toBe(TOUR_PROMPTS[2](workspace.pr, diff));
     // The v5 experiment asks for the route ahead of the stops, in a schema of its own.

@@ -1,0 +1,9 @@
+{
+  "name": "docent",
+  "version": "0.1.0",
+  "description": "The author side of Docent: records which session or subagent worked on a branch, so a reviewer's questions reach the right one, and writes the author handoff when a PR opens.",
+  "author": { "name": "Docent contributors", "url": "https://github.com/hartz89/docent" },
+  "homepage": "https://github.com/hartz89/docent/tree/main/packages/claude-code",
+  "repository": "https://github.com/hartz89/docent",
+  "license": "Apache-2.0"
+}

@@ -106,6 +106,7 @@ async function openAt(
     pr: { ...pr, base, head },
     diffText,
     commitMessages: [],
+    commitShas: [],
     headInBaseRepo: true,
     dir,
     ...commitReader(dir, base, head),
@@ -159,6 +160,7 @@ async function realSequence(seq: (typeof SEQUENCES)[number]): Promise<Sequence> 
     author: view.author.login,
     baseRef: view.baseRefName,
     headRef: view.headRefName,
+    handoff: null,
   };
   const from = await openAt(pr, await mergeBase(seq.from), commitSha(seq.from));
   const to = await openAt(pr, await mergeBase(seq.to), commitSha(seq.to));

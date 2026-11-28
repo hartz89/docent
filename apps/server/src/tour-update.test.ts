@@ -9,6 +9,7 @@ import type { AgentReply, AgentRequest, AgentRunner } from './agent.ts';
 import { fixedSession } from './author-session.ts';
 import { commitReader, git, type PrSource } from './github.ts';
 import { Review, type TourState } from './review.ts';
+import { TOUR_PROMPT_VERSION } from './tour.ts';
 
 const base = {
   'src/cors.ts': "export function cors() {\n  const origin = '*';\n  return origin;\n}\n",
@@ -140,9 +141,11 @@ async function repo() {
             head,
             baseRef: 'main',
             headRef: 'fix',
+            handoff: null,
           },
           diffText,
           commitMessages: [],
+          commitShas: [],
           headInBaseRepo: true,
           dir,
           ...commitReader(dir, baseSha, head),
@@ -343,7 +346,12 @@ describe('a push updates the tour instead of writing a new one', () => {
     const cacheDir = await mkdtemp(join(tmpdir(), 'docent-cache-'));
     cleanup.push(cacheDir);
     await review(git.at(await git.push(push1)), scripted(firstTour).runner, cacheDir);
-    const file = join(cacheDir, 'tour-bases', 'acme__web', 'pr-7-claude-test-p4.json');
+    const file = join(
+      cacheDir,
+      'tour-bases',
+      'acme__web',
+      `pr-7-claude-test-p${TOUR_PROMPT_VERSION}.json`,
+    );
     expect(JSON.parse(await readFile(file, 'utf8')).version).toBe(2);
     await writeFile(file, '{ not json');
 
@@ -362,7 +370,12 @@ describe('retrying a failed update', () => {
     cleanup.push(cacheDir);
     const first = await git.push(push1);
     await review(git.at(first), scripted(firstTour).runner, cacheDir);
-    const file = join(cacheDir, 'tour-bases', 'acme__web', 'pr-7-claude-test-p4.json');
+    const file = join(
+      cacheDir,
+      'tour-bases',
+      'acme__web',
+      `pr-7-claude-test-p${TOUR_PROMPT_VERSION}.json`,
+    );
     const basisHead = async () => JSON.parse(await readFile(file, 'utf8')).head;
     expect(await basisHead()).toBe(first);
 

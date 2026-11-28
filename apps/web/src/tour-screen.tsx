@@ -673,6 +673,11 @@ export function TourScreen({ snapshot, tour }: Props) {
                   </p>
                 )
               }
+              handoff={
+                snapshot.pr?.handoff && stop === stops.find((s) => s.kind === 'intent') ? (
+                  <HandoffNote handoff={snapshot.pr.handoff} head={snapshot.pr.head} />
+                ) : null
+              }
             />
           )}
         </aside>
@@ -1365,6 +1370,7 @@ function Narration({
   finished,
   waiting,
   verdict,
+  handoff,
 }: {
   stop: StopView;
   author: AuthorView;
@@ -1388,6 +1394,8 @@ function Narration({
   waiting: string;
   /** The verdict form, on the verdict stop. */
   verdict: ReactNode;
+  /** The author's handoff, on the first intent stop. */
+  handoff: ReactNode;
 }) {
   const [draft, setDraft] = useState('');
   const questionBox = useRef<HTMLTextAreaElement>(null);
@@ -1446,6 +1454,8 @@ function Narration({
             <p>{inline(note)}</p>
           </div>
         ))}
+
+        {handoff}
 
         {verdict}
 
@@ -1781,4 +1791,36 @@ function changedLines(diff: Diff): Map<string, Set<number>> {
     }
   }
   return map;
+}
+
+type Handoff = NonNullable<NonNullable<ReviewSnapshot['pr']>['handoff']>;
+
+/**
+ * The author's handoff comment, in the author's own words: claims the tour checks, never
+ * Docent's findings.
+ */
+function HandoffNote({ handoff, head }: { handoff: Handoff; head: string }) {
+  const when =
+    handoff.commit === head
+      ? 'written for the head commit'
+      : `written for ${handoff.commit.slice(0, 7)}, not the head commit`;
+  return (
+    <section className="callout handoff" aria-label="From the author's handoff">
+      <div className="callout-label">From the author's handoff</div>
+      <p className="handoff-caveat">
+        The author's claims, as they wrote them · the tour checks them against the code · {when}
+        {handoff.url.startsWith('https://github.com/') && (
+          <>
+            {' · '}
+            <a href={handoff.url} target="_blank" rel="noreferrer">
+              on GitHub
+            </a>
+          </>
+        )}
+      </p>
+      <div className="handoff-text">
+        <Markdown text={handoff.text} />
+      </div>
+    </section>
+  );
 }

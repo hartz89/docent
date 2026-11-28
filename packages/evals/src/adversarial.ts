@@ -133,7 +133,11 @@ async function openPushes(fixture: AdversarialFixture, pushes: readonly Push[]) 
   await git(dir, ['init', '--quiet', '--initial-branch=main']);
   const base = await commit(fixture.base, 'base');
   let head = base;
-  for (const push of pushes) head = await commit(push.files, push.message);
+  const shas: string[] = [];
+  for (const push of pushes) {
+    head = await commit(push.files, push.message);
+    shas.push(head);
+  }
   const diffText = (await git(dir, ['diff', '--no-color', base, head])).stdout;
   const changed = diffText
     .split('\n')
@@ -151,9 +155,11 @@ async function openPushes(fixture: AdversarialFixture, pushes: readonly Push[]) 
       head,
       baseRef: 'main',
       headRef: 'change',
+      handoff: null,
     },
     diffText,
     commitMessages: pushes.map((p) => p.message),
+    commitShas: shas,
     headInBaseRepo: true,
     dir,
     ...commitReader(dir, base, head),

@@ -4,6 +4,7 @@
     { "path": "packages/core" },
     { "path": "packages/core/tsconfig.test.json" },
     { "path": "packages/evals" },
+    { "path": "packages/claude-code" },
     { "path": "apps/server" },
     { "path": "apps/web" },
     { "path": "e2e" },
